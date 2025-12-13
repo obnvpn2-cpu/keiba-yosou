@@ -88,3 +88,12 @@ dmypy.json
 *.bak
 *.tmp
 .~lock.*
+
+# フロント依存
+keiba-ui/node_modules/
+
+# ローカルDB
+src/netkeiba.db
+data/keiba.db
+data/*.db
+

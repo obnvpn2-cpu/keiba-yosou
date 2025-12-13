@@ -1,0 +1,231 @@
+{
+  "race": {
+    "race_id": "202312241100",
+    "race_name": "有馬記念",
+    "course": "中山",
+    "surface": "turf",
+    "distance": 2500,
+    "race_date": "2023-12-24",
+    "race_class": "G1"
+  },
+  "condition": {
+    "weather": "晴",
+    "trackCondition": "良",
+    "bias": "フラット",
+    "pace": "M",
+    "moisture": 10,
+    "cushion": 9.0
+  },
+  "horses": [
+    {
+      "horse_id": "2019103456",
+      "horse_no": 5,
+      "frame_no": 3,
+      "name": "イクイノックス",
+      "run_style": "先行",
+      "base_win": 0.250,
+      "adj_win": 0.268,
+      "delta_win": 0.018,
+      "baba_delta": 0.010,
+      "pace_delta": 0.008,
+      "synergy_score": 85,
+      "comment": "前走G1を圧勝。中山適性も高く、この距離はベスト。調教の動きも絶好調で、引き続き主役候補。騎手×調教師の相性も抜群。",
+      "concerns": "マークがきつくなる可能性。有力馬が揃い、展開次第では厳しい場面も。",
+      "shap_top": [
+        { "name": "前走着順", "value": 0.082 },
+        { "name": "騎手勝率", "value": 0.045 },
+        { "name": "中山芝成績", "value": 0.038 }
+      ],
+      "reasons": ["先行", "ペース有利", "相性◎"]
+    },
+    {
+      "horse_id": "2019107890",
+      "horse_no": 3,
+      "frame_no": 2,
+      "name": "リバティアイランド",
+      "run_style": "先行",
+      "base_win": 0.180,
+      "adj_win": 0.195,
+      "delta_win": 0.015,
+      "baba_delta": 0.008,
+      "pace_delta": 0.007,
+      "synergy_score": 72,
+      "comment": "3歳牝馬ながら古馬相手でも通用する実力。距離延長も問題なく、展開次第で上位進出可能。",
+      "concerns": "初の古馬混合G1。距離延長への対応が鍵。牡馬相手にパワー負けする可能性も。",
+      "shap_top": [
+        { "name": "前走着順", "value": 0.065 },
+        { "name": "距離適性", "value": 0.032 },
+        { "name": "馬体重増減", "value": -0.015 }
+      ],
+      "reasons": ["先行", "ペース有利"]
+    },
+    {
+      "horse_id": "2018201234",
+      "horse_no": 2,
+      "frame_no": 1,
+      "name": "ドウデュース",
+      "run_style": "追込",
+      "base_win": 0.150,
+      "adj_win": 0.142,
+      "delta_win": -0.008,
+      "baba_delta": 0.002,
+      "pace_delta": -0.010,
+      "synergy_score": 68,
+      "comment": "ダービー馬の底力。末脚は確実で、展開がハマれば一発の可能性。",
+      "concerns": "ミドルペースだと届かない懸念。内枠からの競馬で揉まれるリスクも。",
+      "shap_top": [
+        { "name": "上がり3F", "value": 0.055 },
+        { "name": "騎手勝率", "value": 0.028 },
+        { "name": "前走脚質", "value": -0.022 }
+      ],
+      "reasons": ["差し・追込", "ペース不利"]
+    },
+    {
+      "horse_id": "2019110042",
+      "horse_no": 1,
+      "frame_no": 1,
+      "name": "スーリールダンジュ",
+      "run_style": "逃げ",
+      "base_win": 0.085,
+      "adj_win": 0.092,
+      "delta_win": 0.007,
+      "baba_delta": 0.003,
+      "pace_delta": 0.004,
+      "synergy_score": 55,
+      "comment": "逃げ馬が少ないメンバー構成で、単騎逃げが叫べば。内枠を活かしたロスのない競馬が期待できる。",
+      "concerns": "G1レベルでは力不足の懸念。後続に捕まるリスク大。",
+      "shap_top": [
+        { "name": "脚質", "value": 0.042 },
+        { "name": "枠順", "value": 0.018 },
+        { "name": "前走着順", "value": -0.035 }
+      ],
+      "reasons": ["逃げ", "逃げ指定", "ペースやや有利"]
+    },
+    {
+      "horse_id": "2019205678",
+      "horse_no": 9,
+      "frame_no": 5,
+      "name": "タイトルホルダー",
+      "run_style": "先行",
+      "base_win": 0.080,
+      "adj_win": 0.088,
+      "delta_win": 0.008,
+      "baba_delta": 0.005,
+      "pace_delta": 0.003,
+      "synergy_score": 62,
+      "comment": "天皇賞(春)連覇の実績。長距離G1実績は十分で、スタミナ勝負になれば。",
+      "concerns": "近走やや精彩を欠く。全盛期からの衰えが心配。",
+      "shap_top": [
+        { "name": "距離実績", "value": 0.038 },
+        { "name": "G1実績", "value": 0.025 },
+        { "name": "近走成績", "value": -0.028 }
+      ],
+      "reasons": ["先行", "ペースやや有利"]
+    },
+    {
+      "horse_id": "2020101111",
+      "horse_no": 13,
+      "frame_no": 7,
+      "name": "スターズオンアース",
+      "run_style": "差し",
+      "base_win": 0.070,
+      "adj_win": 0.065,
+      "delta_win": -0.005,
+      "baba_delta": -0.002,
+      "pace_delta": -0.003,
+      "synergy_score": 58,
+      "comment": "オークス馬の実力。距離延長は歓迎で、展開次第では台頭も。",
+      "concerns": "外枠不利。ミドルペースでは差し届かない可能性。",
+      "shap_top": [
+        { "name": "前走着順", "value": 0.022 },
+        { "name": "枠順", "value": -0.025 },
+        { "name": "ペース適性", "value": -0.018 }
+      ],
+      "reasons": ["差し・追込", "ペース不利", "バイアス不利"]
+    },
+    {
+      "horse_id": "2019302222",
+      "horse_no": 11,
+      "frame_no": 6,
+      "name": "ジャスティンパレス",
+      "run_style": "先行",
+      "base_win": 0.060,
+      "adj_win": 0.068,
+      "delta_win": 0.008,
+      "baba_delta": 0.004,
+      "pace_delta": 0.004,
+      "synergy_score": 65,
+      "comment": "天皇賞(春)2着の実績。長距離適性は確かで、ステイヤー色の強いレースでは。",
+      "concerns": "瞬発力勝負になると分が悪い。展開待ちの面も。",
+      "shap_top": [
+        { "name": "距離実績", "value": 0.032 },
+        { "name": "騎手勝率", "value": 0.018 },
+        { "name": "上がり3F", "value": -0.015 }
+      ],
+      "reasons": ["先行", "ペースやや有利"]
+    },
+    {
+      "horse_id": "2018403333",
+      "horse_no": 15,
+      "frame_no": 8,
+      "name": "ヒシイグアス",
+      "run_style": "追込",
+      "base_win": 0.050,
+      "adj_win": 0.038,
+      "delta_win": -0.012,
+      "baba_delta": -0.004,
+      "pace_delta": -0.008,
+      "synergy_score": 42,
+      "comment": "香港ヴァーズ勝ちの実力馬。海外実績は光るが、国内では？",
+      "concerns": "外枠、追込脚質で展開不向き。ミドルペースでは届かない。年齢的な衰えも懸念。",
+      "shap_top": [
+        { "name": "前走着順", "value": 0.015 },
+        { "name": "枠順", "value": -0.032 },
+        { "name": "年齢", "value": -0.028 }
+      ],
+      "reasons": ["差し・追込", "ペース不利", "バイアス不利", "信頼度低"]
+    },
+    {
+      "horse_id": "2020504444",
+      "horse_no": 7,
+      "frame_no": 4,
+      "name": "ソールオリエンス",
+      "run_style": "差し",
+      "base_win": 0.045,
+      "adj_win": 0.048,
+      "delta_win": 0.003,
+      "baba_delta": 0.002,
+      "pace_delta": 0.001,
+      "synergy_score": 52,
+      "comment": "皐月賞馬。3歳世代のポテンシャルは高く、成長力に期待。",
+      "concerns": "古馬G1は初挑戦。経験不足が不安材料。",
+      "shap_top": [
+        { "name": "前走着順", "value": 0.018 },
+        { "name": "馬体重", "value": 0.012 },
+        { "name": "G1経験", "value": -0.020 }
+      ],
+      "reasons": ["差し・追込"]
+    },
+    {
+      "horse_id": "2019605555",
+      "horse_no": 6,
+      "frame_no": 3,
+      "name": "プログノーシス",
+      "run_style": "先行",
+      "base_win": 0.035,
+      "adj_win": 0.042,
+      "delta_win": 0.007,
+      "baba_delta": 0.004,
+      "pace_delta": 0.003,
+      "synergy_score": 48,
+      "comment": "近走安定。堅実な走りで穴人気の可能性。",
+      "concerns": "G1レベルでは一枚落ち。相手なりに走るタイプで頭は厳しい。",
+      "shap_top": [
+        { "name": "前走着順", "value": 0.015 },
+        { "name": "コース実績", "value": 0.008 },
+        { "name": "オッズ", "value": -0.012 }
+      ],
+      "reasons": ["先行", "ペースやや有利"]
+    }
+  ]
+}

@@ -1,0 +1,1613 @@
+
+=== Predicting for target_win ===
+
+=== Predicting for target_in3 ===
+
+=== Predicting for target_win ===
+
+=== Predicting for target_in3 ===
+
+=== Predicting for target_win ===
+
+=== Predicting for target_in3 ===
+
+=== race_id=202306050811 base=[base] A=[slow_inner] B=[high_outer] ===
+base: pace=M, bias=フラット, tc=良
+A   : pace=S, bias=内, tc=良
+B   : pace=H, bias=外, tc=良
+
+--- JSON (LLMに投げる用コンテキスト) ---
+{
+  "race": {
+    "race_id": "202306050811",
+    "race_name": "有馬記念",
+    "course": "中山",
+    "surface": "turf",
+    "distance": 2500,
+    "distance_cat": null,
+    "race_date": null,
+    "race_class": null
+  },
+  "base": {
+    "scenario": {
+      "id": "base",
+      "summary": "想定ペース: ミドルペース / 馬場状態: 良 / バイアス: フラット / 補足: ベース：平均ペース＋フラット想定",
+      "pace": "M",
+      "track_condition": "良",
+      "bias": "フラット",
+      "notes": "ベース：平均ペース＋フラット想定"
+    },
+    "race": {
+      "race_id": "202306050811",
+      "race_name": "有馬記念",
+      "course": "中山",
+      "surface": "turf",
+      "distance": 2500,
+      "distance_cat": null,
+      "race_date": null,
+      "race_class": null
+    },
+    "top_horses": [
+      {
+        "id": "2020102899",
+        "name": "ソールオリエンス",
+        "frame_no": 1,
+        "run_style": "その他",
+        "base_win": 0.2488,
+        "adj_win": 0.1317,
+        "base_in3": 0.5359,
+        "adj_in3": 0.3223,
+        "win_delta": -0.1171,
+        "win_delta_pct": -47.1,
+        "reasons": []
+      },
+      {
+        "id": "2020103532",
+        "name": "タスティエーラ",
+        "frame_no": 7,
+        "run_style": "その他",
+        "base_win": 0.2455,
+        "adj_win": 0.13,
+        "base_in3": 0.4447,
+        "adj_in3": 0.2674,
+        "win_delta": -0.1155,
+        "win_delta_pct": -47.1,
+        "reasons": []
+      },
+      {
+        "id": "2020103458",
+        "name": "ハーパー",
+        "frame_no": 6,
+        "run_style": "その他",
+        "base_win": 0.2174,
+        "adj_win": 0.1151,
+        "base_in3": 0.5216,
+        "adj_in3": 0.3137,
+        "win_delta": -0.1023,
+        "win_delta_pct": -47.1,
+        "reasons": []
+      },
+      {
+        "id": "2019104740",
+        "name": "スターズオンアース",
+        "frame_no": 8,
+        "run_style": "その他",
+        "base_win": 0.2075,
+        "adj_win": 0.1099,
+        "base_in3": 0.564,
+        "adj_in3": 0.3392,
+        "win_delta": -0.0977,
+        "win_delta_pct": -47.1,
+        "reasons": []
+      },
+      {
+        "id": "2019105283",
+        "name": "ドウデュース",
+        "frame_no": 3,
+        "run_style": "その他",
+        "base_win": 0.2063,
+        "adj_win": 0.1092,
+        "base_in3": 0.4075,
+        "adj_in3": 0.2451,
+        "win_delta": -0.0971,
+        "win_delta_pct": -47.1,
+        "reasons": []
+      },
+      {
+        "id": "2018103559",
+        "name": "タイトルホルダー",
+        "frame_no": 2,
+        "run_style": "その他",
+        "base_win": 0.1167,
+        "adj_win": 0.0618,
+        "base_in3": 0.3211,
+        "adj_in3": 0.1931,
+        "win_delta": -0.0549,
+        "win_delta_pct": -47.1,
+        "reasons": []
+      },
+      {
+        "id": "2018105269",
+        "name": "スルーセブンシーズ",
+        "frame_no": 8,
+        "run_style": "その他",
+        "base_win": 0.115,
+        "adj_win": 0.0609,
+        "base_in3": 0.3018,
+        "adj_in3": 0.1815,
+        "win_delta": -0.0541,
+        "win_delta_pct": -47.1,
+        "reasons": []
+      },
+      {
+        "id": "2019105346",
+        "name": "ジャスティンパレス",
+        "frame_no": 5,
+        "run_style": "その他",
+        "base_win": 0.1115,
+        "adj_win": 0.059,
+        "base_in3": 0.4324,
+        "adj_in3": 0.26,
+        "win_delta": -0.0525,
+        "win_delta_pct": -47.1,
+        "reasons": []
+      },
+      {
+        "id": "2019100109",
+        "name": "プラダリア",
+        "frame_no": 7,
+        "run_style": "その他",
+        "base_win": 0.0867,
+        "adj_win": 0.0459,
+        "base_in3": 0.2776,
+        "adj_in3": 0.167,
+        "win_delta": -0.0408,
+        "win_delta_pct": -47.1,
+        "reasons": []
+      },
+      {
+        "id": "2018105165",
+        "name": "シャフリヤール",
+        "frame_no": 1,
+        "run_style": "その他",
+        "base_win": 0.0718,
+        "adj_win": 0.038,
+        "base_in3": 0.1705,
+        "adj_in3": 0.1025,
+        "win_delta": -0.0338,
+        "win_delta_pct": -47.1,
+        "reasons": []
+      }
+    ],
+    "boosted_horses": [],
+    "dropped_horses": [
+      {
+        "id": "2020102899",
+        "name": "ソールオリエンス",
+        "run_style": "その他",
+        "win_delta": -0.1171,
+        "in3_delta": -0.2136,
+        "reasons": []
+      },
+      {
+        "id": "2020103532",
+        "name": "タスティエーラ",
+        "run_style": "その他",
+        "win_delta": -0.1155,
+        "in3_delta": -0.1773,
+        "reasons": []
+      },
+      {
+        "id": "2020103458",
+        "name": "ハーパー",
+        "run_style": "その他",
+        "win_delta": -0.1023,
+        "in3_delta": -0.2079,
+        "reasons": []
+      },
+      {
+        "id": "2019104740",
+        "name": "スターズオンアース",
+        "run_style": "その他",
+        "win_delta": -0.0977,
+        "in3_delta": -0.2248,
+        "reasons": []
+      },
+      {
+        "id": "2019105283",
+        "name": "ドウデュース",
+        "run_style": "その他",
+        "win_delta": -0.0971,
+        "in3_delta": -0.1624,
+        "reasons": []
+      }
+    ],
+    "solid_placers": []
+  },
+  "scenario_a": {
+    "scenario": {
+      "id": "slow_inner",
+      "summary": "想定ペース: スローペース / 馬場状態: 良 / バイアス: 内有利 / 補足: スロー＋内有利想定",
+      "pace": "S",
+      "track_condition": "良",
+      "bias": "内",
+      "notes": "スロー＋内有利想定"
+    },
+    "race": {
+      "race_id": "202306050811",
+      "race_name": "有馬記念",
+      "course": "中山",
+      "surface": "turf",
+      "distance": 2500,
+      "distance_cat": null,
+      "race_date": null,
+      "race_class": null
+    },
+    "top_horses": [
+      {
+        "id": "2020102899",
+        "name": "ソールオリエンス",
+        "frame_no": 1,
+        "run_style": "その他",
+        "base_win": 0.2488,
+        "adj_win": 0.1371,
+        "base_in3": 0.5359,
+        "adj_in3": 0.3305,
+        "win_delta": -0.1118,
+        "win_delta_pct": -44.9,
+        "reasons": [
+          "バイアス有利"
+        ]
+      },
+      {
+        "id": "2020103532",
+        "name": "タスティエーラ",
+        "frame_no": 7,
+        "run_style": "その他",
+        "base_win": 0.2455,
+        "adj_win": 0.1249,
+        "base_in3": 0.4447,
+        "adj_in3": 0.2609,
+        "win_delta": -0.1206,
+        "win_delta_pct": -49.1,
+        "reasons": [
+          "バイアス不利"
+        ]
+      },
+      {
+        "id": "2020103458",
+        "name": "ハーパー",
+        "frame_no": 6,
+        "run_style": "その他",
+        "base_win": 0.2174,
+        "adj_win": 0.1141,
+        "base_in3": 0.5216,
+        "adj_in3": 0.3123,
+        "win_delta": -0.1034,
+        "win_delta_pct": -47.5,
+        "reasons": []
+      },
+      {
+        "id": "2019105283",
+        "name": "ドウデュース",
+        "frame_no": 3,
+        "run_style": "その他",
+        "base_win": 0.2063,
+        "adj_win": 0.1136,
+        "base_in3": 0.4075,
+        "adj_in3": 0.2513,
+        "win_delta": -0.0926,
+        "win_delta_pct": -44.9,
+        "reasons": [
+          "バイアス有利"
+        ]
+      },
+      {
+        "id": "2019104740",
+        "name": "スターズオンアース",
+        "frame_no": 8,
+        "run_style": "その他",
+        "base_win": 0.2075,
+        "adj_win": 0.1056,
+        "base_in3": 0.564,
+        "adj_in3": 0.3309,
+        "win_delta": -0.1019,
+        "win_delta_pct": -49.1,
+        "reasons": [
+          "バイアス不利"
+        ]
+      },
+      {
+        "id": "2018103559",
+        "name": "タイトルホルダー",
+        "frame_no": 2,
+        "run_style": "その他",
+        "base_win": 0.1167,
+        "adj_win": 0.0643,
+        "base_in3": 0.3211,
+        "adj_in3": 0.198,
+        "win_delta": -0.0524,
+        "win_delta_pct": -44.9,
+        "reasons": [
+          "バイアス有利"
+        ]
+      },
+      {
+        "id": "2019105346",
+        "name": "ジャスティンパレス",
+        "frame_no": 5,
+        "run_style": "その他",
+        "base_win": 0.1115,
+        "adj_win": 0.0585,
+        "base_in3": 0.4324,
+        "adj_in3": 0.2589,
+        "win_delta": -0.053,
+        "win_delta_pct": -47.5,
+        "reasons": []
+      },
+      {
+        "id": "2018105269",
+        "name": "スルーセブンシーズ",
+        "frame_no": 8,
+        "run_style": "その他",
+        "base_win": 0.115,
+        "adj_win": 0.0585,
+        "base_in3": 0.3018,
+        "adj_in3": 0.1771,
+        "win_delta": -0.0565,
+        "win_delta_pct": -49.1,
+        "reasons": [
+          "バイアス不利"
+        ]
+      },
+      {
+        "id": "2019100109",
+        "name": "プラダリア",
+        "frame_no": 7,
+        "run_style": "その他",
+        "base_win": 0.0867,
+        "adj_win": 0.0441,
+        "base_in3": 0.2776,
+        "adj_in3": 0.1629,
+        "win_delta": -0.0426,
+        "win_delta_pct": -49.1,
+        "reasons": [
+          "バイアス不利"
+        ]
+      },
+      {
+        "id": "2018105165",
+        "name": "シャフリヤール",
+        "frame_no": 1,
+        "run_style": "その他",
+        "base_win": 0.0718,
+        "adj_win": 0.0396,
+        "base_in3": 0.1705,
+        "adj_in3": 0.1052,
+        "win_delta": -0.0322,
+        "win_delta_pct": -44.9,
+        "reasons": [
+          "バイアス有利"
+        ]
+      }
+    ],
+    "boosted_horses": [],
+    "dropped_horses": [
+      {
+        "id": "2020103532",
+        "name": "タスティエーラ",
+        "run_style": "その他",
+        "win_delta": -0.1206,
+        "in3_delta": -0.1838,
+        "reasons": [
+          "バイアス不利"
+        ]
+      },
+      {
+        "id": "2020102899",
+        "name": "ソールオリエンス",
+        "run_style": "その他",
+        "win_delta": -0.1118,
+        "in3_delta": -0.2054,
+        "reasons": [
+          "バイアス有利"
+        ]
+      },
+      {
+        "id": "2020103458",
+        "name": "ハーパー",
+        "run_style": "その他",
+        "win_delta": -0.1034,
+        "in3_delta": -0.2093,
+        "reasons": []
+      },
+      {
+        "id": "2019104740",
+        "name": "スターズオンアース",
+        "run_style": "その他",
+        "win_delta": -0.1019,
+        "in3_delta": -0.2331,
+        "reasons": [
+          "バイアス不利"
+        ]
+      },
+      {
+        "id": "2019105283",
+        "name": "ドウデュース",
+        "run_style": "その他",
+        "win_delta": -0.0926,
+        "in3_delta": -0.1562,
+        "reasons": [
+          "バイアス有利"
+        ]
+      }
+    ],
+    "solid_placers": []
+  },
+  "scenario_b": {
+    "scenario": {
+      "id": "high_outer",
+      "summary": "想定ペース: ハイペース / 馬場状態: 良 / バイアス: 外有利 / 補足: ハイペース＋外差し有利想定",
+      "pace": "H",
+      "track_condition": "良",
+      "bias": "外",
+      "notes": "ハイペース＋外差し有利想定"
+    },
+    "race": {
+      "race_id": "202306050811",
+      "race_name": "有馬記念",
+      "course": "中山",
+      "surface": "turf",
+      "distance": 2500,
+      "distance_cat": null,
+      "race_date": null,
+      "race_class": null
+    },
+    "top_horses": [
+      {
+        "id": "2020103532",
+        "name": "タスティエーラ",
+        "frame_no": 7,
+        "run_style": "その他",
+        "base_win": 0.2455,
+        "adj_win": 0.1357,
+        "base_in3": 0.4447,
+        "adj_in3": 0.2748,
+        "win_delta": -0.1098,
+        "win_delta_pct": -44.7,
+        "reasons": [
+          "バイアス有利"
+        ]
+      },
+      {
+        "id": "2020102899",
+        "name": "ソールオリエンス",
+        "frame_no": 1,
+        "run_style": "その他",
+        "base_win": 0.2488,
+        "adj_win": 0.127,
+        "base_in3": 0.5359,
+        "adj_in3": 0.3151,
+        "win_delta": -0.1218,
+        "win_delta_pct": -48.9,
+        "reasons": [
+          "バイアス不利"
+        ]
+      },
+      {
+        "id": "2019104740",
+        "name": "スターズオンアース",
+        "frame_no": 8,
+        "run_style": "その他",
+        "base_win": 0.2075,
+        "adj_win": 0.1147,
+        "base_in3": 0.564,
+        "adj_in3": 0.3485,
+        "win_delta": -0.0928,
+        "win_delta_pct": -44.7,
+        "reasons": [
+          "バイアス有利"
+        ]
+      },
+      {
+        "id": "2020103458",
+        "name": "ハーパー",
+        "frame_no": 6,
+        "run_style": "その他",
+        "base_win": 0.2174,
+        "adj_win": 0.1144,
+        "base_in3": 0.5216,
+        "adj_in3": 0.313,
+        "win_delta": -0.103,
+        "win_delta_pct": -47.4,
+        "reasons": []
+      },
+      {
+        "id": "2019105283",
+        "name": "ドウデュース",
+        "frame_no": 3,
+        "run_style": "その他",
+        "base_win": 0.2063,
+        "adj_win": 0.1053,
+        "base_in3": 0.4075,
+        "adj_in3": 0.2396,
+        "win_delta": -0.101,
+        "win_delta_pct": -48.9,
+        "reasons": [
+          "バイアス不利"
+        ]
+      },
+      {
+        "id": "2018105269",
+        "name": "スルーセブンシーズ",
+        "frame_no": 8,
+        "run_style": "その他",
+        "base_win": 0.115,
+        "adj_win": 0.0635,
+        "base_in3": 0.3018,
+        "adj_in3": 0.1865,
+        "win_delta": -0.0514,
+        "win_delta_pct": -44.7,
+        "reasons": [
+          "バイアス有利"
+        ]
+      },
+      {
+        "id": "2018103559",
+        "name": "タイトルホルダー",
+        "frame_no": 2,
+        "run_style": "その他",
+        "base_win": 0.1167,
+        "adj_win": 0.0596,
+        "base_in3": 0.3211,
+        "adj_in3": 0.1888,
+        "win_delta": -0.0571,
+        "win_delta_pct": -48.9,
+        "reasons": [
+          "バイアス不利"
+        ]
+      },
+      {
+        "id": "2019105346",
+        "name": "ジャスティンパレス",
+        "frame_no": 5,
+        "run_style": "その他",
+        "base_win": 0.1115,
+        "adj_win": 0.0587,
+        "base_in3": 0.4324,
+        "adj_in3": 0.2594,
+        "win_delta": -0.0528,
+        "win_delta_pct": -47.4,
+        "reasons": []
+      },
+      {
+        "id": "2019100109",
+        "name": "プラダリア",
+        "frame_no": 7,
+        "run_style": "その他",
+        "base_win": 0.0867,
+        "adj_win": 0.0479,
+        "base_in3": 0.2776,
+        "adj_in3": 0.1716,
+        "win_delta": -0.0388,
+        "win_delta_pct": -44.7,
+        "reasons": [
+          "バイアス有利"
+        ]
+      },
+      {
+        "id": "2018105165",
+        "name": "シャフリヤール",
+        "frame_no": 1,
+        "run_style": "その他",
+        "base_win": 0.0718,
+        "adj_win": 0.0367,
+        "base_in3": 0.1705,
+        "adj_in3": 0.1003,
+        "win_delta": -0.0351,
+        "win_delta_pct": -48.9,
+        "reasons": [
+          "バイアス不利"
+        ]
+      }
+    ],
+    "boosted_horses": [],
+    "dropped_horses": [
+      {
+        "id": "2020102899",
+        "name": "ソールオリエンス",
+        "run_style": "その他",
+        "win_delta": -0.1218,
+        "in3_delta": -0.2208,
+        "reasons": [
+          "バイアス不利"
+        ]
+      },
+      {
+        "id": "2020103532",
+        "name": "タスティエーラ",
+        "run_style": "その他",
+        "win_delta": -0.1098,
+        "in3_delta": -0.1699,
+        "reasons": [
+          "バイアス有利"
+        ]
+      },
+      {
+        "id": "2020103458",
+        "name": "ハーパー",
+        "run_style": "その他",
+        "win_delta": -0.103,
+        "in3_delta": -0.2087,
+        "reasons": []
+      },
+      {
+        "id": "2019105283",
+        "name": "ドウデュース",
+        "run_style": "その他",
+        "win_delta": -0.101,
+        "in3_delta": -0.1679,
+        "reasons": [
+          "バイアス不利"
+        ]
+      },
+      {
+        "id": "2019104740",
+        "name": "スターズオンアース",
+        "run_style": "その他",
+        "win_delta": -0.0928,
+        "in3_delta": -0.2155,
+        "reasons": [
+          "バイアス有利"
+        ]
+      }
+    ],
+    "solid_placers": []
+  },
+  "comparison": {
+    "horses": [
+      {
+        "id": "2017101431",
+        "name": "ウインマリリン",
+        "frame_no": 6,
+        "gate_number": null,
+        "run_style": {
+          "base": "その他",
+          "scenario_a": "その他",
+          "scenario_b": "その他"
+        },
+        "win": {
+          "base": 0.04295028864595345,
+          "scenario_a": 0.02253348528290958,
+          "scenario_b": 0.022607492028911547,
+          "delta_a_vs_base": -0.020416803363043867,
+          "delta_b_vs_base": -0.0203427966170419,
+          "delta_a_vs_b": -7.400674600196652e-05,
+          "delta_a_vs_base_pct": -47.5358932540432,
+          "delta_b_vs_base_pct": -47.36358534102306
+        },
+        "in3": {
+          "base": 0.19341679743903253,
+          "scenario_a": 0.11580856687614868,
+          "scenario_b": 0.11604576799297543,
+          "delta_a_vs_base": -0.07760823056288385,
+          "delta_b_vs_base": -0.0773710294460571,
+          "delta_a_vs_b": -0.00023720111682674905
+        },
+        "reasons": {
+          "scenario_a": [],
+          "scenario_b": []
+        }
+      },
+      {
+        "id": "2017102170",
+        "name": "ディープボンド",
+        "frame_no": 3,
+        "gate_number": null,
+        "run_style": {
+          "base": "その他",
+          "scenario_a": "その他",
+          "scenario_b": "その他"
+        },
+        "win": {
+          "base": 0.04150230035637281,
+          "scenario_a": 0.022862501719044796,
+          "scenario_b": 0.021189963221336622,
+          "delta_a_vs_base": -0.018639798637328016,
+          "delta_b_vs_base": -0.02031233713503619,
+          "delta_a_vs_b": 0.0016725384977081745,
+          "delta_a_vs_base_pct": -44.912687916745355,
+          "delta_b_vs_base_pct": -48.94267778079237
+        },
+        "in3": {
+          "base": 0.20407861712886105,
+          "scenario_a": 0.1258581160864567,
+          "scenario_b": 0.1199937697544885,
+          "delta_a_vs_base": -0.07822050104240436,
+          "delta_b_vs_base": -0.08408484737437255,
+          "delta_a_vs_b": 0.0058643463319681954
+        },
+        "reasons": {
+          "scenario_a": [
+            "バイアス有利"
+          ],
+          "scenario_b": [
+            "バイアス不利"
+          ]
+        }
+      },
+      {
+        "id": "2017104691",
+        "name": "ホウオウエミーズ",
+        "frame_no": 2,
+        "gate_number": null,
+        "run_style": {
+          "base": "その他",
+          "scenario_a": "その他",
+          "scenario_b": "その他"
+        },
+        "win": {
+          "base": 0.04762042185807453,
+          "scenario_a": 0.02623281040431993,
+          "scenario_b": 0.024313712230223095,
+          "delta_a_vs_base": -0.0213876114537546,
+          "delta_b_vs_base": -0.023306709627851436,
+          "delta_a_vs_b": 0.0019190981740968352,
+          "delta_a_vs_base_pct": -44.91268791674535,
+          "delta_b_vs_base_pct": -48.94267778079237
+        },
+        "in3": {
+          "base": 0.15384176125434434,
+          "scenario_a": 0.09487634970923171,
+          "scenario_b": 0.09045559568312138,
+          "delta_a_vs_base": -0.05896541154511263,
+          "delta_b_vs_base": -0.06338616557122297,
+          "delta_a_vs_b": 0.004420754026110335
+        },
+        "reasons": {
+          "scenario_a": [
+            "バイアス有利"
+          ],
+          "scenario_b": [
+            "バイアス不利"
+          ]
+        }
+      },
+      {
+        "id": "2017104936",
+        "name": "ヒートオンビート",
+        "frame_no": 5,
+        "gate_number": null,
+        "run_style": {
+          "base": "その他",
+          "scenario_a": "その他",
+          "scenario_b": "その他"
+        },
+        "win": {
+          "base": 0.06322079771792247,
+          "scenario_a": 0.03316822680037627,
+          "scenario_b": 0.0332771612375187,
+          "delta_a_vs_base": -0.0300525709175462,
+          "delta_b_vs_base": -0.029943636480403768,
+          "delta_a_vs_b": -0.0001089344371424314,
+          "delta_a_vs_base_pct": -47.535893254043195,
+          "delta_b_vs_base_pct": -47.36358534102306
+        },
+        "in3": {
+          "base": 0.19128097647074838,
+          "scenario_a": 0.1145297412068374,
+          "scenario_b": 0.114764323010731,
+          "delta_a_vs_base": -0.07675123526391098,
+          "delta_b_vs_base": -0.07651665346001738,
+          "delta_a_vs_b": -0.00023458180389360206
+        },
+        "reasons": {
+          "scenario_a": [],
+          "scenario_b": []
+        }
+      },
+      {
+        "id": "2017105477",
+        "name": "アイアンバローズ",
+        "frame_no": 4,
+        "gate_number": null,
+        "run_style": {
+          "base": "その他",
+          "scenario_a": "その他",
+          "scenario_b": "その他"
+        },
+        "win": {
+          "base": 0.02245566205625713,
+          "scenario_a": 0.011781162511706059,
+          "scenario_b": 0.011819855394350048,
+          "delta_a_vs_base": -0.01067449954455107,
+          "delta_b_vs_base": -0.01063580666190708,
+          "delta_a_vs_b": -3.869288264398904e-05,
+          "delta_a_vs_base_pct": -47.535893254043195,
+          "delta_b_vs_base_pct": -47.36358534102307
+        },
+        "in3": {
+          "base": 0.06584584950831117,
+          "scenario_a": 0.03942529070518674,
+          "scenario_b": 0.03950604226993489,
+          "delta_a_vs_base": -0.026420558803124432,
+          "delta_b_vs_base": -0.026339807238376277,
+          "delta_a_vs_b": -8.075156474815492e-05
+        },
+        "reasons": {
+          "scenario_a": [],
+          "scenario_b": []
+        }
+      },
+      {
+        "id": "2018103559",
+        "name": "タイトルホルダー",
+        "frame_no": 2,
+        "gate_number": null,
+        "run_style": {
+          "base": "その他",
+          "scenario_a": "その他",
+          "scenario_b": "その他"
+        },
+        "win": {
+          "base": 0.1166828326560882,
+          "scenario_a": 0.06427743617284108,
+          "scenario_b": 0.05957512984371777,
+          "delta_a_vs_base": -0.052405396483247116,
+          "delta_b_vs_base": -0.05710770281237043,
+          "delta_a_vs_b": 0.004702306329123315,
+          "delta_a_vs_base_pct": -44.91268791674535,
+          "delta_b_vs_base_pct": -48.94267778079238
+        },
+        "in3": {
+          "base": 0.3210768959129638,
+          "scenario_a": 0.19801257871605854,
+          "scenario_b": 0.18878620241403762,
+          "delta_a_vs_base": -0.12306431719690525,
+          "delta_b_vs_base": -0.13229069349892617,
+          "delta_a_vs_b": 0.009226376302020917
+        },
+        "reasons": {
+          "scenario_a": [
+            "バイアス有利"
+          ],
+          "scenario_b": [
+            "バイアス不利"
+          ]
+        }
+      },
+      {
+        "id": "2018105165",
+        "name": "シャフリヤール",
+        "frame_no": 1,
+        "gate_number": null,
+        "run_style": {
+          "base": "その他",
+          "scenario_a": "その他",
+          "scenario_b": "その他"
+        },
+        "win": {
+          "base": 0.07179969822946544,
+          "scenario_a": 0.03955252383850069,
+          "scenario_b": 0.03665900327743688,
+          "delta_a_vs_base": -0.03224717439096475,
+          "delta_b_vs_base": -0.03514069495202856,
+          "delta_a_vs_b": 0.00289352056106381,
+          "delta_a_vs_base_pct": -44.91268791674535,
+          "delta_b_vs_base_pct": -48.94267778079238
+        },
+        "in3": {
+          "base": 0.17050283074797665,
+          "scenario_a": 0.10515146254542873,
+          "scenario_b": 0.10025194066433066,
+          "delta_a_vs_base": -0.06535136820254792,
+          "delta_b_vs_base": -0.07025089008364599,
+          "delta_a_vs_b": 0.004899521881098073
+        },
+        "reasons": {
+          "scenario_a": [
+            "バイアス有利"
+          ],
+          "scenario_b": [
+            "バイアス不利"
+          ]
+        }
+      },
+      {
+        "id": "2018105269",
+        "name": "スルーセブンシーズ",
+        "frame_no": 8,
+        "gate_number": null,
+        "run_style": {
+          "base": "その他",
+          "scenario_a": "その他",
+          "scenario_b": "その他"
+        },
+        "win": {
+          "base": 0.11496443019282974,
+          "scenario_a": 0.05850560953495978,
+          "scenario_b": 0.06353881189595934,
+          "delta_a_vs_base": -0.05645882065786997,
+          "delta_b_vs_base": -0.05142561829687041,
+          "delta_a_vs_b": -0.005033202360999557,
+          "delta_a_vs_base_pct": -49.109816456421896,
+          "delta_b_vs_base_pct": -44.73176460807422
+        },
+        "in3": {
+          "base": 0.3017987053367268,
+          "scenario_a": 0.1770883319992803,
+          "scenario_b": 0.18650467226177428,
+          "delta_a_vs_base": -0.1247103733374465,
+          "delta_b_vs_base": -0.11529403307495253,
+          "delta_a_vs_b": -0.009416340262493966
+        },
+        "reasons": {
+          "scenario_a": [
+            "バイアス不利"
+          ],
+          "scenario_b": [
+            "バイアス有利"
+          ]
+        }
+      },
+      {
+        "id": "2019100109",
+        "name": "プラダリア",
+        "frame_no": 7,
+        "gate_number": null,
+        "run_style": {
+          "base": "その他",
+          "scenario_a": "その他",
+          "scenario_b": "その他"
+        },
+        "win": {
+          "base": 0.0867357535832505,
+          "scenario_a": 0.044139984196421796,
+          "scenario_b": 0.04793732045935159,
+          "delta_a_vs_base": -0.04259576938682871,
+          "delta_b_vs_base": -0.03879843312389891,
+          "delta_a_vs_b": -0.0037973362629297944,
+          "delta_a_vs_base_pct": -49.1098164564219,
+          "delta_b_vs_base_pct": -44.731764608074215
+        },
+        "in3": {
+          "base": 0.2776396074017352,
+          "scenario_a": 0.16291234555446943,
+          "scenario_b": 0.1715749042977982,
+          "delta_a_vs_base": -0.11472726184726578,
+          "delta_b_vs_base": -0.10606470310393701,
+          "delta_a_vs_b": -0.008662558743328774
+        },
+        "reasons": {
+          "scenario_a": [
+            "バイアス不利"
+          ],
+          "scenario_b": [
+            "バイアス有利"
+          ]
+        }
+      },
+      {
+        "id": "2019103588",
+        "name": "ライラック",
+        "frame_no": 4,
+        "gate_number": null,
+        "run_style": {
+          "base": "その他",
+          "scenario_a": "その他",
+          "scenario_b": "その他"
+        },
+        "win": {
+          "base": 0.04408359849406834,
+          "scenario_a": 0.023128066171387022,
+          "scenario_b": 0.023204025699936324,
+          "delta_a_vs_base": -0.02095553232268132,
+          "delta_b_vs_base": -0.02087957279413202,
+          "delta_a_vs_b": -7.595952854930199e-05,
+          "delta_a_vs_base_pct": -47.535893254043195,
+          "delta_b_vs_base_pct": -47.36358534102307
+        },
+        "in3": {
+          "base": 0.20278744547844813,
+          "scenario_a": 0.12141925495760955,
+          "scenario_b": 0.12166794798315246,
+          "delta_a_vs_base": -0.08136819052083857,
+          "delta_b_vs_base": -0.08111949749529566,
+          "delta_a_vs_b": -0.0002486930255429093
+        },
+        "reasons": {
+          "scenario_a": [],
+          "scenario_b": []
+        }
+      },
+      {
+        "id": "2019104740",
+        "name": "スターズオンアース",
+        "frame_no": 8,
+        "gate_number": null,
+        "run_style": {
+          "base": "その他",
+          "scenario_a": "その他",
+          "scenario_b": "その他"
+        },
+        "win": {
+          "base": 0.2075154840837399,
+          "scenario_a": 0.10560501073155983,
+          "scenario_b": 0.11469014621809566,
+          "delta_a_vs_base": -0.10191047335218008,
+          "delta_b_vs_base": -0.09282533786564424,
+          "delta_a_vs_b": -0.009085135486535834,
+          "delta_a_vs_base_pct": -49.1098164564219,
+          "delta_b_vs_base_pct": -44.731764608074215
+        },
+        "in3": {
+          "base": 0.5639985438352958,
+          "scenario_a": 0.33094098686201723,
+          "scenario_b": 0.3485381537894857,
+          "delta_a_vs_base": -0.23305755697327857,
+          "delta_b_vs_base": -0.21546039004581008,
+          "delta_a_vs_b": -0.01759716692746849
+        },
+        "reasons": {
+          "scenario_a": [
+            "バイアス不利"
+          ],
+          "scenario_b": [
+            "バイアス有利"
+          ]
+        }
+      },
+      {
+        "id": "2019105283",
+        "name": "ドウデュース",
+        "frame_no": 3,
+        "gate_number": null,
+        "run_style": {
+          "base": "その他",
+          "scenario_a": "その他",
+          "scenario_b": "その他"
+        },
+        "win": {
+          "base": 0.20627444050420254,
+          "scenario_a": 0.11363104478853749,
+          "scenario_b": 0.10531820574409842,
+          "delta_a_vs_base": -0.09264339571566506,
+          "delta_b_vs_base": -0.10095623476010412,
+          "delta_a_vs_b": 0.008312839044439066,
+          "delta_a_vs_base_pct": -44.912687916745355,
+          "delta_b_vs_base_pct": -48.94267778079238
+        },
+        "in3": {
+          "base": 0.40753596240289414,
+          "scenario_a": 0.2513330851958991,
+          "scenario_b": 0.2396222452270381,
+          "delta_a_vs_base": -0.15620287720699505,
+          "delta_b_vs_base": -0.16791371717585604,
+          "delta_a_vs_b": 0.011710839968860992
+        },
+        "reasons": {
+          "scenario_a": [
+            "バイアス有利"
+          ],
+          "scenario_b": [
+            "バイアス不利"
+          ]
+        }
+      },
+      {
+        "id": "2019105346",
+        "name": "ジャスティンパレス",
+        "frame_no": 5,
+        "gate_number": null,
+        "run_style": {
+          "base": "その他",
+          "scenario_a": "その他",
+          "scenario_b": "その他"
+        },
+        "win": {
+          "base": 0.11152896053167388,
+          "scenario_a": 0.05851267290599342,
+          "scenario_b": 0.05870484613029859,
+          "delta_a_vs_base": -0.05301628762568046,
+          "delta_b_vs_base": -0.05282411440137529,
+          "delta_a_vs_b": -0.00019217322430516853,
+          "delta_a_vs_base_pct": -47.535893254043195,
+          "delta_b_vs_base_pct": -47.36358534102307
+        },
+        "in3": {
+          "base": 0.4323766596292019,
+          "scenario_a": 0.2588861048541445,
+          "scenario_b": 0.2594163598677309,
+          "delta_a_vs_base": -0.17349055477505743,
+          "delta_b_vs_base": -0.17296029976147104,
+          "delta_a_vs_b": -0.0005302550135863893
+        },
+        "reasons": {
+          "scenario_a": [],
+          "scenario_b": []
+        }
+      },
+      {
+        "id": "2020102899",
+        "name": "ソールオリエンス",
+        "frame_no": 1,
+        "gate_number": null,
+        "run_style": {
+          "base": "その他",
+          "scenario_a": "その他",
+          "scenario_b": "その他"
+        },
+        "win": {
+          "base": 0.2488190201106821,
+          "scenario_a": 0.1370677101308676,
+          "scenario_b": 0.12704032884058597,
+          "delta_a_vs_base": -0.1117513099798145,
+          "delta_b_vs_base": -0.12177869127009613,
+          "delta_a_vs_b": 0.010027381290281634,
+          "delta_a_vs_base_pct": -44.91268791674535,
+          "delta_b_vs_base_pct": -48.94267778079238
+        },
+        "in3": {
+          "base": 0.5359069839509598,
+          "scenario_a": 0.3305012761579722,
+          "scenario_b": 0.31510160224885053,
+          "delta_a_vs_base": -0.2054057077929876,
+          "delta_b_vs_base": -0.22080538170210928,
+          "delta_a_vs_b": 0.01539967390912167
+        },
+        "reasons": {
+          "scenario_a": [
+            "バイアス有利"
+          ],
+          "scenario_b": [
+            "バイアス不利"
+          ]
+        }
+      },
+      {
+        "id": "2020103458",
+        "name": "ハーパー",
+        "frame_no": 6,
+        "gate_number": null,
+        "run_style": {
+          "base": "その他",
+          "scenario_a": "その他",
+          "scenario_b": "その他"
+        },
+        "win": {
+          "base": 0.21742946703378324,
+          "scenario_a": 0.11407242768176899,
+          "scenario_b": 0.1144470758587057,
+          "delta_a_vs_base": -0.10335703935201425,
+          "delta_b_vs_base": -0.10298239117507754,
+          "delta_a_vs_b": -0.0003746481769367066,
+          "delta_a_vs_base_pct": -47.5358932540432,
+          "delta_b_vs_base_pct": -47.36358534102307
+        },
+        "in3": {
+          "base": 0.5216366851090383,
+          "scenario_a": 0.3123306648252439,
+          "scenario_b": 0.3129703859142288,
+          "delta_a_vs_base": -0.20930602028379436,
+          "delta_b_vs_base": -0.20866629919480945,
+          "delta_a_vs_b": -0.0006397210889849125
+        },
+        "reasons": {
+          "scenario_a": [],
+          "scenario_b": []
+        }
+      },
+      {
+        "id": "2020103532",
+        "name": "タスティエーラ",
+        "frame_no": 7,
+        "gate_number": null,
+        "run_style": {
+          "base": "その他",
+          "scenario_a": "その他",
+          "scenario_b": "その他"
+        },
+        "win": {
+          "base": 0.24548806553591357,
+          "scenario_a": 0.12492932712880571,
+          "scenario_b": 0.13567692191947375,
+          "delta_a_vs_base": -0.12055873840710786,
+          "delta_b_vs_base": -0.10981114361643982,
+          "delta_a_vs_b": -0.010747594790668044,
+          "delta_a_vs_base_pct": -49.1098164564219,
+          "delta_b_vs_base_pct": -44.731764608074215
+        },
+        "in3": {
+          "base": 0.44467685105512267,
+          "scenario_a": 0.2609258437480153,
+          "scenario_b": 0.2748000866203217,
+          "delta_a_vs_base": -0.18375100730710736,
+          "delta_b_vs_base": -0.169876764434801,
+          "delta_a_vs_b": -0.013874242872306375
+        },
+        "reasons": {
+          "scenario_a": [
+            "バイアス不利"
+          ],
+          "scenario_b": [
+            "バイアス有利"
+          ]
+        }
+      }
+    ],
+    "top_movers_a_vs_base": [],
+    "top_movers_b_vs_base": [],
+    "top_diff_between_a_and_b": [
+      {
+        "id": "2020103532",
+        "name": "タスティエーラ",
+        "frame_no": 7,
+        "gate_number": null,
+        "run_style": {
+          "base": "その他",
+          "scenario_a": "その他",
+          "scenario_b": "その他"
+        },
+        "win": {
+          "base": 0.24548806553591357,
+          "scenario_a": 0.12492932712880571,
+          "scenario_b": 0.13567692191947375,
+          "delta_a_vs_base": -0.12055873840710786,
+          "delta_b_vs_base": -0.10981114361643982,
+          "delta_a_vs_b": -0.010747594790668044,
+          "delta_a_vs_base_pct": -49.1098164564219,
+          "delta_b_vs_base_pct": -44.731764608074215
+        },
+        "in3": {
+          "base": 0.44467685105512267,
+          "scenario_a": 0.2609258437480153,
+          "scenario_b": 0.2748000866203217,
+          "delta_a_vs_base": -0.18375100730710736,
+          "delta_b_vs_base": -0.169876764434801,
+          "delta_a_vs_b": -0.013874242872306375
+        },
+        "reasons": {
+          "scenario_a": [
+            "バイアス不利"
+          ],
+          "scenario_b": [
+            "バイアス有利"
+          ]
+        }
+      },
+      {
+        "id": "2020102899",
+        "name": "ソールオリエンス",
+        "frame_no": 1,
+        "gate_number": null,
+        "run_style": {
+          "base": "その他",
+          "scenario_a": "その他",
+          "scenario_b": "その他"
+        },
+        "win": {
+          "base": 0.2488190201106821,
+          "scenario_a": 0.1370677101308676,
+          "scenario_b": 0.12704032884058597,
+          "delta_a_vs_base": -0.1117513099798145,
+          "delta_b_vs_base": -0.12177869127009613,
+          "delta_a_vs_b": 0.010027381290281634,
+          "delta_a_vs_base_pct": -44.91268791674535,
+          "delta_b_vs_base_pct": -48.94267778079238
+        },
+        "in3": {
+          "base": 0.5359069839509598,
+          "scenario_a": 0.3305012761579722,
+          "scenario_b": 0.31510160224885053,
+          "delta_a_vs_base": -0.2054057077929876,
+          "delta_b_vs_base": -0.22080538170210928,
+          "delta_a_vs_b": 0.01539967390912167
+        },
+        "reasons": {
+          "scenario_a": [
+            "バイアス有利"
+          ],
+          "scenario_b": [
+            "バイアス不利"
+          ]
+        }
+      },
+      {
+        "id": "2019104740",
+        "name": "スターズオンアース",
+        "frame_no": 8,
+        "gate_number": null,
+        "run_style": {
+          "base": "その他",
+          "scenario_a": "その他",
+          "scenario_b": "その他"
+        },
+        "win": {
+          "base": 0.2075154840837399,
+          "scenario_a": 0.10560501073155983,
+          "scenario_b": 0.11469014621809566,
+          "delta_a_vs_base": -0.10191047335218008,
+          "delta_b_vs_base": -0.09282533786564424,
+          "delta_a_vs_b": -0.009085135486535834,
+          "delta_a_vs_base_pct": -49.1098164564219,
+          "delta_b_vs_base_pct": -44.731764608074215
+        },
+        "in3": {
+          "base": 0.5639985438352958,
+          "scenario_a": 0.33094098686201723,
+          "scenario_b": 0.3485381537894857,
+          "delta_a_vs_base": -0.23305755697327857,
+          "delta_b_vs_base": -0.21546039004581008,
+          "delta_a_vs_b": -0.01759716692746849
+        },
+        "reasons": {
+          "scenario_a": [
+            "バイアス不利"
+          ],
+          "scenario_b": [
+            "バイアス有利"
+          ]
+        }
+      },
+      {
+        "id": "2019105283",
+        "name": "ドウデュース",
+        "frame_no": 3,
+        "gate_number": null,
+        "run_style": {
+          "base": "その他",
+          "scenario_a": "その他",
+          "scenario_b": "その他"
+        },
+        "win": {
+          "base": 0.20627444050420254,
+          "scenario_a": 0.11363104478853749,
+          "scenario_b": 0.10531820574409842,
+          "delta_a_vs_base": -0.09264339571566506,
+          "delta_b_vs_base": -0.10095623476010412,
+          "delta_a_vs_b": 0.008312839044439066,
+          "delta_a_vs_base_pct": -44.912687916745355,
+          "delta_b_vs_base_pct": -48.94267778079238
+        },
+        "in3": {
+          "base": 0.40753596240289414,
+          "scenario_a": 0.2513330851958991,
+          "scenario_b": 0.2396222452270381,
+          "delta_a_vs_base": -0.15620287720699505,
+          "delta_b_vs_base": -0.16791371717585604,
+          "delta_a_vs_b": 0.011710839968860992
+        },
+        "reasons": {
+          "scenario_a": [
+            "バイアス有利"
+          ],
+          "scenario_b": [
+            "バイアス不利"
+          ]
+        }
+      },
+      {
+        "id": "2018105269",
+        "name": "スルーセブンシーズ",
+        "frame_no": 8,
+        "gate_number": null,
+        "run_style": {
+          "base": "その他",
+          "scenario_a": "その他",
+          "scenario_b": "その他"
+        },
+        "win": {
+          "base": 0.11496443019282974,
+          "scenario_a": 0.05850560953495978,
+          "scenario_b": 0.06353881189595934,
+          "delta_a_vs_base": -0.05645882065786997,
+          "delta_b_vs_base": -0.05142561829687041,
+          "delta_a_vs_b": -0.005033202360999557,
+          "delta_a_vs_base_pct": -49.109816456421896,
+          "delta_b_vs_base_pct": -44.73176460807422
+        },
+        "in3": {
+          "base": 0.3017987053367268,
+          "scenario_a": 0.1770883319992803,
+          "scenario_b": 0.18650467226177428,
+          "delta_a_vs_base": -0.1247103733374465,
+          "delta_b_vs_base": -0.11529403307495253,
+          "delta_a_vs_b": -0.009416340262493966
+        },
+        "reasons": {
+          "scenario_a": [
+            "バイアス不利"
+          ],
+          "scenario_b": [
+            "バイアス有利"
+          ]
+        }
+      },
+      {
+        "id": "2018103559",
+        "name": "タイトルホルダー",
+        "frame_no": 2,
+        "gate_number": null,
+        "run_style": {
+          "base": "その他",
+          "scenario_a": "その他",
+          "scenario_b": "その他"
+        },
+        "win": {
+          "base": 0.1166828326560882,
+          "scenario_a": 0.06427743617284108,
+          "scenario_b": 0.05957512984371777,
+          "delta_a_vs_base": -0.052405396483247116,
+          "delta_b_vs_base": -0.05710770281237043,
+          "delta_a_vs_b": 0.004702306329123315,
+          "delta_a_vs_base_pct": -44.91268791674535,
+          "delta_b_vs_base_pct": -48.94267778079238
+        },
+        "in3": {
+          "base": 0.3210768959129638,
+          "scenario_a": 0.19801257871605854,
+          "scenario_b": 0.18878620241403762,
+          "delta_a_vs_base": -0.12306431719690525,
+          "delta_b_vs_base": -0.13229069349892617,
+          "delta_a_vs_b": 0.009226376302020917
+        },
+        "reasons": {
+          "scenario_a": [
+            "バイアス有利"
+          ],
+          "scenario_b": [
+            "バイアス不利"
+          ]
+        }
+      },
+      {
+        "id": "2019100109",
+        "name": "プラダリア",
+        "frame_no": 7,
+        "gate_number": null,
+        "run_style": {
+          "base": "その他",
+          "scenario_a": "その他",
+          "scenario_b": "その他"
+        },
+        "win": {
+          "base": 0.0867357535832505,
+          "scenario_a": 0.044139984196421796,
+          "scenario_b": 0.04793732045935159,
+          "delta_a_vs_base": -0.04259576938682871,
+          "delta_b_vs_base": -0.03879843312389891,
+          "delta_a_vs_b": -0.0037973362629297944,
+          "delta_a_vs_base_pct": -49.1098164564219,
+          "delta_b_vs_base_pct": -44.731764608074215
+        },
+        "in3": {
+          "base": 0.2776396074017352,
+          "scenario_a": 0.16291234555446943,
+          "scenario_b": 0.1715749042977982,
+          "delta_a_vs_base": -0.11472726184726578,
+          "delta_b_vs_base": -0.10606470310393701,
+          "delta_a_vs_b": -0.008662558743328774
+        },
+        "reasons": {
+          "scenario_a": [
+            "バイアス不利"
+          ],
+          "scenario_b": [
+            "バイアス有利"
+          ]
+        }
+      },
+      {
+        "id": "2018105165",
+        "name": "シャフリヤール",
+        "frame_no": 1,
+        "gate_number": null,
+        "run_style": {
+          "base": "その他",
+          "scenario_a": "その他",
+          "scenario_b": "その他"
+        },
+        "win": {
+          "base": 0.07179969822946544,
+          "scenario_a": 0.03955252383850069,
+          "scenario_b": 0.03665900327743688,
+          "delta_a_vs_base": -0.03224717439096475,
+          "delta_b_vs_base": -0.03514069495202856,
+          "delta_a_vs_b": 0.00289352056106381,
+          "delta_a_vs_base_pct": -44.91268791674535,
+          "delta_b_vs_base_pct": -48.94267778079238
+        },
+        "in3": {
+          "base": 0.17050283074797665,
+          "scenario_a": 0.10515146254542873,
+          "scenario_b": 0.10025194066433066,
+          "delta_a_vs_base": -0.06535136820254792,
+          "delta_b_vs_base": -0.07025089008364599,
+          "delta_a_vs_b": 0.004899521881098073
+        },
+        "reasons": {
+          "scenario_a": [
+            "バイアス有利"
+          ],
+          "scenario_b": [
+            "バイアス不利"
+          ]
+        }
+      },
+      {
+        "id": "2017104691",
+        "name": "ホウオウエミーズ",
+        "frame_no": 2,
+        "gate_number": null,
+        "run_style": {
+          "base": "その他",
+          "scenario_a": "その他",
+          "scenario_b": "その他"
+        },
+        "win": {
+          "base": 0.04762042185807453,
+          "scenario_a": 0.02623281040431993,
+          "scenario_b": 0.024313712230223095,
+          "delta_a_vs_base": -0.0213876114537546,
+          "delta_b_vs_base": -0.023306709627851436,
+          "delta_a_vs_b": 0.0019190981740968352,
+          "delta_a_vs_base_pct": -44.91268791674535,
+          "delta_b_vs_base_pct": -48.94267778079237
+        },
+        "in3": {
+          "base": 0.15384176125434434,
+          "scenario_a": 0.09487634970923171,
+          "scenario_b": 0.09045559568312138,
+          "delta_a_vs_base": -0.05896541154511263,
+          "delta_b_vs_base": -0.06338616557122297,
+          "delta_a_vs_b": 0.004420754026110335
+        },
+        "reasons": {
+          "scenario_a": [
+            "バイアス有利"
+          ],
+          "scenario_b": [
+            "バイアス不利"
+          ]
+        }
+      },
+      {
+        "id": "2017102170",
+        "name": "ディープボンド",
+        "frame_no": 3,
+        "gate_number": null,
+        "run_style": {
+          "base": "その他",
+          "scenario_a": "その他",
+          "scenario_b": "その他"
+        },
+        "win": {
+          "base": 0.04150230035637281,
+          "scenario_a": 0.022862501719044796,
+          "scenario_b": 0.021189963221336622,
+          "delta_a_vs_base": -0.018639798637328016,
+          "delta_b_vs_base": -0.02031233713503619,
+          "delta_a_vs_b": 0.0016725384977081745,
+          "delta_a_vs_base_pct": -44.912687916745355,
+          "delta_b_vs_base_pct": -48.94267778079237
+        },
+        "in3": {
+          "base": 0.20407861712886105,
+          "scenario_a": 0.1258581160864567,
+          "scenario_b": 0.1199937697544885,
+          "delta_a_vs_base": -0.07822050104240436,
+          "delta_b_vs_base": -0.08408484737437255,
+          "delta_a_vs_b": 0.0058643463319681954
+        },
+        "reasons": {
+          "scenario_a": [
+            "バイアス有利"
+          ],
+          "scenario_b": [
+            "バイアス不利"
+          ]
+        }
+      }
+    ]
+  }
+}

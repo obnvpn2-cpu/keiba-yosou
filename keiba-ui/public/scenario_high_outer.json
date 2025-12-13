@@ -1,0 +1,231 @@
+{
+  "race": {
+    "race_id": "202312241100",
+    "race_name": "有馬記念",
+    "course": "中山",
+    "surface": "turf",
+    "distance": 2500,
+    "race_date": "2023-12-24",
+    "race_class": "G1"
+  },
+  "condition": {
+    "weather": "曇",
+    "trackCondition": "良",
+    "bias": "外",
+    "pace": "H",
+    "moisture": 12,
+    "cushion": 8.8
+  },
+  "horses": [
+    {
+      "horse_id": "2018201234",
+      "horse_no": 2,
+      "frame_no": 1,
+      "name": "ドウデュース",
+      "run_style": "追込",
+      "base_win": 0.150,
+      "adj_win": 0.228,
+      "delta_win": 0.078,
+      "baba_delta": 0.018,
+      "pace_delta": 0.060,
+      "synergy_score": 68,
+      "comment": "ハイペースで追込脚質が大幅プラス。前崩れの展開なら末脚炸裂。外伸びバイアスも味方に。",
+      "concerns": "内枠からのポジション取りが難しい可能性。",
+      "shap_top": [
+        { "name": "上がり3F", "value": 0.082 },
+        { "name": "ペース適性", "value": 0.065 },
+        { "name": "外バイアス", "value": 0.028 }
+      ],
+      "reasons": ["差し・追込", "ペース有利", "バイアス有利"]
+    },
+    {
+      "horse_id": "2019103456",
+      "horse_no": 5,
+      "frame_no": 3,
+      "name": "イクイノックス",
+      "run_style": "先行",
+      "base_win": 0.250,
+      "adj_win": 0.198,
+      "delta_win": -0.052,
+      "baba_delta": -0.015,
+      "pace_delta": -0.037,
+      "synergy_score": 85,
+      "comment": "地力は最上位も、ハイペースは先行馬に厳しい。総合力でカバーできるか。",
+      "concerns": "ハイペースで先行馬には厳しい展開。消耗戦で脚が鈍る可能性。",
+      "shap_top": [
+        { "name": "前走着順", "value": 0.092 },
+        { "name": "ペース適性", "value": -0.048 },
+        { "name": "騎手勝率", "value": 0.035 }
+      ],
+      "reasons": ["先行", "ペース不利", "バイアス不利"]
+    },
+    {
+      "horse_id": "2020101111",
+      "horse_no": 13,
+      "frame_no": 7,
+      "name": "スターズオンアース",
+      "run_style": "差し",
+      "base_win": 0.070,
+      "adj_win": 0.112,
+      "delta_win": 0.042,
+      "baba_delta": 0.018,
+      "pace_delta": 0.024,
+      "synergy_score": 58,
+      "comment": "外枠×差し脚質でハイペース×外伸びバイアスがドンピシャ。展開ハマれば台頭。",
+      "concerns": "実力的にはワンランク落ち。展開待ちの面も。",
+      "shap_top": [
+        { "name": "前走着順", "value": 0.022 },
+        { "name": "枠順", "value": 0.032 },
+        { "name": "ペース適性", "value": 0.028 }
+      ],
+      "reasons": ["差し・追込", "ペース有利", "バイアス有利"]
+    },
+    {
+      "horse_id": "2019107890",
+      "horse_no": 3,
+      "frame_no": 2,
+      "name": "リバティアイランド",
+      "run_style": "先行",
+      "base_win": 0.180,
+      "adj_win": 0.142,
+      "delta_win": -0.038,
+      "baba_delta": -0.012,
+      "pace_delta": -0.026,
+      "synergy_score": 72,
+      "comment": "先行脚質でハイペースは不向き。内枠でバイアスも向かない。",
+      "concerns": "ハイペースで先行馬には厳しい。内枠×外伸びバイアスで不利。",
+      "shap_top": [
+        { "name": "前走着順", "value": 0.065 },
+        { "name": "ペース適性", "value": -0.038 },
+        { "name": "枠順", "value": -0.022 }
+      ],
+      "reasons": ["先行", "ペース不利", "バイアス不利"]
+    },
+    {
+      "horse_id": "2018403333",
+      "horse_no": 15,
+      "frame_no": 8,
+      "name": "ヒシイグアス",
+      "run_style": "追込",
+      "base_win": 0.050,
+      "adj_win": 0.085,
+      "delta_win": 0.035,
+      "baba_delta": 0.015,
+      "pace_delta": 0.020,
+      "synergy_score": 42,
+      "comment": "大外枠×追込脚質でハイペース×外伸びバイアスがピッタリ。穴で一発あり得る。",
+      "concerns": "年齢的な衰え。G1レベルでは力不足も。",
+      "shap_top": [
+        { "name": "枠順", "value": 0.035 },
+        { "name": "ペース適性", "value": 0.028 },
+        { "name": "年齢", "value": -0.022 }
+      ],
+      "reasons": ["差し・追込", "ペース有利", "バイアス有利"]
+    },
+    {
+      "horse_id": "2019110042",
+      "horse_no": 1,
+      "frame_no": 1,
+      "name": "スーリールダンジュ",
+      "run_style": "逃げ",
+      "base_win": 0.085,
+      "adj_win": 0.045,
+      "delta_win": -0.040,
+      "baba_delta": -0.015,
+      "pace_delta": -0.025,
+      "synergy_score": 55,
+      "comment": "逃げ馬にハイペースは厳しい。内枠×外伸びバイアスも不利。",
+      "concerns": "ハイペースで逃げ潰れ必至。厳しい展開。",
+      "shap_top": [
+        { "name": "脚質", "value": -0.045 },
+        { "name": "枠順", "value": -0.028 },
+        { "name": "ペース適性", "value": -0.035 }
+      ],
+      "reasons": ["逃げ", "逃げ指定", "ペース不利", "バイアス不利"]
+    },
+    {
+      "horse_id": "2019205678",
+      "horse_no": 9,
+      "frame_no": 5,
+      "name": "タイトルホルダー",
+      "run_style": "先行",
+      "base_win": 0.080,
+      "adj_win": 0.062,
+      "delta_win": -0.018,
+      "baba_delta": -0.005,
+      "pace_delta": -0.013,
+      "synergy_score": 62,
+      "comment": "先行脚質でハイペースは不向き。スタミナ勝負になればまだ。",
+      "concerns": "近走やや精彩を欠く。ハイペースで消耗する懸念。",
+      "shap_top": [
+        { "name": "距離実績", "value": 0.038 },
+        { "name": "ペース適性", "value": -0.025 },
+        { "name": "近走成績", "value": -0.022 }
+      ],
+      "reasons": ["先行", "ペース不利"]
+    },
+    {
+      "horse_id": "2020504444",
+      "horse_no": 7,
+      "frame_no": 4,
+      "name": "ソールオリエンス",
+      "run_style": "差し",
+      "base_win": 0.045,
+      "adj_win": 0.068,
+      "delta_win": 0.023,
+      "baba_delta": 0.008,
+      "pace_delta": 0.015,
+      "synergy_score": 52,
+      "comment": "差し脚質でハイペース歓迎。展開向けば台頭の可能性。",
+      "concerns": "古馬G1は初挑戦。経験不足が不安。",
+      "shap_top": [
+        { "name": "前走着順", "value": 0.018 },
+        { "name": "ペース適性", "value": 0.022 },
+        { "name": "G1経験", "value": -0.015 }
+      ],
+      "reasons": ["差し・追込", "ペース有利"]
+    },
+    {
+      "horse_id": "2019302222",
+      "horse_no": 11,
+      "frame_no": 6,
+      "name": "ジャスティンパレス",
+      "run_style": "先行",
+      "base_win": 0.060,
+      "adj_win": 0.048,
+      "delta_win": -0.012,
+      "baba_delta": -0.004,
+      "pace_delta": -0.008,
+      "synergy_score": 65,
+      "comment": "先行脚質でハイペースは不向き。外伸びバイアスは中立。",
+      "concerns": "瞬発力勝負になると分が悪い。ハイペースで消耗。",
+      "shap_top": [
+        { "name": "距離実績", "value": 0.032 },
+        { "name": "ペース適性", "value": -0.018 },
+        { "name": "上がり3F", "value": -0.012 }
+      ],
+      "reasons": ["先行", "ペース不利"]
+    },
+    {
+      "horse_id": "2019605555",
+      "horse_no": 6,
+      "frame_no": 3,
+      "name": "プログノーシス",
+      "run_style": "先行",
+      "base_win": 0.035,
+      "adj_win": 0.028,
+      "delta_win": -0.007,
+      "baba_delta": -0.002,
+      "pace_delta": -0.005,
+      "synergy_score": 48,
+      "comment": "先行脚質でハイペースは不向き。内枠で外伸びバイアスも向かない。",
+      "concerns": "G1レベルでは一枚落ち。展開も向かない。",
+      "shap_top": [
+        { "name": "前走着順", "value": 0.015 },
+        { "name": "ペース適性", "value": -0.012 },
+        { "name": "枠順", "value": -0.008 }
+      ],
+      "reasons": ["先行", "ペース不利", "バイアス不利"]
+    }
+  ]
+}

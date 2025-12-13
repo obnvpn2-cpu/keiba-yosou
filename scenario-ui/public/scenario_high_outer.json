@@ -1,0 +1,171 @@
+{
+  "race": {
+    "race_id": "202312241100",
+    "race_name": "有馬記念",
+    "course": "中山",
+    "surface": "turf",
+    "distance": 2500,
+    "race_date": "2023-12-24",
+    "race_class": "G1"
+  },
+  "scenario": {
+    "scenario_id": "high_outer",
+    "pace": "H",
+    "track_condition": "良",
+    "bias": "外",
+    "notes": "逃げ馬複数でハイペース濃厚、外伸びバイアス想定",
+    "cushion_value": 9.2,
+    "front_runner_count": 3,
+    "stalker_count": 2,
+    "closer_count": 3,
+    "weak_horse_count": 1
+  },
+  "horses": [
+    {
+      "horse_id": "2019110042",
+      "name": "スーリールダンジュ",
+      "frame_no": 1,
+      "horse_no": 1,
+      "run_style": "逃げ",
+      "win": { "base": 0.0850, "adj": 0.0520, "delta": -0.0330 },
+      "in3": { "base": 0.2500, "adj": 0.1800, "delta": -0.0700 },
+      "odds": 12.5,
+      "popularity": 5,
+      "reasons": ["逃げ", "逃げ指定", "ペース不利", "バイアス不利"]
+    },
+    {
+      "horse_id": "2019103456",
+      "name": "イクイノックス",
+      "frame_no": 3,
+      "horse_no": 5,
+      "run_style": "先行",
+      "win": { "base": 0.2500, "adj": 0.2150, "delta": -0.0350 },
+      "in3": { "base": 0.5500, "adj": 0.4900, "delta": -0.0600 },
+      "odds": 1.8,
+      "popularity": 1,
+      "reasons": ["先行", "ペース不利", "バイアス不利"]
+    },
+    {
+      "horse_id": "2019107890",
+      "name": "リバティアイランド",
+      "frame_no": 2,
+      "horse_no": 3,
+      "run_style": "先行",
+      "win": { "base": 0.1800, "adj": 0.1540, "delta": -0.0260 },
+      "in3": { "base": 0.4200, "adj": 0.3700, "delta": -0.0500 },
+      "odds": 3.2,
+      "popularity": 2,
+      "reasons": ["先行", "ペース不利", "バイアス不利"]
+    },
+    {
+      "horse_id": "2018201234",
+      "name": "ドウデュース",
+      "frame_no": 1,
+      "horse_no": 2,
+      "run_style": "追込",
+      "win": { "base": 0.1500, "adj": 0.2100, "delta": 0.0600 },
+      "in3": { "base": 0.3800, "adj": 0.4600, "delta": 0.0800 },
+      "odds": 4.5,
+      "popularity": 3,
+      "reasons": ["差し・追込", "ペース有利"]
+    },
+    {
+      "horse_id": "2019205678",
+      "name": "タイトルホルダー",
+      "frame_no": 5,
+      "horse_no": 9,
+      "run_style": "先行",
+      "win": { "base": 0.0800, "adj": 0.0680, "delta": -0.0120 },
+      "in3": { "base": 0.2200, "adj": 0.1950, "delta": -0.0250 },
+      "odds": 8.5,
+      "popularity": 4,
+      "reasons": ["先行", "ペース不利"]
+    },
+    {
+      "horse_id": "2020101111",
+      "name": "スターズオンアース",
+      "frame_no": 7,
+      "horse_no": 13,
+      "run_style": "差し",
+      "win": { "base": 0.0700, "adj": 0.0950, "delta": 0.0250 },
+      "in3": { "base": 0.1800, "adj": 0.2200, "delta": 0.0400 },
+      "odds": 15.0,
+      "popularity": 6,
+      "reasons": ["差し・追込", "ペース有利", "バイアス有利"]
+    },
+    {
+      "horse_id": "2019302222",
+      "name": "ジャスティンパレス",
+      "frame_no": 6,
+      "horse_no": 11,
+      "run_style": "先行",
+      "win": { "base": 0.0600, "adj": 0.0510, "delta": -0.0090 },
+      "in3": { "base": 0.1600, "adj": 0.1420, "delta": -0.0180 },
+      "odds": 18.0,
+      "popularity": 7,
+      "reasons": ["先行", "ペース不利"]
+    },
+    {
+      "horse_id": "2018403333",
+      "name": "ヒシイグアス",
+      "frame_no": 8,
+      "horse_no": 15,
+      "run_style": "追込",
+      "win": { "base": 0.0500, "adj": 0.0680, "delta": 0.0180 },
+      "in3": { "base": 0.1400, "adj": 0.1750, "delta": 0.0350 },
+      "odds": 25.0,
+      "popularity": 8,
+      "reasons": ["差し・追込", "ペース有利", "バイアス有利"]
+    },
+    {
+      "horse_id": "2020504444",
+      "name": "ソールオリエンス",
+      "frame_no": 4,
+      "horse_no": 7,
+      "run_style": "差し",
+      "win": { "base": 0.0450, "adj": 0.0550, "delta": 0.0100 },
+      "in3": { "base": 0.1300, "adj": 0.1550, "delta": 0.0250 },
+      "odds": 28.0,
+      "popularity": 9,
+      "reasons": ["差し・追込", "ペース有利"]
+    },
+    {
+      "horse_id": "2019605555",
+      "name": "プログノーシス",
+      "frame_no": 3,
+      "horse_no": 6,
+      "run_style": "先行",
+      "win": { "base": 0.0350, "adj": 0.0300, "delta": -0.0050 },
+      "in3": { "base": 0.1000, "adj": 0.0900, "delta": -0.0100 },
+      "odds": 35.0,
+      "popularity": 10,
+      "reasons": ["先行", "ペース不利", "バイアス不利"]
+    }
+  ],
+  "summary": {
+    "top_by_adj_win": [
+      { "horse_id": "2019103456", "name": "イクイノックス", "adj_win": 0.2150 },
+      { "horse_id": "2018201234", "name": "ドウデュース", "adj_win": 0.2100 },
+      { "horse_id": "2019107890", "name": "リバティアイランド", "adj_win": 0.1540 }
+    ],
+    "boosted_horses": [
+      { "horse_id": "2018201234", "name": "ドウデュース", "delta": 0.0600 },
+      { "horse_id": "2020101111", "name": "スターズオンアース", "delta": 0.0250 },
+      { "horse_id": "2018403333", "name": "ヒシイグアス", "delta": 0.0180 }
+    ],
+    "dropped_horses": [
+      { "horse_id": "2019103456", "name": "イクイノックス", "delta": -0.0350 },
+      { "horse_id": "2019110042", "name": "スーリールダンジュ", "delta": -0.0330 },
+      { "horse_id": "2019107890", "name": "リバティアイランド", "delta": -0.0260 }
+    ],
+    "solid_placers": [
+      { "horse_id": "2019103456", "name": "イクイノックス" },
+      { "horse_id": "2018201234", "name": "ドウデュース" }
+    ],
+    "total_horses": 10,
+    "notes": [
+      "ハイペース想定のため差し・追込馬を重視",
+      "外バイアスで外枠の差し馬が台頭する可能性"
+    ]
+  }
+}

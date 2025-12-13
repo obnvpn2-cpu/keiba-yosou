@@ -1,0 +1,131 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ベーススタイル */
+:root {
+  --foreground-rgb: 0, 0, 0;
+  --background-rgb: 245, 245, 245;
+}
+
+body {
+  color: rgb(var(--foreground-rgb));
+  background: rgb(var(--background-rgb));
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Hiragino Sans", "Noto Sans CJK JP", sans-serif;
+}
+
+/* テーブルスタイル */
+@layer components {
+  .table-header {
+    @apply bg-gray-100 text-left text-sm font-semibold text-gray-700 
+           px-4 py-3 cursor-pointer hover:bg-gray-200 transition-colors
+           select-none whitespace-nowrap;
+  }
+
+  .table-cell {
+    @apply px-4 py-3 text-sm text-gray-700 border-b border-gray-100;
+  }
+
+  .table-row {
+    @apply hover:bg-blue-50 cursor-pointer transition-colors;
+  }
+
+  /* バッジ */
+  .badge {
+    @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium;
+  }
+
+  .badge-positive {
+    @apply bg-green-100 text-green-800;
+  }
+
+  .badge-negative {
+    @apply bg-red-100 text-red-800;
+  }
+
+  .badge-neutral {
+    @apply bg-gray-100 text-gray-800;
+  }
+
+  /* 数値表示 */
+  .num-positive {
+    @apply text-green-600 font-medium;
+  }
+
+  .num-negative {
+    @apply text-red-600 font-medium;
+  }
+
+  .num-neutral {
+    @apply text-gray-600;
+  }
+
+  /* ラジオボタングループ */
+  .radio-group {
+    @apply flex flex-wrap gap-2;
+  }
+
+  .radio-option {
+    @apply px-3 py-1.5 text-sm rounded-md cursor-pointer transition-all
+           border border-gray-300 hover:border-blue-400;
+  }
+
+  .radio-option-selected {
+    @apply bg-blue-600 text-white border-blue-600;
+  }
+
+  /* スライダー */
+  .slider-container {
+    @apply flex items-center gap-3;
+  }
+
+  .slider-input {
+    @apply w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer
+           accent-blue-600;
+  }
+
+  .slider-value {
+    @apply w-12 text-center text-sm font-medium text-gray-700 bg-gray-100
+           rounded px-2 py-1;
+  }
+
+  /* モーダル */
+  .modal-overlay {
+    @apply fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4;
+  }
+
+  .modal-content {
+    @apply bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[90vh] 
+           overflow-y-auto;
+  }
+
+  /* セクションカード */
+  .section-card {
+    @apply bg-white rounded-lg shadow-sm border border-gray-200 p-4;
+  }
+
+  .section-title {
+    @apply text-lg font-bold text-gray-800 mb-3 pb-2 border-b border-gray-200;
+  }
+}
+
+/* スクロールバー */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #c1c1c1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #a1a1a1;
+}
