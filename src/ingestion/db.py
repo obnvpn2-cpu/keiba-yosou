@@ -407,6 +407,28 @@ class Database:
         cursor = self.conn.execute(sql, race_ids)
         return {row[0] for row in cursor.fetchall()}
 
+    def get_race_ids_missing_horse_laps(self, race_ids: list[str]) -> set[str]:
+        """horse_laps が1件も入っていないレースIDの集合を返す。"""
+
+        if not race_ids:
+            return set()
+
+        placeholders = ",".join("?" for _ in race_ids)
+        sql = f"""
+            SELECT r.race_id
+            FROM races r
+            LEFT JOIN (
+                SELECT race_id, COUNT(*) AS lap_cnt
+                FROM horse_laps
+                WHERE race_id IN ({placeholders})
+                GROUP BY race_id
+            ) hl ON r.race_id = hl.race_id
+            WHERE r.race_id IN ({placeholders})
+              AND COALESCE(hl.lap_cnt, 0) = 0
+        """
+        cursor = self.conn.execute(sql, list(race_ids) + list(race_ids))
+        return {row[0] for row in cursor.fetchall()}
+
     def get_race_count(self) -> int:
         """レース数を取得する。"""
         cursor = self.conn.execute("SELECT COUNT(*) FROM races")
