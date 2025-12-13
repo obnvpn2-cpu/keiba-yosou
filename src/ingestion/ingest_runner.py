@@ -49,6 +49,7 @@ def run_ingestion(
     place_codes: Optional[list[str]] = None,
     db_path: str = "netkeiba.db",
     skip_existing: bool = False,
+    refresh_horse_laps: bool = True,
     race_ids: Optional[list[str]] = None,
     dry_run: bool = False,
 ) -> dict:
@@ -73,6 +74,7 @@ def run_ingestion(
         "total_races": 0,
         "processed": 0,
         "skipped": 0,
+        "refreshing_horse_laps": 0,
         "errors": 0,
         "horse_laps_total": 0,
         "start_time": datetime.now(),
@@ -115,15 +117,28 @@ def run_ingestion(
             
             # 既存レースをスキップする場合
             if skip_existing and not dry_run:
-                existing_ids = db.get_existing_race_ids()
+                existing_ids = db.get_existing_race_ids(target_race_ids)
+                missing_horse_lap_ids = (
+                    db.get_race_ids_missing_horse_laps(list(existing_ids))
+                    if refresh_horse_laps
+                    else set()
+                )
                 original_count = len(target_race_ids)
                 target_race_ids = [
-                    rid for rid in target_race_ids if rid not in existing_ids
+                    rid
+                    for rid in target_race_ids
+                    if rid not in existing_ids or rid in missing_horse_lap_ids
                 ]
                 skipped = original_count - len(target_race_ids)
-                stats["skipped"] = skipped
+                stats["skipped"] = max(skipped, 0)
+                stats["refreshing_horse_laps"] = len(missing_horse_lap_ids)
                 if skipped > 0:
                     logger.info(f"Skipping {skipped} existing races")
+                if missing_horse_lap_ids:
+                    logger.info(
+                        "Re-fetching horse laps for %d races missing laps",
+                        len(missing_horse_lap_ids),
+                    )
             
             # 各レースを処理
             for i, race_id in enumerate(target_race_ids, 1):
@@ -176,6 +191,7 @@ def run_ingestion(
             logger.info(f"  Total races: {stats['total_races']}")
             logger.info(f"  Processed: {stats['processed']}")
             logger.info(f"  Skipped: {stats['skipped']}")
+            logger.info(f"  Re-fetch horse laps: {stats['refreshing_horse_laps']}")
             logger.info(f"  Errors: {stats['errors']}")
             logger.info(f"  Horse laps: {stats['horse_laps_total']}")
             logger.info(f"  Elapsed: {elapsed:.1f}s")
@@ -270,6 +286,11 @@ def main():
         help="既にDBにあるレースをスキップ",
     )
     parser.add_argument(
+        "--no-refresh-horse-laps",
+        action="store_true",
+        help="既存レースに horse_laps が無くても再取得しない",
+    )
+    parser.add_argument(
         "--race-ids",
         nargs="+",
         default=None,
@@ -309,6 +330,7 @@ def main():
             place_codes=args.jyo,
             db_path=args.db,
             skip_existing=args.skip_existing,
+            refresh_horse_laps=not args.no_refresh_horse_laps,
             race_ids=args.race_ids,
             dry_run=args.dry_run,
         )
