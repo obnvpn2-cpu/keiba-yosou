@@ -703,95 +703,9 @@ def compute_lap_ratio_features_for_race(
     lap_times: pd.DataFrame,
 ) -> Dict[str, Dict[str, Optional[float]]]:
     """
-    1レース分の horse_laps / lap_times から、
-    「馬のラップ vs レース平均」の要約特徴量を計算する。
-
-    戻り値:
-        { horse_id: {
-            "hlap_overall_vs_race": float,
-            "hlap_early_vs_race": float,
-            "hlap_mid_vs_race": float,
-            "hlap_late_vs_race": float,
-            "hlap_last600_vs_race": float,
-        }, ... }
+    hlap_* ラップ比特徴量は現行バージョンでは未使用のため、空を返す。
     """
-    if horse_laps is None or len(horse_laps) == 0:
-        return {}
-
-    df = horse_laps[horse_laps["race_id"] == race_id].copy()
-    if df.empty:
-        return {}
-
-    # レース平均ラップ（lap_times があればそれを優先）
-    base = None
-    if lap_times is not None and len(lap_times) > 0:
-        race_laps = lap_times[lap_times["race_id"] == race_id].copy()
-        if not race_laps.empty:
-            base = race_laps[["distance_m", "time_sec"]].rename(
-                columns={
-                    "distance_m": "section_m",
-                    "time_sec": "race_lap_sec",
-                }
-            )
-
-    # なければ horse_laps の全馬平均をレース基準にする
-    if base is None:
-        base = (
-            df.groupby("section_m", as_index=False)["time_sec"]
-            .mean()
-            .rename(columns={"time_sec": "race_lap_sec"})
-        )
-
-    # マージして delta（馬ラップ - レースラップ）を作る
-    df = df.merge(base, on="section_m", how="left")
-    df = df.dropna(subset=["time_sec", "race_lap_sec"])
-    if df.empty:
-        return {}
-
-    df["delta"] = df["time_sec"] - df["race_lap_sec"]
-
-    total_dist = df["section_m"].max()
-    last_600_start = max(total_dist - 600, 0)
-
-    def zone_func(sec: float) -> str:
-        r = sec / total_dist
-        if r <= 0.4:
-            return "early"
-        elif r <= 0.8:
-            return "mid"
-        else:
-            return "late"
-
-    result: Dict[str, Dict[str, Optional[float]]] = {}
-
-    for horse_id, g in df.groupby("horse_id"):
-        g = g.copy()
-        g["zone"] = g["section_m"].apply(zone_func)
-
-        overall = g["delta"].mean()
-
-        early_mask = g["zone"] == "early"
-        mid_mask = g["zone"] == "mid"
-        late_mask = g["zone"] == "late"
-        last_mask = g["section_m"] > last_600_start
-
-        early = g.loc[early_mask, "delta"].mean() if early_mask.any() else np.nan
-        mid = g.loc[mid_mask, "delta"].mean() if mid_mask.any() else np.nan
-        late = g.loc[late_mask, "delta"].mean() if late_mask.any() else np.nan
-        last600 = g.loc[last_mask, "delta"].mean() if last_mask.any() else np.nan
-
-        def to_opt(x: Any) -> Optional[float]:
-            return float(x) if x is not None and not pd.isna(x) else None
-
-        result[horse_id] = {
-            "hlap_overall_vs_race": to_opt(overall),
-            "hlap_early_vs_race": to_opt(early),
-            "hlap_mid_vs_race": to_opt(mid),
-            "hlap_late_vs_race": to_opt(late),
-            "hlap_last600_vs_race": to_opt(last600),
-        }
-
-    return result
+    return {}
 
 
 # ==============================================================================
@@ -905,24 +819,6 @@ def build_features_for_race(
     race_year = race_date.year
     race_month = race_date.month
 
-    # ラップ比特徴量（horse_laps / lap_times から計算）
-    lap_feature_map: Dict[str, Dict[str, Optional[float]]] = {}
-    try:
-        lap_feature_map = compute_lap_ratio_features_for_race(
-            race_id=race_id,
-            horse_laps=tables.get("horse_laps", pd.DataFrame()),
-            lap_times=tables.get("lap_times", pd.DataFrame()),
-        )
-    except Exception as e:
-        logger.error(
-            "Failed to compute lap ratio features for race_id=%s: %s",
-            race_id,
-            e,
-            exc_info=True,
-        )
-        lap_feature_map = {}
-
-    
     # 各馬の特徴量を構築
     features_list = []
 
@@ -1032,16 +928,6 @@ def build_features_for_race(
         if current_weight is not None and avg_weight is not None:
             weight_diff = current_weight - avg_weight
         
-        # ラップ比特徴量（無い馬は全部 None）
-        default_lap_feats = {
-            "hlap_overall_vs_race": None,
-            "hlap_early_vs_race": None,
-            "hlap_mid_vs_race": None,
-            "hlap_late_vs_race": None,
-            "hlap_last600_vs_race": None,
-        }
-        lap_feats = lap_feature_map.get(horse_id, default_lap_feats)
-
         # 特徴量を統合
         features = {
             "race_id": race_id,
@@ -1071,7 +957,6 @@ def build_features_for_race(
             **track_stats,
             **course_stats,
             **weight_stats,
-            **lap_feats,
         }
 
         features_list.append(features)
