@@ -411,10 +411,12 @@ class NetkeibaClient:
         callback_name = f"jQuery_{int(time.time() * 1000)}"
         
         params = {
+            # race_id を明示的に渡す（id パラメータだけだと先頭の1頭しか返らないケースがある）
+            "race_id": race_id,
+            "id": race_id,
             "callback": callback_name,
             "input": "UTF-8",
             "output": "jsonp",
-            "id": race_id,
             "credit": "1",
             "_": str(int(time.time() * 1000)),
         }

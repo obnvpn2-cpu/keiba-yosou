@@ -21,6 +21,7 @@ netkeiba ingestion パイプライン - メイン実行スクリプト
 
 import argparse
 import logging
+from pathlib import Path
 import sys
 import time
 from datetime import datetime
@@ -49,8 +50,10 @@ def run_ingestion(
     place_codes: Optional[list[str]] = None,
     db_path: str = "netkeiba.db",
     skip_existing: bool = False,
+    refresh_horse_laps: bool = True,
     race_ids: Optional[list[str]] = None,
     dry_run: bool = False,
+    dump_horse_lap_ids: Optional[set[str]] = None,
 ) -> dict:
     """
     レースデータのingestionを実行する。
@@ -65,6 +68,7 @@ def run_ingestion(
         skip_existing: 既存レースをスキップするかどうか
         race_ids: 直接指定するレースIDリスト（指定時は検索をスキップ）
         dry_run: Trueの場合、DBに保存しない
+        dump_horse_lap_ids: 指定レースの horse_laps HTML を debug/ にダンプ
     
     Returns:
         実行統計の辞書
@@ -73,6 +77,7 @@ def run_ingestion(
         "total_races": 0,
         "processed": 0,
         "skipped": 0,
+        "refreshing_horse_laps": 0,
         "errors": 0,
         "horse_laps_total": 0,
         "start_time": datetime.now(),
@@ -115,15 +120,36 @@ def run_ingestion(
             
             # 既存レースをスキップする場合
             if skip_existing and not dry_run:
-                existing_ids = db.get_existing_race_ids()
+                existing_ids = db.get_existing_race_ids(target_race_ids)
+                missing_horse_lap_ids = set()
+                incomplete_horse_lap_ids = set()
+                if refresh_horse_laps:
+                    missing_horse_lap_ids = db.get_race_ids_missing_horse_laps(
+                        list(existing_ids)
+                    )
+                    incomplete_horse_lap_ids = db.get_race_ids_incomplete_horse_laps(
+                        list(existing_ids)
+                    )
                 original_count = len(target_race_ids)
                 target_race_ids = [
-                    rid for rid in target_race_ids if rid not in existing_ids
+                    rid
+                    for rid in target_race_ids
+                    if rid not in existing_ids
+                    or rid in missing_horse_lap_ids
+                    or rid in incomplete_horse_lap_ids
                 ]
                 skipped = original_count - len(target_race_ids)
-                stats["skipped"] = skipped
+                stats["skipped"] = max(skipped, 0)
+                stats["refreshing_horse_laps"] = len(
+                    missing_horse_lap_ids | incomplete_horse_lap_ids
+                )
                 if skipped > 0:
                     logger.info(f"Skipping {skipped} existing races")
+                if missing_horse_lap_ids or incomplete_horse_lap_ids:
+                    logger.info(
+                        "Re-fetching horse laps for %d races with missing/partial laps",
+                        len(missing_horse_lap_ids | incomplete_horse_lap_ids),
+                    )
             
             # 各レースを処理
             for i, race_id in enumerate(target_race_ids, 1):
@@ -146,7 +172,9 @@ def run_ingestion(
                     data = parse_race_page(html, race_id)
                     
                     # 各馬ラップを AJAX から取得
-                    horse_laps = _fetch_and_parse_horse_laps(client, race_id)
+                    horse_laps = _fetch_and_parse_horse_laps(
+                        client, race_id, dump_horse_lap_ids
+                    )
                     if horse_laps:
                         data.horse_laps = horse_laps
                         stats["horse_laps_total"] += len(horse_laps)
@@ -176,6 +204,7 @@ def run_ingestion(
             logger.info(f"  Total races: {stats['total_races']}")
             logger.info(f"  Processed: {stats['processed']}")
             logger.info(f"  Skipped: {stats['skipped']}")
+            logger.info(f"  Re-fetch horse laps: {stats['refreshing_horse_laps']}")
             logger.info(f"  Errors: {stats['errors']}")
             logger.info(f"  Horse laps: {stats['horse_laps_total']}")
             logger.info(f"  Elapsed: {elapsed:.1f}s")
@@ -191,7 +220,9 @@ def run_ingestion(
     return stats
 
 
-def _fetch_and_parse_horse_laps(client, race_id: str) -> list:
+def _fetch_and_parse_horse_laps(
+    client, race_id: str, dump_horse_lap_ids: Optional[set[str]] = None
+) -> list:
     """
     AJAXエンドポイントから各馬ラップを取得してパースする。
     
@@ -207,6 +238,18 @@ def _fetch_and_parse_horse_laps(client, race_id: str) -> list:
         if not json_str:
             logger.debug(f"[{race_id}] No horse laptime data from AJAX")
             return []
+
+        if dump_horse_lap_ids and race_id in dump_horse_lap_ids:
+            debug_dir = Path(__file__).resolve().parent.parent / "debug"
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            dump_path = debug_dir / f"horse_laps_{race_id}.html"
+            try:
+                dump_path.write_text(json_str, encoding="utf-8")
+                logger.info(f"[{race_id}] Dumped horse lap HTML to {dump_path}")
+            except Exception as dump_err:
+                logger.warning(
+                    f"[{race_id}] Failed to dump horse lap HTML to {dump_path}: {dump_err}"
+                )
         
         horse_laps = parse_horse_laptime_json(json_str, race_id)
         return horse_laps
@@ -270,6 +313,11 @@ def main():
         help="既にDBにあるレースをスキップ",
     )
     parser.add_argument(
+        "--no-refresh-horse-laps",
+        action="store_true",
+        help="既存レースに horse_laps が無くても再取得しない",
+    )
+    parser.add_argument(
         "--race-ids",
         nargs="+",
         default=None,
@@ -279,6 +327,12 @@ def main():
         "--dry-run",
         action="store_true",
         help="DBに保存せずログのみ出力",
+    )
+    parser.add_argument(
+        "--dump-horse-laps",
+        nargs="+",
+        default=None,
+        help="指定した race_id の horse_laps HTML を debug/ にダンプ",
     )
     parser.add_argument(
         "-v", "--verbose",
@@ -309,8 +363,12 @@ def main():
             place_codes=args.jyo,
             db_path=args.db,
             skip_existing=args.skip_existing,
+            refresh_horse_laps=not args.no_refresh_horse_laps,
             race_ids=args.race_ids,
             dry_run=args.dry_run,
+            dump_horse_lap_ids=set(args.dump_horse_laps)
+            if args.dump_horse_laps
+            else None,
         )
         
         # エラーがあった場合は終了コード1
