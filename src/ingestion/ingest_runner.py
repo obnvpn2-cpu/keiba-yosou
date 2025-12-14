@@ -21,6 +21,7 @@ netkeiba ingestion パイプライン - メイン実行スクリプト
 
 import argparse
 import logging
+from pathlib import Path
 import sys
 import time
 from datetime import datetime
@@ -52,6 +53,7 @@ def run_ingestion(
     refresh_horse_laps: bool = True,
     race_ids: Optional[list[str]] = None,
     dry_run: bool = False,
+    dump_horse_lap_ids: Optional[set[str]] = None,
 ) -> dict:
     """
     レースデータのingestionを実行する。
@@ -66,6 +68,7 @@ def run_ingestion(
         skip_existing: 既存レースをスキップするかどうか
         race_ids: 直接指定するレースIDリスト（指定時は検索をスキップ）
         dry_run: Trueの場合、DBに保存しない
+        dump_horse_lap_ids: 指定レースの horse_laps HTML を debug/ にダンプ
     
     Returns:
         実行統計の辞書
@@ -169,7 +172,9 @@ def run_ingestion(
                     data = parse_race_page(html, race_id)
                     
                     # 各馬ラップを AJAX から取得
-                    horse_laps = _fetch_and_parse_horse_laps(client, race_id)
+                    horse_laps = _fetch_and_parse_horse_laps(
+                        client, race_id, dump_horse_lap_ids
+                    )
                     if horse_laps:
                         data.horse_laps = horse_laps
                         stats["horse_laps_total"] += len(horse_laps)
@@ -215,7 +220,9 @@ def run_ingestion(
     return stats
 
 
-def _fetch_and_parse_horse_laps(client, race_id: str) -> list:
+def _fetch_and_parse_horse_laps(
+    client, race_id: str, dump_horse_lap_ids: Optional[set[str]] = None
+) -> list:
     """
     AJAXエンドポイントから各馬ラップを取得してパースする。
     
@@ -231,6 +238,18 @@ def _fetch_and_parse_horse_laps(client, race_id: str) -> list:
         if not json_str:
             logger.debug(f"[{race_id}] No horse laptime data from AJAX")
             return []
+
+        if dump_horse_lap_ids and race_id in dump_horse_lap_ids:
+            debug_dir = Path(__file__).resolve().parent.parent / "debug"
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            dump_path = debug_dir / f"horse_laps_{race_id}.html"
+            try:
+                dump_path.write_text(json_str, encoding="utf-8")
+                logger.info(f"[{race_id}] Dumped horse lap HTML to {dump_path}")
+            except Exception as dump_err:
+                logger.warning(
+                    f"[{race_id}] Failed to dump horse lap HTML to {dump_path}: {dump_err}"
+                )
         
         horse_laps = parse_horse_laptime_json(json_str, race_id)
         return horse_laps
@@ -310,6 +329,12 @@ def main():
         help="DBに保存せずログのみ出力",
     )
     parser.add_argument(
+        "--dump-horse-laps",
+        nargs="+",
+        default=None,
+        help="指定した race_id の horse_laps HTML を debug/ にダンプ",
+    )
+    parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="詳細ログを出力",
@@ -341,6 +366,9 @@ def main():
             refresh_horse_laps=not args.no_refresh_horse_laps,
             race_ids=args.race_ids,
             dry_run=args.dry_run,
+            dump_horse_lap_ids=set(args.dump_horse_laps)
+            if args.dump_horse_laps
+            else None,
         )
         
         # エラーがあった場合は終了コード1
