@@ -118,26 +118,34 @@ def run_ingestion(
             # 既存レースをスキップする場合
             if skip_existing and not dry_run:
                 existing_ids = db.get_existing_race_ids(target_race_ids)
-                missing_horse_lap_ids = (
-                    db.get_race_ids_missing_horse_laps(list(existing_ids))
-                    if refresh_horse_laps
-                    else set()
-                )
+                missing_horse_lap_ids = set()
+                incomplete_horse_lap_ids = set()
+                if refresh_horse_laps:
+                    missing_horse_lap_ids = db.get_race_ids_missing_horse_laps(
+                        list(existing_ids)
+                    )
+                    incomplete_horse_lap_ids = db.get_race_ids_incomplete_horse_laps(
+                        list(existing_ids)
+                    )
                 original_count = len(target_race_ids)
                 target_race_ids = [
                     rid
                     for rid in target_race_ids
-                    if rid not in existing_ids or rid in missing_horse_lap_ids
+                    if rid not in existing_ids
+                    or rid in missing_horse_lap_ids
+                    or rid in incomplete_horse_lap_ids
                 ]
                 skipped = original_count - len(target_race_ids)
                 stats["skipped"] = max(skipped, 0)
-                stats["refreshing_horse_laps"] = len(missing_horse_lap_ids)
+                stats["refreshing_horse_laps"] = len(
+                    missing_horse_lap_ids | incomplete_horse_lap_ids
+                )
                 if skipped > 0:
                     logger.info(f"Skipping {skipped} existing races")
-                if missing_horse_lap_ids:
+                if missing_horse_lap_ids or incomplete_horse_lap_ids:
                     logger.info(
-                        "Re-fetching horse laps for %d races missing laps",
-                        len(missing_horse_lap_ids),
+                        "Re-fetching horse laps for %d races with missing/partial laps",
+                        len(missing_horse_lap_ids | incomplete_horse_lap_ids),
                     )
             
             # 各レースを処理
