@@ -101,14 +101,6 @@ def create_table_feature(conn: sqlite3.Connection) -> None:
             n_starts_course INTEGER,
             win_rate_course REAL,
 
-            -- ラップ系特徴量（馬のラップ vs レース平均）
-            hlap_overall_vs_race REAL,
-            hlap_early_vs_race REAL,
-            hlap_mid_vs_race REAL,
-            hlap_late_vs_race REAL,
-            hlap_last600_vs_race REAL,
-
-            
             -- 馬体重統計
             avg_horse_weight REAL,
             
@@ -215,12 +207,6 @@ def insert_feature_rows(
         "n_starts_course",
         "win_rate_course",
         "avg_horse_weight",
-        # ↓ここにラップ系特徴量を追加
-        "hlap_overall_vs_race",
-        "hlap_early_vs_race",
-        "hlap_mid_vs_race",
-        "hlap_late_vs_race",
-        "hlap_last600_vs_race",
     ]
     
     # 不足しているカラムをチェック
