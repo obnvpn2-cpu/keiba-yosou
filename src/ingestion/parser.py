@@ -238,7 +238,7 @@ def _parse_horse_laps_from_html(html: str, race_id: str) -> list[HorseLap]:
             continue
         distances.append(d)
 
-    # ヘッダーから距離が取れない場合、各 data-laptime セルに付与されている data-furlong などを頼る
+    # ヘッダーから距離が取れない場合、各 data-laptime セルに付与されている data-furlong を頼る
     if not distances:
         logger.debug(f"[{race_id}] No distances found in lap summary header, trying cell attrs")
 
@@ -249,12 +249,22 @@ def _parse_horse_laps_from_html(html: str, race_id: str) -> list[HorseLap]:
     # data-furlong が見つからない場合、最初に距離列を探索し直す
     if not distances:
         for row in body_rows:
-            lap_cells = _collect_lap_cells(row)
+            lap_cells = row.select("td[data-laptime]")
+            if not lap_cells:
+                lap_cells = [
+                    td
+                    for td in row.select("td")
+                    if td.get("data-furlong") or "CellDataWrap" in td.get("class", [])
+                ]
             for cell in lap_cells:
-                furlong = _extract_distance_from_cell(cell)
-                if furlong is None:
+                furlong = cell.get("data-furlong")
+                if not furlong:
                     continue
-                distances.append(furlong)
+                try:
+                    d = int(furlong)
+                except ValueError:
+                    continue
+                distances.append(d)
             if distances:
                 break
 
@@ -279,7 +289,13 @@ def _parse_horse_laps_from_html(html: str, race_id: str) -> list[HorseLap]:
         horse_id = m.group(1)
 
         # ラップタイムとポジションのセルを取得
-        lap_cells = _collect_lap_cells(row)
+        lap_cells = row.select("td[data-laptime]")
+        if not lap_cells:
+            lap_cells = [
+                td
+                for td in row.select("td")
+                if "CellDataWrap" in td.get("class", []) or td.get("data-furlong")
+            ]
         pos_cells = row.select("td.PositionCell")
 
         if not lap_cells:
@@ -291,8 +307,8 @@ def _parse_horse_laps_from_html(html: str, race_id: str) -> list[HorseLap]:
 
         for i in range(n):
             cell = lap_cells[i]
-            laptime_str = _extract_laptime(cell)
-            if laptime_str is None:
+            laptime_str = cell.get("data-laptime") or cell.get_text(strip=True)
+            if not laptime_str:
                 continue
 
             try:
