@@ -28,20 +28,80 @@ EXCLUDED_COLUMNS = {
 
 def load_dataset(conn: sqlite3.Connection) -> pd.DataFrame:
     query = """
-        SELECT
-            f.*, rr.horse_no,
-            fuku.payout AS fukusho_payout
-        FROM feature_table f
-        INNER JOIN race_results rr
-          ON f.race_id = rr.race_id AND f.horse_id = rr.horse_id
-        LEFT JOIN (
-            SELECT race_id, combination, payout
+        WITH f AS (
+            SELECT
+                race_id,
+                horse_id,
+                target_win,
+                target_in3,
+                target_value,
+                course,
+                surface,
+                surface_id,
+                distance,
+                distance_cat,
+                track_condition,
+                track_condition_id,
+                field_size,
+                race_class,
+                race_year,
+                race_month,
+                waku,
+                umaban,
+                horse_weight,
+                horse_weight_diff,
+                is_first_run,
+                n_starts_total,
+                win_rate_total,
+                in3_rate_total,
+                avg_finish_total,
+                std_finish_total,
+                n_starts_dist_cat,
+                win_rate_dist_cat,
+                in3_rate_dist_cat,
+                avg_finish_dist_cat,
+                avg_last3f_dist_cat,
+                days_since_last_run,
+                recent_avg_finish_3,
+                recent_best_finish_3,
+                recent_avg_last3f_3,
+                n_starts_track_condition,
+                win_rate_track_condition,
+                n_starts_course,
+                win_rate_course,
+                avg_horse_weight,
+                created_at,
+                updated_at
+            FROM feature_table
+            -- ここでは年で絞らない（2021〜2024 を全部持ってくる）
+        ),
+        rr AS (
+            SELECT
+                race_id,
+                horse_id,
+                horse_no
+            FROM race_results
+        ),
+        fuku AS (
+            SELECT
+                race_id,
+                combination AS horse_no_str,
+                payout AS fukusho_payout
             FROM payouts
             WHERE bet_type = '複勝'
-        ) AS fuku
+        )
+        SELECT
+            f.*,
+            rr.horse_no,
+            fuku.fukusho_payout
+        FROM f
+        JOIN rr
+          ON f.race_id = rr.race_id
+         AND f.horse_id = rr.horse_id
+        LEFT JOIN fuku
           ON f.race_id = fuku.race_id
          AND CAST(rr.horse_no AS TEXT) = fuku.combination
-        WHERE f.race_year = 2024
+        WHERE f.race_year BETWEEN 2021 AND 2024
     """
     df = pd.read_sql_query(query, conn)
     print(f"[INFO] loaded dataset rows: {len(df):,}")
@@ -51,20 +111,18 @@ def load_dataset(conn: sqlite3.Connection) -> pd.DataFrame:
 
 
 def split_by_race(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    race_ids = sorted(df["race_id"].unique())
-    n_races = len(race_ids)
-    split_idx = int(n_races * 2 / 3)
-    train_race_ids = set(race_ids[:split_idx])
-    test_race_ids = set(race_ids[split_idx:])
+    # 年ベースで分割：2021–2023 を学習、2024 をテスト
+    df_train = df[(df["race_year"] >= 2021) & (df["race_year"] <= 2023)].copy()
+    df_test = df[df["race_year"] == 2024].copy()
 
-    df_train = df[df["race_id"].isin(train_race_ids)].sample(frac=1, random_state=42)
-    df_test = df[df["race_id"].isin(test_race_ids)]
+    train_race_ids = df_train["race_id"].nunique()
+    test_race_ids = df_test["race_id"].nunique()
+    total_races = df["race_id"].nunique()
 
-    print(
-        f"[INFO] races: total={n_races}, train={len(train_race_ids)}, test={len(test_race_ids)}"
-    )
+    print(f"[INFO] races: total={total_races}, train={train_race_ids}, test={test_race_ids}")
     print(f"[INFO] rows: train={len(df_train):,}, test={len(df_test):,}")
     return df_train, df_test
+
 
 
 def build_feature_matrix(df: pd.DataFrame) -> Tuple[pd.DataFrame, np.ndarray]:
