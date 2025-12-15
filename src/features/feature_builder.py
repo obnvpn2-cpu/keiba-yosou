@@ -40,6 +40,45 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 
+def has_required_columns(df: pd.DataFrame, columns: List[str]) -> bool:
+    """DataFrame が指定したカラムをすべて持っているかを判定するヘルパー"""
+
+    return isinstance(df, pd.DataFrame) and set(columns).issubset(df.columns)
+
+
+def normalize_race_date_value(value: Any) -> Optional[str]:
+    """日付っぽい値を "%Y/%m/%d" 形式の文字列に正規化する"""
+
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+
+    if isinstance(value, datetime):
+        return value.strftime("%Y/%m/%d")
+
+    if isinstance(value, pd.Timestamp):
+        if pd.isna(value):
+            return None
+        return value.strftime("%Y/%m/%d")
+
+    try:
+        value_str = str(value).strip()
+        if not value_str:
+            return None
+
+        # デフォルトはスラッシュ区切り、ハイフン区切りも許容
+        value_str = value_str.replace("-", "/")
+        parsed = datetime.strptime(value_str, "%Y/%m/%d")
+        return parsed.strftime("%Y/%m/%d")
+    except Exception:
+        try:
+            parsed = pd.to_datetime(value)
+            if pd.isna(parsed):
+                return None
+            return parsed.strftime("%Y/%m/%d")
+        except Exception:
+            return None
+
+
 # ==============================================================================
 # race_id から日付を抽出
 # ==============================================================================
@@ -427,6 +466,12 @@ def infer_course_from_past_runs(
     
     注意: これはレース自体の開催場所を取得するもので、未来情報リークではない
     """
+    if horse_past_runs is None or horse_past_runs.empty:
+        return None
+
+    if not has_required_columns(horse_past_runs, ["horse_id", "race_id", "place"]):
+        return None
+
     past_places = horse_past_runs[
         (horse_past_runs["horse_id"].isin(horse_ids)) &
         (horse_past_runs["race_id"] == race_id)
@@ -658,95 +703,9 @@ def compute_lap_ratio_features_for_race(
     lap_times: pd.DataFrame,
 ) -> Dict[str, Dict[str, Optional[float]]]:
     """
-    1レース分の horse_laps / lap_times から、
-    「馬のラップ vs レース平均」の要約特徴量を計算する。
-
-    戻り値:
-        { horse_id: {
-            "hlap_overall_vs_race": float,
-            "hlap_early_vs_race": float,
-            "hlap_mid_vs_race": float,
-            "hlap_late_vs_race": float,
-            "hlap_last600_vs_race": float,
-        }, ... }
+    hlap_* ラップ比特徴量は現行バージョンでは未使用のため、空を返す。
     """
-    if horse_laps is None or len(horse_laps) == 0:
-        return {}
-
-    df = horse_laps[horse_laps["race_id"] == race_id].copy()
-    if df.empty:
-        return {}
-
-    # レース平均ラップ（lap_times があればそれを優先）
-    base = None
-    if lap_times is not None and len(lap_times) > 0:
-        race_laps = lap_times[lap_times["race_id"] == race_id].copy()
-        if not race_laps.empty:
-            base = race_laps[["distance_m", "time_sec"]].rename(
-                columns={
-                    "distance_m": "section_m",
-                    "time_sec": "race_lap_sec",
-                }
-            )
-
-    # なければ horse_laps の全馬平均をレース基準にする
-    if base is None:
-        base = (
-            df.groupby("section_m", as_index=False)["time_sec"]
-            .mean()
-            .rename(columns={"time_sec": "race_lap_sec"})
-        )
-
-    # マージして delta（馬ラップ - レースラップ）を作る
-    df = df.merge(base, on="section_m", how="left")
-    df = df.dropna(subset=["time_sec", "race_lap_sec"])
-    if df.empty:
-        return {}
-
-    df["delta"] = df["time_sec"] - df["race_lap_sec"]
-
-    total_dist = df["section_m"].max()
-    last_600_start = max(total_dist - 600, 0)
-
-    def zone_func(sec: float) -> str:
-        r = sec / total_dist
-        if r <= 0.4:
-            return "early"
-        elif r <= 0.8:
-            return "mid"
-        else:
-            return "late"
-
-    result: Dict[str, Dict[str, Optional[float]]] = {}
-
-    for horse_id, g in df.groupby("horse_id"):
-        g = g.copy()
-        g["zone"] = g["section_m"].apply(zone_func)
-
-        overall = g["delta"].mean()
-
-        early_mask = g["zone"] == "early"
-        mid_mask = g["zone"] == "mid"
-        late_mask = g["zone"] == "late"
-        last_mask = g["section_m"] > last_600_start
-
-        early = g.loc[early_mask, "delta"].mean() if early_mask.any() else np.nan
-        mid = g.loc[mid_mask, "delta"].mean() if mid_mask.any() else np.nan
-        late = g.loc[late_mask, "delta"].mean() if late_mask.any() else np.nan
-        last600 = g.loc[last_mask, "delta"].mean() if last_mask.any() else np.nan
-
-        def to_opt(x: Any) -> Optional[float]:
-            return float(x) if x is not None and not pd.isna(x) else None
-
-        result[horse_id] = {
-            "hlap_overall_vs_race": to_opt(overall),
-            "hlap_early_vs_race": to_opt(early),
-            "hlap_mid_vs_race": to_opt(mid),
-            "hlap_late_vs_race": to_opt(late),
-            "hlap_last600_vs_race": to_opt(last600),
-        }
-
-    return result
+    return {}
 
 
 # ==============================================================================
@@ -767,8 +726,12 @@ def build_features_for_race(
     
     # 日付をdatetimeに変換
     try:
-        race_date = datetime.strptime(race_date_str, "%Y/%m/%d")
+        race_date_norm = normalize_race_date_value(race_date_str)
+        race_date = datetime.strptime(race_date_norm, "%Y/%m/%d") if race_date_norm else None
     except Exception as e:
+        race_date = None
+
+    if race_date is None:
         logger.warning("Failed to parse race_date: %s, using default", race_date_str)
         race_date = datetime(2000, 1, 1)
     
@@ -798,9 +761,11 @@ def build_features_for_race(
     course = race_info.get("course", None)
     if course is None or pd.isna(course):
         horse_ids = race_results["horse_id"].tolist()
-        course = infer_course_from_past_runs(race_id, horse_ids, tables["horse_past_runs"])
-        if course:
-            logger.debug("Inferred course: %s", course)
+        horse_past_runs = tables.get("horse_past_runs", pd.DataFrame())
+        if has_required_columns(horse_past_runs, ["horse_id", "race_id", "place"]) and not horse_past_runs.empty:
+            course = infer_course_from_past_runs(race_id, horse_ids, horse_past_runs)
+            if course:
+                logger.debug("Inferred course: %s", course)
     
     # surface / distance / track_condition を取得
     surface = race_info.get("course_type", None)
@@ -854,111 +819,115 @@ def build_features_for_race(
     race_year = race_date.year
     race_month = race_date.month
 
-    # ラップ比特徴量（horse_laps / lap_times から計算）
-    lap_feature_map: Dict[str, Dict[str, Optional[float]]] = {}
-    try:
-        lap_feature_map = compute_lap_ratio_features_for_race(
-            race_id=race_id,
-            horse_laps=tables.get("horse_laps", pd.DataFrame()),
-            lap_times=tables.get("lap_times", pd.DataFrame()),
-        )
-    except Exception as e:
-        logger.error(
-            "Failed to compute lap ratio features for race_id=%s: %s",
-            race_id,
-            e,
-            exc_info=True,
-        )
-        lap_feature_map = {}
-
-    
     # 各馬の特徴量を構築
     features_list = []
-    
+
+    horse_past_runs = tables.get("horse_past_runs", pd.DataFrame())
+    past_run_required_cols = [
+        "horse_id",
+        "race_date",
+        "distance",
+        "surface",
+        "track_condition",
+        "place",
+        "finish",
+        "last_3f",
+        "horse_weight",
+    ]
+    has_past_run_data = (
+        not getattr(horse_past_runs, "empty", True)
+        and has_required_columns(horse_past_runs, past_run_required_cols)
+    )
+
     for _, row in race_results.iterrows():
         horse_id = row["horse_id"]
-        
+
         # ターゲット変数
         target_win = 1 if row["position"] == 1 else 0
         target_in3 = 1 if row["position"] <= 3 else 0
-        
+
         win_odds = row.get("win_odds", None)
         if target_in3 == 1 and win_odds is not None and win_odds >= 10.0:
             target_value = 1
         else:
             target_value = 0
-        
-        # ★ 過去走データを取得（未来情報リーク対策）
-        horse_past_all = tables["horse_past_runs"][
-            tables["horse_past_runs"]["horse_id"] == horse_id
-        ].copy()
-        
-        horse_past_all["race_date_dt"] = pd.to_datetime(
-            horse_past_all["race_date"],
-            format="%Y/%m/%d",
-            errors="coerce"
-        )
-        
-        # ★ datetime比較で未来情報を完全排除
-        horse_past = horse_past_all[
-            horse_past_all["race_date_dt"] < race_date
-        ].copy()
-        
-        # 新馬フラグ
-        is_first_run = 1 if len(horse_past) == 0 else 0
-        
-        # 距離カテゴリを追加
-        horse_past["distance_cat"] = horse_past.apply(
-            lambda x: map_distance_to_cat(x["distance"], x["surface"]),
-            axis=1
-        )
-        
+
+        if has_past_run_data:
+            horse_past_all = horse_past_runs[
+                horse_past_runs["horse_id"] == horse_id
+            ].copy()
+
+            horse_past_all["race_date_dt"] = pd.to_datetime(
+                horse_past_all["race_date"],
+                format="%Y/%m/%d",
+                errors="coerce",
+            )
+
+            # ★ datetime比較で未来情報を完全排除
+            horse_past = horse_past_all[
+                horse_past_all["race_date_dt"] < race_date
+            ].copy()
+
+            # 新馬フラグ
+            is_first_run = 1 if len(horse_past) == 0 else 0
+
+            # 距離カテゴリを追加
+            horse_past["distance_cat"] = horse_past.apply(
+                lambda x: map_distance_to_cat(x["distance"], x["surface"]),
+                axis=1
+            )
+        else:
+            horse_past = pd.DataFrame()
+            is_first_run = None
+
         # 各種統計
         global_stats = compute_global_stats(horse_past, race_date_str)
-        
-        horse_past_dist = horse_past[horse_past["distance_cat"] == distance_cat]
+
+        horse_past_dist = (
+            horse_past[horse_past["distance_cat"] == distance_cat]
+            if "distance_cat" in horse_past.columns
+            else horse_past
+        )
         dist_cat_stats = compute_distance_cat_stats(horse_past_dist, distance_cat)
-        
+
         recent_form = compute_recent_form(horse_past, race_date, n_recent=3)
-        
+
         if track_condition:
-            horse_past_track = horse_past[horse_past["track_condition"] == track_condition]
+            horse_past_track = (
+                horse_past[horse_past["track_condition"] == track_condition]
+                if "track_condition" in horse_past.columns
+                else horse_past
+            )
             track_stats = compute_track_condition_stats(horse_past_track, track_condition)
         else:
             track_stats = {
                 "n_starts_track_condition": 0,
                 "win_rate_track_condition": 0.0,
             }
-        
+
         if course:
-            horse_past_course = horse_past[horse_past["place"] == course]
+            horse_past_course = (
+                horse_past[horse_past["place"] == course]
+                if "place" in horse_past.columns
+                else horse_past
+            )
             course_stats = compute_course_stats(horse_past_course, course)
         else:
             course_stats = {
                 "n_starts_course": 0,
                 "win_rate_course": 0.0,
             }
-        
+
         weight_stats = compute_horse_weight_stats(horse_past)
-        
+
         # ★ v3.3: 馬体重差分を計算
         current_weight = parse_body_weight(row.get("body_weight", None))
         avg_weight = weight_stats.get("avg_horse_weight", None)
-        
+
         weight_diff = None
         if current_weight is not None and avg_weight is not None:
             weight_diff = current_weight - avg_weight
         
-        # ラップ比特徴量（無い馬は全部 None）
-        default_lap_feats = {
-            "hlap_overall_vs_race": None,
-            "hlap_early_vs_race": None,
-            "hlap_mid_vs_race": None,
-            "hlap_late_vs_race": None,
-            "hlap_last600_vs_race": None,
-        }
-        lap_feats = lap_feature_map.get(horse_id, default_lap_feats)
-
         # 特徴量を統合
         features = {
             "race_id": race_id,
@@ -988,7 +957,6 @@ def build_features_for_race(
             **track_stats,
             **course_stats,
             **weight_stats,
-            **lap_feats,
         }
 
         features_list.append(features)
@@ -1029,19 +997,28 @@ def build_feature_table(
         race_ids = target_race_ids
         logger.info("Target: %d races", len(race_ids))
     
-    # ★ v3.3.1: race_attrs_cacheに存在しないrace_idを除外
+    # ★ v3.3.1: race_attrs_cacheに存在しないrace_idを除外（空なら全件実行）
     race_attrs_cache = tables["race_attrs_cache"]
-    available_race_ids = [rid for rid in race_ids if rid in race_attrs_cache]
-    skipped_race_ids = [rid for rid in race_ids if rid not in race_attrs_cache]
-    
-    if skipped_race_ids:
-        logger.warning(
-            "Skipping %d races (not in race_attrs_cache): %s",
-            len(skipped_race_ids),
-            skipped_race_ids[:5] if len(skipped_race_ids) > 5 else skipped_race_ids
-        )
-    
-    logger.info("Processing %d races (with past runs available)", len(available_race_ids))
+    if race_attrs_cache:
+        available_race_ids = [rid for rid in race_ids if rid in race_attrs_cache]
+        skipped_race_ids = [rid for rid in race_ids if rid not in race_attrs_cache]
+
+        if skipped_race_ids:
+            logger.warning(
+                "Skipping %d races (not in race_attrs_cache): %s",
+                len(skipped_race_ids),
+                skipped_race_ids[:5] if len(skipped_race_ids) > 5 else skipped_race_ids
+            )
+    else:
+        available_race_ids = list(race_ids)
+        skipped_race_ids = []
+        logger.info("race_attrs_cache is empty; processing all %d races", len(available_race_ids))
+
+    if not available_race_ids:
+        logger.warning("No races available after cache filtering; falling back to all races")
+        available_race_ids = list(race_ids)
+
+    logger.info("Processing %d races", len(available_race_ids))
     
     # race_date を補完
     race_date_map = {}
@@ -1056,7 +1033,7 @@ def build_feature_table(
                 race_date = race_rows.iloc[0]["race_date"]
                 if race_date is not None and not pd.isna(race_date):
                     logger.debug("Using race_date from races: %s", race_date)
-        
+
         # 優先度2: race_results
         if race_date is None or pd.isna(race_date):
             if "race_date" in tables["race_results"].columns:
@@ -1065,23 +1042,27 @@ def build_feature_table(
                     race_date = result_rows.iloc[0]["race_date"]
                     if race_date is not None and not pd.isna(race_date):
                         logger.debug("Using race_date from race_results: %s", race_date)
-        
+
         # 優先度3: horse_past_runs
         if race_date is None or pd.isna(race_date):
-            past_rows = tables["horse_past_runs"][tables["horse_past_runs"]["race_id"] == race_id]
-            if len(past_rows) > 0:
-                race_date = past_rows.iloc[0]["race_date"]
-                if race_date is not None and not pd.isna(race_date):
-                    logger.debug("Using race_date from horse_past_runs: %s", race_date)
-        
+            horse_past_runs = tables.get("horse_past_runs", pd.DataFrame())
+            if has_required_columns(horse_past_runs, ["race_id", "race_date"]):
+                past_rows = horse_past_runs[horse_past_runs["race_id"] == race_id]
+                if len(past_rows) > 0:
+                    race_date = past_rows.iloc[0]["race_date"]
+                    if race_date is not None and not pd.isna(race_date):
+                        logger.debug("Using race_date from horse_past_runs: %s", race_date)
+
         # 優先度4: race_idから抽出
         if race_date is None or pd.isna(race_date):
             race_date = extract_date_from_race_id(race_id)
             if race_date:
                 logger.info("Extracted race_date from race_id=%s: %s", race_id, race_date)
-        
-        if race_date is not None and not pd.isna(race_date):
-            race_date_map[race_id] = race_date
+
+        race_date_norm = normalize_race_date_value(race_date)
+
+        if race_date_norm is not None:
+            race_date_map[race_id] = race_date_norm
         else:
             logger.warning("Could not determine race_date for race_id=%s, skipping", race_id)
     
