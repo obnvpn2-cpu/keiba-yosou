@@ -91,7 +91,8 @@ def load_dataset(conn: sqlite3.Connection) -> pd.DataFrame:
             WHERE bet_type = '複勝'
         )
         SELECT
-            f.*, rr.horse_no,
+            f.*,
+            rr.horse_no,
             fuku.fukusho_payout
         FROM f
         JOIN rr
@@ -99,7 +100,7 @@ def load_dataset(conn: sqlite3.Connection) -> pd.DataFrame:
          AND f.horse_id = rr.horse_id
         LEFT JOIN fuku
           ON f.race_id = fuku.race_id
-         AND CAST(rr.horse_no AS TEXT) = fuku.horse_no_str
+         AND CAST(rr.horse_no AS TEXT) = fuku.combination
         WHERE f.race_year BETWEEN 2021 AND 2024
     """
     df = pd.read_sql_query(query, conn)
@@ -110,21 +111,18 @@ def load_dataset(conn: sqlite3.Connection) -> pd.DataFrame:
 
 
 def split_by_race(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    train_mask = df["race_year"] <= 2023
-    test_mask = df["race_year"] == 2024
+    # 年ベースで分割：2021–2023 を学習、2024 をテスト
+    df_train = df[(df["race_year"] >= 2021) & (df["race_year"] <= 2023)].copy()
+    df_test = df[df["race_year"] == 2024].copy()
 
-    train_race_ids = set(df.loc[train_mask, "race_id"].unique())
-    test_race_ids = set(df.loc[test_mask, "race_id"].unique())
+    train_race_ids = df_train["race_id"].nunique()
+    test_race_ids = df_test["race_id"].nunique()
+    total_races = df["race_id"].nunique()
 
-    df_train = df[df["race_id"].isin(train_race_ids)].sample(frac=1, random_state=42)
-    df_test = df[df["race_id"].isin(test_race_ids)]
-
-    n_races = len(set(df["race_id"].unique()))
-    print(
-        f"[INFO] races: total={n_races}, train={len(train_race_ids)}, test={len(test_race_ids)}"
-    )
+    print(f"[INFO] races: total={total_races}, train={train_race_ids}, test={test_race_ids}")
     print(f"[INFO] rows: train={len(df_train):,}, test={len(df_test):,}")
     return df_train, df_test
+
 
 
 def build_feature_matrix(df: pd.DataFrame) -> Tuple[pd.DataFrame, np.ndarray]:
