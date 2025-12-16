@@ -30,49 +30,8 @@ def load_dataset(conn: sqlite3.Connection) -> pd.DataFrame:
     query = """
         WITH f AS (
             SELECT
-                race_id,
-                horse_id,
-                target_win,
-                target_in3,
-                target_value,
-                course,
-                surface,
-                surface_id,
-                distance,
-                distance_cat,
-                track_condition,
-                track_condition_id,
-                field_size,
-                race_class,
-                race_year,
-                race_month,
-                waku,
-                umaban,
-                horse_weight,
-                horse_weight_diff,
-                is_first_run,
-                n_starts_total,
-                win_rate_total,
-                in3_rate_total,
-                avg_finish_total,
-                std_finish_total,
-                n_starts_dist_cat,
-                win_rate_dist_cat,
-                in3_rate_dist_cat,
-                avg_finish_dist_cat,
-                avg_last3f_dist_cat,
-                days_since_last_run,
-                recent_avg_finish_3,
-                recent_best_finish_3,
-                recent_avg_last3f_3,
-                n_starts_track_condition,
-                win_rate_track_condition,
-                n_starts_course,
-                win_rate_course,
-                avg_horse_weight,
-                created_at,
-                updated_at
-            FROM feature_table
+                *
+            FROM feature_table_v2
             -- ここでは年で絞らない（2021〜2024 を全部持ってくる）
         ),
         rr AS (
@@ -105,6 +64,13 @@ def load_dataset(conn: sqlite3.Connection) -> pd.DataFrame:
     """
     df = pd.read_sql_query(query, conn)
     print(f"[INFO] loaded dataset rows: {len(df):,}")
+
+    # Check for hr_* columns
+    hr_cols_in_df = [c for c in df.columns if c.startswith("hr_")]
+    print(f"[INFO] hr_* columns in dataset: {len(hr_cols_in_df)}")
+    if hr_cols_in_df:
+        print(f"[INFO] hr_* column names: {hr_cols_in_df}")
+
     missing_fuku = df["fukusho_payout"].isna().sum()
     print(f"[INFO] fukusho_payout missing rows: {missing_fuku:,}")
     return df
@@ -132,7 +98,13 @@ def build_feature_matrix(df: pd.DataFrame) -> Tuple[pd.DataFrame, np.ndarray]:
             continue
         if pd.api.types.is_numeric_dtype(df[col]):
             feature_cols.append(col)
+
+    # Count hr_* features
+    hr_feature_cols = [c for c in feature_cols if c.startswith("hr_")]
+
     print(f"[INFO] feature cols ({len(feature_cols)}): {feature_cols}")
+    print(f"[INFO] hr_* feature cols ({len(hr_feature_cols)}): {hr_feature_cols}")
+
     X = df[feature_cols].fillna(0)
     y = df["target_in3"].astype(int).values
     return X, y
