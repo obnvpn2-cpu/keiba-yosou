@@ -105,6 +105,13 @@ def load_dataset(conn: sqlite3.Connection) -> pd.DataFrame:
     """
     df = pd.read_sql_query(query, conn)
     print(f"[INFO] loaded dataset rows: {len(df):,}")
+
+    # Check for hr_* columns
+    hr_cols_in_df = [c for c in df.columns if c.startswith("hr_")]
+    print(f"[INFO] hr_* columns in dataset: {len(hr_cols_in_df)}")
+    if hr_cols_in_df:
+        print(f"[INFO] hr_* column names: {hr_cols_in_df}")
+
     missing_fuku = df["fukusho_payout"].isna().sum()
     print(f"[INFO] fukusho_payout missing rows: {missing_fuku:,}")
     return df
@@ -132,7 +139,13 @@ def build_feature_matrix(df: pd.DataFrame) -> Tuple[pd.DataFrame, np.ndarray]:
             continue
         if pd.api.types.is_numeric_dtype(df[col]):
             feature_cols.append(col)
+
+    # Count hr_* features
+    hr_feature_cols = [c for c in feature_cols if c.startswith("hr_")]
+
     print(f"[INFO] feature cols ({len(feature_cols)}): {feature_cols}")
+    print(f"[INFO] hr_* feature cols ({len(hr_feature_cols)}): {hr_feature_cols}")
+
     X = df[feature_cols].fillna(0)
     y = df["target_in3"].astype(int).values
     return X, y
