@@ -72,7 +72,7 @@ def load_dataset(conn: sqlite3.Connection) -> pd.DataFrame:
                 avg_horse_weight,
                 created_at,
                 updated_at
-            FROM feature_table
+            FROM feature_table_v2
             -- ここでは年で絞らない（2021〜2024 を全部持ってくる）
         ),
         rr AS (
