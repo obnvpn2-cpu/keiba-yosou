@@ -196,23 +196,30 @@ def evaluate(df_test: pd.DataFrame, scaler: StandardScaler, model: LogisticRegre
     print("\n===== (A) 全テストレース対象（複勝 本命1頭買い）=====")
     _evaluate_strategy(df_test)
 
-    # (B) 複勝払戻データが1件以上存在するレースのみ対象
+    # (B) 本命に複勝払戻データが存在するベットのみ対象
     total_test_races = df_test["race_id"].nunique()
-    race_has_payout = df_test.groupby("race_id")["fukusho_payout"].apply(
-        lambda x: x.notna().sum() > 0
-    )
-    races_with_payout = race_has_payout[race_has_payout].index.tolist()
-    num_races_with_payout = len(races_with_payout)
 
-    print(f"\n[INFO] テストレース総数: {total_test_races}")
-    print(f"[INFO] 複勝払戻有りレース数: {num_races_with_payout}")
+    # 各レースで本命を選び、本命に fukusho_payout があるレースだけを抽出
+    races_with_honmei_payout = []
+    for race_id, race_df in df_test.groupby("race_id"):
+        if race_df.empty:
+            continue
+        best_idx = race_df["pred_in3_proba"].idxmax()
+        chosen = race_df.loc[best_idx]
+        if pd.notna(chosen["fukusho_payout"]):
+            races_with_honmei_payout.append(race_id)
 
-    if num_races_with_payout > 0:
-        df_test_with_payout = df_test[df_test["race_id"].isin(races_with_payout)]
-        print("\n===== (B) 複勝払戻有りレースのみ対象（複勝 本命1頭買い）=====")
-        _evaluate_strategy(df_test_with_payout)
+    num_bets_with_honmei_payout = len(races_with_honmei_payout)
+
+    print(f"\n[INFO] (A) 全ベット数: {total_test_races}")
+    print(f"[INFO] (B) 本命に複勝払戻データが存在するベット数: {num_bets_with_honmei_payout} / {total_test_races}")
+
+    if num_bets_with_honmei_payout > 0:
+        df_test_with_honmei_payout = df_test[df_test["race_id"].isin(races_with_honmei_payout)]
+        print("\n===== (B) 本命に複勝払戻有りのベットのみ対象（複勝 本命1頭買い）=====")
+        _evaluate_strategy(df_test_with_honmei_payout)
     else:
-        print("\n[WARN] 複勝払戻データが存在するレースがありません")
+        print("\n[WARN] 本命に複勝払戻データが存在するベットがありません")
 
 
 def main() -> None:
