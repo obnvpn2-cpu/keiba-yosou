@@ -100,7 +100,7 @@ def load_dataset(conn: sqlite3.Connection) -> pd.DataFrame:
          AND f.horse_id = rr.horse_id
         LEFT JOIN fuku
           ON f.race_id = fuku.race_id
-         AND CAST(rr.horse_no AS TEXT) = fuku.combination
+         AND CAST(rr.horse_no AS TEXT) = fuku.horse_no_str
         WHERE f.race_year BETWEEN 2021 AND 2024
     """
     df = pd.read_sql_query(query, conn)
