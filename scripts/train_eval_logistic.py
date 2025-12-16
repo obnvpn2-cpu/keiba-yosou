@@ -84,7 +84,6 @@ def load_dataset(conn: sqlite3.Connection) -> pd.DataFrame:
         fuku AS (
             SELECT
                 race_id,
-                combination,
                 combination AS horse_no_str,
                 payout AS fukusho_payout
             FROM payouts
