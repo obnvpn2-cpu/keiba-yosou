@@ -146,21 +146,13 @@ def train_model(X_train: pd.DataFrame, y_train: np.ndarray) -> Tuple[StandardSca
     return scaler, model
 
 
-def evaluate(df_test: pd.DataFrame, scaler: StandardScaler, model: LogisticRegression, X_test: pd.DataFrame, y_test: np.ndarray) -> None:
-    X_test_scaled = scaler.transform(X_test)
-    y_pred = model.predict(X_test_scaled)
-    accuracy = float((y_pred == y_test).mean()) if len(y_test) else float("nan")
-    print(f"[INFO] test accuracy (per horse, target_in3): {accuracy:.3f}")
-
-    proba = model.predict_proba(X_test_scaled)[:, 1]
-    df_test = df_test.copy()
-    df_test["pred_in3_proba"] = proba
-
+def _evaluate_strategy(df: pd.DataFrame) -> None:
+    """複勝本命1頭買い戦略を評価するヘルパー関数"""
     bets = 0
     hits = 0
     total_payout = 0.0
 
-    for race_id, race_df in df_test.groupby("race_id"):
+    for race_id, race_df in df.groupby("race_id"):
         if race_df.empty:
             continue
         bets += 1
@@ -182,13 +174,45 @@ def evaluate(df_test: pd.DataFrame, scaler: StandardScaler, model: LogisticRegre
         investment = 0
         roi = float("nan")
 
-    print("===== テスト結果（複勝 本命1頭買い）=====")
-    print(f"レース数(bets): {bets}")
-    print(f"的中数(hits):   {hits}")
+    print(f"ベットレース数: {bets}")
+    print(f"的中数:         {hits}")
     print(f"的中率:         {hit_rate:.3f}")
     print(f"総投資額:       {investment:,} 円")
     print(f"総払戻:         {int(total_payout):,} 円")
     print(f"回収率:         {roi * 100:.1f} %")
+
+
+def evaluate(df_test: pd.DataFrame, scaler: StandardScaler, model: LogisticRegression, X_test: pd.DataFrame, y_test: np.ndarray) -> None:
+    X_test_scaled = scaler.transform(X_test)
+    y_pred = model.predict(X_test_scaled)
+    accuracy = float((y_pred == y_test).mean()) if len(y_test) else float("nan")
+    print(f"[INFO] test accuracy (per horse, target_in3): {accuracy:.3f}")
+
+    proba = model.predict_proba(X_test_scaled)[:, 1]
+    df_test = df_test.copy()
+    df_test["pred_in3_proba"] = proba
+
+    # (A) 全テストレース対象の評価（現状どおり）
+    print("\n===== (A) 全テストレース対象（複勝 本命1頭買い）=====")
+    _evaluate_strategy(df_test)
+
+    # (B) 複勝払戻データが1件以上存在するレースのみ対象
+    total_test_races = df_test["race_id"].nunique()
+    race_has_payout = df_test.groupby("race_id")["fukusho_payout"].apply(
+        lambda x: x.notna().sum() > 0
+    )
+    races_with_payout = race_has_payout[race_has_payout].index.tolist()
+    num_races_with_payout = len(races_with_payout)
+
+    print(f"\n[INFO] テストレース総数: {total_test_races}")
+    print(f"[INFO] 複勝払戻有りレース数: {num_races_with_payout}")
+
+    if num_races_with_payout > 0:
+        df_test_with_payout = df_test[df_test["race_id"].isin(races_with_payout)]
+        print("\n===== (B) 複勝払戻有りレースのみ対象（複勝 本命1頭買い）=====")
+        _evaluate_strategy(df_test_with_payout)
+    else:
+        print("\n[WARN] 複勝払戻データが存在するレースがありません")
 
 
 def main() -> None:
