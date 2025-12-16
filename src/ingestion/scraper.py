@@ -75,31 +75,22 @@ def get_random_user_agent() -> str:
 
 
 def load_cookies_from_env() -> dict[str, str]:
-    """
-    .env ファイルからCookieを読み込む。
-    
-    NETKEIBA_COOKIE_xxx=value の形式で定義されたものを
-    {xxx: value} の辞書として返す。
-    
-    Returns:
-        Cookie名と値の辞書
-    """
     load_dotenv()
-    
     cookies = {}
     for key, value in os.environ.items():
-        if key.startswith(COOKIE_PREFIX):
-            cookie_name = key[len(COOKIE_PREFIX):]
-            # _ を元の Cookie 名に対応させる
-            # 例: NETKEIBA_COOKIE___utma → __utma
-            cookies[cookie_name] = value
-    
-    if cookies:
-        logger.info(f"Loaded {len(cookies)} cookies from environment")
-    else:
-        logger.warning("No cookies found in environment. Running without authentication.")
-    
+        if not key.startswith(COOKIE_PREFIX):
+            continue
+
+        raw_name = key[len(COOKIE_PREFIX):]
+
+        # Windows だと環境変数名が全部大文字になるので、
+        # cookie 名は強制的に小文字にそろえる
+        cookie_name = raw_name.lower()
+
+        cookies[cookie_name] = value
+
     return cookies
+
 
 
 def create_session(cookies: Optional[dict[str, str]] = None) -> requests.Session:
