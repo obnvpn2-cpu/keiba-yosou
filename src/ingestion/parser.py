@@ -204,39 +204,71 @@ def _parse_horse_laps_from_html(html: str, race_id: str) -> list[HorseLap]:
         logger.debug(f"[{race_id}] Lap summary table not found in horse laptime HTML")
         return horse_laps
 
-    # ヘッダー最下段の th[data-furlong] から距離一覧を取得
+    # ヘッダー最下段の th[data-furlong] から距離一覧を取得。
+    # 2024年末時点の HTML では th.data-furlong が欠落しているケースがあるため、
+    # テキスト(1F,2F...)やセル側の data-* も併用して復元する。
     header_rows = table.select("thead tr.Header")
     if not header_rows:
         logger.debug(f"[{race_id}] No header rows in lap summary table")
         return horse_laps
 
     last_header = header_rows[-1]
-    dist_cells = last_header.select("th[data-furlong]")
+    dist_cells = last_header.select("th[data-furlong]") or last_header.select(
+        "th"
+    )
 
     distances: list[int] = []
-    for cell in dist_cells:
-        furlong = cell.get("data-furlong")
+    for idx, cell in enumerate(dist_cells, start=1):
+        furlong = cell.get("data-furlong") or cell.get("data-distance")
         if not furlong:
-            continue
+            text = cell.get_text(strip=True)
+            # 1F,2F... を 200m 単位に変換
+            m = re.match(r"(\d+)[Ff]", text)
+            if m:
+                try:
+                    furlong = int(m.group(1)) * 200
+                except ValueError:
+                    furlong = None
+        if not furlong:
+            # data-* もテキストも無い場合はヘッダー順に 200m ずつ積む仮距離
+            furlong = idx * 200
         try:
             d = int(furlong)
         except ValueError:
             continue
         distances.append(d)
 
+    # ヘッダーから距離が取れない場合、各 data-laptime セルに付与されている data-furlong などを頼る
     if not distances:
-        logger.debug(f"[{race_id}] No distances found in lap summary header")
+        logger.debug(f"[{race_id}] No distances found in lap summary header, trying cell attrs")
+
+    # 各馬の行をパース
+    body_rows = table.select("tbody tr.HorseList") or table.select("tbody tr")
+    logger.debug(f"[{race_id}] Found {len(body_rows)} horse rows in lap summary")
+
+    # data-furlong が見つからない場合、最初に距離列を探索し直す
+    if not distances:
+        for row in body_rows:
+            lap_cells = _collect_lap_cells(row)
+            for cell in lap_cells:
+                furlong = _extract_distance_from_cell(cell)
+                if furlong is None:
+                    continue
+                distances.append(furlong)
+            if distances:
+                break
+
+    if not distances:
+        logger.debug(f"[{race_id}] No distances found in lap summary (header or cells)")
         return horse_laps
 
     logger.debug(f"[{race_id}] Lap distances (m): {distances}")
 
-    # 各馬の行をパース
-    body_rows = table.select("tbody tr.HorseList")
-    logger.debug(f"[{race_id}] Found {len(body_rows)} horse rows in lap summary")
-
     for row in body_rows:
         # 馬IDをリンクから取得
-        horse_link = row.select_one("td.Horse_Info a[href*='/horse/']")
+        horse_link = row.select_one("td.Horse_Info a[href*='/horse/']") or row.select_one(
+            "a[href*='/horse/']"
+        )
         if not horse_link:
             continue
 
@@ -247,7 +279,7 @@ def _parse_horse_laps_from_html(html: str, race_id: str) -> list[HorseLap]:
         horse_id = m.group(1)
 
         # ラップタイムとポジションのセルを取得
-        lap_cells = row.select("td[data-laptime]")
+        lap_cells = _collect_lap_cells(row)
         pos_cells = row.select("td.PositionCell")
 
         if not lap_cells:
@@ -255,12 +287,12 @@ def _parse_horse_laps_from_html(html: str, race_id: str) -> list[HorseLap]:
             continue
 
         # th[data-furlong] の数と data-laptime の数を合わせる
-        n = min(len(distances), len(lap_cells))
+        n = min(len(distances), len(lap_cells)) if distances else len(lap_cells)
 
         for i in range(n):
             cell = lap_cells[i]
-            laptime_str = cell.get("data-laptime")
-            if not laptime_str:
+            laptime_str = _extract_laptime(cell)
+            if laptime_str is None:
                 continue
 
             try:
@@ -268,7 +300,11 @@ def _parse_horse_laps_from_html(html: str, race_id: str) -> list[HorseLap]:
             except ValueError:
                 continue
 
-            section_m = distances[i]
+            section_m = (
+                distances[i]
+                if distances and i < len(distances)
+                else _extract_distance_from_cell(cell) or (i + 1) * 200
+            )
 
             # セクションごとのポジション（あれば）
             position: Optional[int] = None
@@ -292,6 +328,62 @@ def _parse_horse_laps_from_html(html: str, race_id: str) -> list[HorseLap]:
 
     logger.debug(f"[{race_id}] Parsed {len(horse_laps)} horse lap records from HTML")
     return horse_laps
+
+
+def _collect_lap_cells(row: Tag) -> list[Tag]:
+    """ラップタイムが入っているセル候補を広めに集める。"""
+
+    lap_cells = row.select("td[data-laptime]")
+    if lap_cells:
+        return lap_cells
+
+    candidates = []
+    for td in row.select("td"):
+        classes = td.get("class", [])
+        if td.get("data-furlong") or td.get("data-distance"):
+            candidates.append(td)
+            continue
+        if any(cls in {"CellDataWrap", "LapTimeCell", "TimeCell"} for cls in classes):
+            candidates.append(td)
+    return candidates
+
+
+def _extract_laptime(cell: Tag) -> Optional[str]:
+    """セルからラップタイム文字列を取得する。"""
+
+    val = cell.get("data-laptime")
+    if val:
+        return val
+
+    text = cell.get_text(strip=True)
+    if text:
+        return text
+
+    inner = cell.select_one("*[data-laptime]")
+    if inner and inner.get("data-laptime"):
+        return inner.get("data-laptime")
+
+    return None
+
+
+def _extract_distance_from_cell(cell: Tag) -> Optional[int]:
+    """セルの属性やテキストから距離(m)を推定する。"""
+
+    furlong = cell.get("data-furlong") or cell.get("data-distance")
+    if not furlong:
+        text = cell.get_text(strip=True)
+        m = re.match(r"(\d+)[Ff]", text)
+        if m:
+            try:
+                furlong = int(m.group(1)) * 200
+            except ValueError:
+                furlong = None
+    if furlong:
+        try:
+            return int(furlong)
+        except ValueError:
+            return None
+    return None
 
 
 def _parse_race_info(soup: BeautifulSoup, race_id: str) -> Race:

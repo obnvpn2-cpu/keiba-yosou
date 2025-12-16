@@ -407,6 +407,60 @@ class Database:
         cursor = self.conn.execute(sql, race_ids)
         return {row[0] for row in cursor.fetchall()}
 
+    def get_race_ids_missing_horse_laps(self, race_ids: list[str]) -> set[str]:
+        """horse_laps が1件も入っていないレースIDの集合を返す。"""
+
+        if not race_ids:
+            return set()
+
+        placeholders = ",".join("?" for _ in race_ids)
+        sql = f"""
+            SELECT r.race_id
+            FROM races r
+            LEFT JOIN (
+                SELECT race_id, COUNT(*) AS lap_cnt
+                FROM horse_laps
+                WHERE race_id IN ({placeholders})
+                GROUP BY race_id
+            ) hl ON r.race_id = hl.race_id
+            WHERE r.race_id IN ({placeholders})
+              AND COALESCE(hl.lap_cnt, 0) = 0
+        """
+        cursor = self.conn.execute(sql, list(race_ids) + list(race_ids))
+        return {row[0] for row in cursor.fetchall()}
+
+    def get_race_ids_incomplete_horse_laps(self, race_ids: list[str]) -> set[str]:
+        """
+        horse_laps の頭数が race_results より少ないレースID集合を返す。
+
+        「1件も無い」ケースは get_race_ids_missing_horse_laps に委ね、
+        ここでは race_results の頭数より少ない（=一部の馬しか無い）ケースを検知する。
+        """
+
+        if not race_ids:
+            return set()
+
+        placeholders = ",".join("?" for _ in race_ids)
+        sql = f"""
+            WITH lap_counts AS (
+                SELECT race_id, COUNT(DISTINCT horse_id) AS lap_horses
+                FROM horse_laps
+                WHERE race_id IN ({placeholders})
+                GROUP BY race_id
+            ), result_counts AS (
+                SELECT race_id, COUNT(DISTINCT horse_id) AS result_horses
+                FROM race_results
+                WHERE race_id IN ({placeholders})
+                GROUP BY race_id
+            )
+            SELECT r.race_id
+            FROM result_counts r
+            LEFT JOIN lap_counts l ON r.race_id = l.race_id
+            WHERE COALESCE(l.lap_horses, 0) < COALESCE(r.result_horses, 0)
+        """
+        cursor = self.conn.execute(sql, list(race_ids) + list(race_ids))
+        return {row[0] for row in cursor.fetchall()}
+
     def get_race_count(self) -> int:
         """レース数を取得する。"""
         cursor = self.conn.execute("SELECT COUNT(*) FROM races")
