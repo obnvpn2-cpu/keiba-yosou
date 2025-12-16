@@ -27,7 +27,27 @@ EXCLUDED_COLUMNS = {
 
 
 def load_dataset(conn: sqlite3.Connection) -> pd.DataFrame:
-    query = """
+    # Check which feature table exists
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'feature_table%'")
+    available_tables = [row[0] for row in cursor.fetchall()]
+
+    if 'feature_table_v2' in available_tables:
+        feature_table_name = 'feature_table_v2'
+        print(f"[INFO] Using feature_table_v2")
+    elif 'feature_table' in available_tables:
+        feature_table_name = 'feature_table'
+        print(f"[WARN] feature_table_v2 not found, falling back to feature_table")
+        print(f"[WARN] This means hr_* features will NOT be available")
+    else:
+        raise RuntimeError(
+            "Neither feature_table_v2 nor feature_table found in database.\n"
+            "Please run:\n"
+            "  python scripts/build_feature_table_v2.py --db <your_db_path>\n"
+            "or check your database path."
+        )
+
+    query = f"""
         WITH f AS (
             SELECT
                 race_id,
