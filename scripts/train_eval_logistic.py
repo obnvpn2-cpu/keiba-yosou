@@ -35,6 +35,18 @@ def load_dataset(conn: sqlite3.Connection) -> pd.DataFrame:
     if 'feature_table_v2' in available_tables:
         feature_table_name = 'feature_table_v2'
         print(f"[INFO] Using feature_table_v2")
+
+        # Check columns in feature_table_v2
+        cursor.execute(f"PRAGMA table_info({feature_table_name})")
+        table_columns = [row[1] for row in cursor.fetchall()]
+        hr_cols_in_table = [c for c in table_columns if c.startswith("hr_")]
+        print(f"[INFO] hr_* columns in {feature_table_name} table: {len(hr_cols_in_table)}")
+        if hr_cols_in_table:
+            print(f"[INFO] hr_* columns: {hr_cols_in_table}")
+        else:
+            print(f"[WARN] No hr_* columns found in {feature_table_name} table!")
+            print(f"[WARN] This might indicate wrong database file or table needs rebuild")
+
     elif 'feature_table' in available_tables:
         feature_table_name = 'feature_table'
         print(f"[WARN] feature_table_v2 not found, falling back to feature_table")
@@ -265,6 +277,8 @@ def main() -> None:
     args = parser.parse_args()
 
     db_path = os.path.abspath(args.db)
+    print(f"[INFO] Database path: {db_path}")
+
     if not os.path.exists(db_path):
         raise FileNotFoundError(f"database not found: {db_path}")
 
