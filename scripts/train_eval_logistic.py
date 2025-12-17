@@ -94,14 +94,24 @@ def load_dataset(conn: sqlite3.Connection) -> pd.DataFrame:
          AND CAST(rr.horse_no AS TEXT) = fuku.horse_no_str
         WHERE f.race_year BETWEEN 2021 AND 2024
     """
+
+    # Debug: Log query to verify SELECT *
+    print(f"[DEBUG] SQL query:")
+    print(query)
+    print()
+
     df = pd.read_sql_query(query, conn)
     print(f"[INFO] loaded dataset rows: {len(df):,}")
+    print(f"[DEBUG] Total columns in df: {len(df.columns)}")
+    print(f"[DEBUG] All df columns: {df.columns.tolist()}")
 
     # Check for hr_* columns
     hr_cols_in_df = [c for c in df.columns if c.startswith("hr_")]
     print(f"[INFO] hr_* columns in dataset: {len(hr_cols_in_df)}")
     if hr_cols_in_df:
         print(f"[INFO] hr_* column names: {hr_cols_in_df}")
+    else:
+        print(f"[WARN] No hr_* columns found in dataset despite being in table!")
 
     missing_fuku = df["fukusho_payout"].isna().sum()
     print(f"[INFO] fukusho_payout missing rows: {missing_fuku:,}")
