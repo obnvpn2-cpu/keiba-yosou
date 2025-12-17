@@ -480,14 +480,19 @@ class Database:
 def get_database(db_path: Optional[Path] = None):
     """
     データベース接続のコンテキストマネージャ。
-    
+
     Args:
         db_path: データベースファイルのパス
-    
+
     Yields:
         Database インスタンス
+
+    Note:
+        初回接続時にテーブルが存在しない場合は自動的に作成される（CREATE TABLE IF NOT EXISTS）。
     """
     db = Database(db_path)
+    # テーブルが存在しない場合は作成（idempotent）
+    db.create_tables()
     try:
         yield db
     finally:
