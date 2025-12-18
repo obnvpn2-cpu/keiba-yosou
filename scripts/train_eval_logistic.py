@@ -59,10 +59,30 @@ def load_dataset(conn: sqlite3.Connection) -> pd.DataFrame:
             "or check your database path."
         )
 
+    # Build column list: base columns + hr_* columns
+    base_cols = [
+        "race_id", "horse_id", "target_win", "target_in3", "target_value",
+        "course", "surface", "surface_id", "distance", "distance_cat",
+        "track_condition", "track_condition_id", "field_size", "race_class",
+        "race_year", "race_month", "waku", "umaban", "horse_weight",
+        "horse_weight_diff", "is_first_run", "n_starts_total",
+        "win_rate_total", "in3_rate_total", "avg_finish_total",
+        "std_finish_total", "n_starts_dist_cat", "win_rate_dist_cat",
+        "in3_rate_dist_cat", "avg_finish_dist_cat", "avg_last3f_dist_cat",
+        "days_since_last_run", "recent_avg_finish_3", "recent_best_finish_3",
+        "recent_avg_last3f_3", "n_starts_track_condition",
+        "win_rate_track_condition", "n_starts_course", "win_rate_course",
+        "avg_horse_weight"
+    ]
+
+    # Add hr_* columns if available
+    select_cols = base_cols + hr_cols_in_table
+    select_cols_sql = ",\n                ".join(select_cols)
+
     query = f"""
         WITH f AS (
             SELECT
-                *
+                {select_cols_sql}
             FROM {feature_table_name}
             -- ここでは年で絞らない（2021〜2024 を全部持ってくる）
         ),
