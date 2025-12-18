@@ -1,12 +1,18 @@
 import argparse
+import logging
 import os
 import sqlite3
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, roc_auc_score, log_loss, brier_score_loss
 from sklearn.preprocessing import StandardScaler
+
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
 
 EXCLUDED_COLUMNS = {
@@ -180,6 +186,342 @@ def train_model(X_train: pd.DataFrame, y_train: np.ndarray) -> Tuple[StandardSca
     return scaler, model
 
 
+# ========================================
+# Evaluation Functions
+# ========================================
+
+
+def evaluate_global_metrics(
+    df: pd.DataFrame,
+    y_true_col: str = "target_in3",
+    y_pred_col: str = "pred_in3_prob",
+) -> Dict[str, float]:
+    """
+    グローバル指標の計算：accuracy, ROC-AUC, log loss, Brier score
+    """
+    y_true = df[y_true_col].astype(int).values
+    y_pred_prob = df[y_pred_col].values
+    y_pred_binary = (y_pred_prob >= 0.5).astype(int)
+
+    accuracy = accuracy_score(y_true, y_pred_binary)
+    try:
+        roc_auc = roc_auc_score(y_true, y_pred_prob)
+    except ValueError:
+        roc_auc = float("nan")
+
+    try:
+        logloss = log_loss(y_true, y_pred_prob)
+    except ValueError:
+        logloss = float("nan")
+
+    brier = brier_score_loss(y_true, y_pred_prob)
+
+    logger.info("=" * 60)
+    logger.info("Global Metrics (全体指標)")
+    logger.info("=" * 60)
+    logger.info(f"Accuracy:     {accuracy:.4f}")
+    logger.info(f"ROC-AUC:      {roc_auc:.4f}")
+    logger.info(f"Log Loss:     {logloss:.4f}")
+    logger.info(f"Brier Score:  {brier:.4f}")
+    logger.info("")
+
+    return {
+        "accuracy": accuracy,
+        "roc_auc": roc_auc,
+        "log_loss": logloss,
+        "brier_score": brier,
+    }
+
+
+def evaluate_ranking(
+    df: pd.DataFrame,
+    y_true_col: str = "target_in3",
+    y_pred_col: str = "pred_in3_prob",
+) -> Dict[str, float]:
+    """
+    レース単位のランキング評価
+    各レースで in3 の馬のうち、最も予測確率が高い馬の順位を評価
+    """
+    results = []
+
+    for race_id, race_df in df.groupby("race_id"):
+        if race_df.empty:
+            continue
+
+        # 予測確率でソート
+        race_sorted = race_df.sort_values(y_pred_col, ascending=False).reset_index(drop=True)
+        race_sorted["rank"] = range(1, len(race_sorted) + 1)
+
+        # in3 の馬を取得
+        in3_horses = race_sorted[race_sorted[y_true_col] == 1]
+
+        if len(in3_horses) == 0:
+            # in3 の馬が1頭もいないレース（稀だが安全のため）
+            continue
+
+        # in3 馬の中で最も予測確率が高い馬の順位
+        best_in3_rank = in3_horses["rank"].min()
+        results.append(best_in3_rank)
+
+    if not results:
+        logger.warning("No races with in3 horses found!")
+        return {}
+
+    results = np.array(results)
+    hit_top1 = (results == 1).mean()
+    hit_top2 = (results <= 2).mean()
+    hit_top3 = (results <= 3).mean()
+    avg_rank = results.mean()
+
+    logger.info("=" * 60)
+    logger.info("Ranking Evaluation (ランキング評価)")
+    logger.info("=" * 60)
+    logger.info(f"テストレース数:        {len(results):,}")
+    logger.info(f"Top1 カバー率:         {hit_top1:.3f}")
+    logger.info(f"Top2 カバー率:         {hit_top2:.3f}")
+    logger.info(f"Top3 カバー率:         {hit_top3:.3f}")
+    logger.info(f"平均 rank (best_in3):  {avg_rank:.2f}")
+    logger.info("")
+
+    return {
+        "n_races": len(results),
+        "hit_top1_rate": hit_top1,
+        "hit_top2_rate": hit_top2,
+        "hit_top3_rate": hit_top3,
+        "avg_rank_best_in3": avg_rank,
+    }
+
+
+def evaluate_strategy_top1_all(
+    df: pd.DataFrame,
+    bet_amount: int = 100,
+    y_true_col: str = "target_in3",
+    y_pred_col: str = "pred_in3_prob",
+    payout_col: str = "fukusho_payout",
+) -> Dict[str, float]:
+    """
+    戦略A：全レースで予測確率最大の馬に複勝ベット
+    """
+    n_races = 0
+    n_hits = 0
+    total_return = 0.0
+
+    for race_id, race_df in df.groupby("race_id"):
+        if race_df.empty:
+            continue
+
+        n_races += 1
+        best_idx = race_df[y_pred_col].idxmax()
+        chosen = race_df.loc[best_idx]
+
+        payout = chosen.get(payout_col)
+        if pd.notna(payout):
+            total_return += float(payout)
+            if int(chosen[y_true_col]) == 1:
+                n_hits += 1
+
+    total_bet = n_races * bet_amount
+    hit_rate = n_hits / n_races if n_races > 0 else 0.0
+    roi = (total_return / total_bet * 100) if total_bet > 0 else 0.0
+
+    logger.info("=" * 60)
+    logger.info("Strategy: Top1 All Races (全レース top1 買い)")
+    logger.info("=" * 60)
+    logger.info(f"ベットレース数:  {n_races:,}")
+    logger.info(f"的中数:          {n_hits:,}")
+    logger.info(f"的中率:          {hit_rate:.3f}")
+    logger.info(f"総投資額:        {total_bet:,} 円")
+    logger.info(f"総払戻:          {int(total_return):,} 円")
+    logger.info(f"回収率:          {roi:.1f} %")
+    logger.info("")
+
+    return {
+        "n_races": n_races,
+        "n_hits": n_hits,
+        "hit_rate": hit_rate,
+        "total_bet": total_bet,
+        "total_return": total_return,
+        "roi": roi,
+    }
+
+
+def evaluate_strategy_top1_thresholds(
+    df: pd.DataFrame,
+    thresholds: List[float],
+    bet_amount: int = 100,
+    y_pred_col: str = "pred_in3_prob",
+    payout_col: str = "fukusho_payout",
+    y_true_col: str = "target_in3",
+) -> List[Dict[str, float]]:
+    """
+    閾値付き戦略：予測確率が閾値以上の場合のみベット
+    """
+    results = []
+
+    for thr in thresholds:
+        n_bet_races = 0
+        n_hits = 0
+        total_return = 0.0
+        pred_probs = []
+
+        for race_id, race_df in df.groupby("race_id"):
+            if race_df.empty:
+                continue
+
+            best_idx = race_df[y_pred_col].idxmax()
+            chosen = race_df.loc[best_idx]
+
+            # 閾値チェック
+            if chosen[y_pred_col] < thr:
+                continue
+
+            n_bet_races += 1
+            pred_probs.append(chosen[y_pred_col])
+
+            payout = chosen.get(payout_col)
+            if pd.notna(payout):
+                total_return += float(payout)
+                if int(chosen[y_true_col]) == 1:
+                    n_hits += 1
+
+        total_bet = n_bet_races * bet_amount
+        hit_rate = n_hits / n_bet_races if n_bet_races > 0 else 0.0
+        roi = (total_return / total_bet * 100) if total_bet > 0 else 0.0
+        avg_pred = np.mean(pred_probs) if pred_probs else 0.0
+
+        results.append({
+            "threshold": thr,
+            "n_bet_races": n_bet_races,
+            "n_hits": n_hits,
+            "hit_rate": hit_rate,
+            "total_bet": total_bet,
+            "total_return": total_return,
+            "roi": roi,
+            "avg_pred_prob": avg_pred,
+        })
+
+    logger.info("=" * 60)
+    logger.info("Strategy: Top1 with Thresholds (閾値付き戦略)")
+    logger.info("=" * 60)
+    logger.info(f"{'Threshold':>10} {'Bets':>6} {'Hits':>6} {'Hit%':>7} {'ROI%':>8} {'AvgProb':>8}")
+    logger.info("-" * 60)
+
+    for r in results:
+        logger.info(
+            f"{r['threshold']:>10.2f} {r['n_bet_races']:>6} {r['n_hits']:>6} "
+            f"{r['hit_rate']:>7.3f} {r['roi']:>8.1f} {r['avg_pred_prob']:>8.3f}"
+        )
+    logger.info("")
+
+    return results
+
+
+def evaluate_calibration(
+    df: pd.DataFrame,
+    y_true_col: str = "target_in3",
+    y_pred_col: str = "pred_in3_prob",
+    n_bins: int = 10,
+) -> Dict:
+    """
+    キャリブレーション評価：予測確率と実際の的中率の一致度
+    """
+    y_true = df[y_true_col].values
+    y_pred = df[y_pred_col].values
+
+    # ビン番号を計算
+    bins = np.floor(y_pred * n_bins).clip(0, n_bins - 1).astype(int)
+
+    bin_stats = []
+    total_n = len(y_pred)
+    ece_sum = 0.0
+
+    for bin_idx in range(n_bins):
+        mask = (bins == bin_idx)
+        n = mask.sum()
+
+        if n == 0:
+            continue
+
+        avg_pred = y_pred[mask].mean()
+        emp_rate = y_true[mask].mean()
+        diff = avg_pred - emp_rate
+
+        bin_stats.append({
+            "bin": bin_idx,
+            "n": n,
+            "avg_pred": avg_pred,
+            "emp_rate": emp_rate,
+            "diff": diff,
+        })
+
+        ece_sum += (n / total_n) * abs(diff)
+
+    logger.info("=" * 60)
+    logger.info("Calibration Evaluation (キャリブレーション評価)")
+    logger.info("=" * 60)
+    logger.info(f"{'Bin':>4} {'N':>8} {'AvgPred':>10} {'EmpRate':>10} {'Diff':>10}")
+    logger.info("-" * 60)
+
+    for stat in bin_stats:
+        logger.info(
+            f"{stat['bin']:>4} {stat['n']:>8} {stat['avg_pred']:>10.4f} "
+            f"{stat['emp_rate']:>10.4f} {stat['diff']:>10.4f}"
+        )
+
+    logger.info("-" * 60)
+    logger.info(f"ECE (Expected Calibration Error): {ece_sum:.4f}")
+    logger.info("")
+
+    return {
+        "bins": bin_stats,
+        "ece": ece_sum,
+    }
+
+
+def evaluate_debug(df: pd.DataFrame, payout_col: str = "fukusho_payout") -> Dict:
+    """
+    デバッグ用チェック：DB 側の欠損状況を確認
+    """
+    n_total = len(df)
+    n_missing_payout = df[payout_col].isna().sum()
+
+    # レースごとの複勝払戻件数をチェック
+    payout_counts = []
+    for race_id, race_df in df.groupby("race_id"):
+        n_payout = race_df[payout_col].notna().sum()
+        payout_counts.append(n_payout)
+
+    payout_counts = np.array(payout_counts)
+    avg_payout_per_race = payout_counts.mean()
+    min_payout_per_race = payout_counts.min()
+    max_payout_per_race = payout_counts.max()
+
+    logger.info("=" * 60)
+    logger.info("Debug Information (デバッグ情報)")
+    logger.info("=" * 60)
+    logger.info(f"Total rows:                {n_total:,}")
+    logger.info(f"Missing fukusho_payout:    {n_missing_payout:,} ({n_missing_payout/n_total*100:.1f}%)")
+    logger.info(f"Races:                     {len(payout_counts):,}")
+    logger.info(f"Avg payout per race:       {avg_payout_per_race:.1f}")
+    logger.info(f"Min payout per race:       {min_payout_per_race}")
+    logger.info(f"Max payout per race:       {max_payout_per_race}")
+
+    # 複勝払戻が3件未満のレースを警告
+    races_with_few_payouts = (payout_counts < 3).sum()
+    if races_with_few_payouts > 0:
+        logger.warning(f"Races with < 3 payouts:    {races_with_few_payouts:,}")
+
+    logger.info("")
+
+    return {
+        "n_total": n_total,
+        "n_missing_payout": n_missing_payout,
+        "n_races": len(payout_counts),
+        "avg_payout_per_race": avg_payout_per_race,
+        "races_with_few_payouts": races_with_few_payouts,
+    }
+
+
 def _evaluate_strategy(df: pd.DataFrame) -> None:
     """複勝本命1頭買い戦略を評価するヘルパー関数"""
     bets = 0
@@ -217,43 +559,33 @@ def _evaluate_strategy(df: pd.DataFrame) -> None:
 
 
 def evaluate(df_test: pd.DataFrame, scaler: StandardScaler, model: LogisticRegression, X_test: pd.DataFrame, y_test: np.ndarray) -> None:
+    """
+    総合評価関数：各種評価メトリクスを実行
+    """
     X_test_scaled = scaler.transform(X_test)
-    y_pred = model.predict(X_test_scaled)
-    accuracy = float((y_pred == y_test).mean()) if len(y_test) else float("nan")
-    print(f"[INFO] test accuracy (per horse, target_in3): {accuracy:.3f}")
-
     proba = model.predict_proba(X_test_scaled)[:, 1]
+
     df_test = df_test.copy()
-    df_test["pred_in3_proba"] = proba
+    df_test["pred_in3_prob"] = proba
 
-    # (A) 全テストレース対象の評価（現状どおり）
-    print("\n===== (A) 全テストレース対象（複勝 本命1頭買い）=====")
-    _evaluate_strategy(df_test)
+    # 1. グローバル指標
+    evaluate_global_metrics(df_test)
 
-    # (B) 本命に複勝払戻データが存在するベットのみ対象
-    total_test_races = df_test["race_id"].nunique()
+    # 2. ランキング評価
+    evaluate_ranking(df_test)
 
-    # 各レースで本命を選び、本命に fukusho_payout があるレースだけを抽出
-    races_with_honmei_payout = []
-    for race_id, race_df in df_test.groupby("race_id"):
-        if race_df.empty:
-            continue
-        best_idx = race_df["pred_in3_proba"].idxmax()
-        chosen = race_df.loc[best_idx]
-        if pd.notna(chosen["fukusho_payout"]):
-            races_with_honmei_payout.append(race_id)
+    # 3. 戦略A：全レースで top1 買い
+    evaluate_strategy_top1_all(df_test)
 
-    num_bets_with_honmei_payout = len(races_with_honmei_payout)
+    # 4. 閾値付き戦略
+    thresholds = [0.25, 0.30, 0.35, 0.40]
+    evaluate_strategy_top1_thresholds(df_test, thresholds=thresholds)
 
-    print(f"\n[INFO] (A) 全ベット数: {total_test_races}")
-    print(f"[INFO] (B) 本命に複勝払戻データが存在するベット数: {num_bets_with_honmei_payout} / {total_test_races}")
+    # 5. キャリブレーション評価
+    evaluate_calibration(df_test, n_bins=10)
 
-    if num_bets_with_honmei_payout > 0:
-        df_test_with_honmei_payout = df_test[df_test["race_id"].isin(races_with_honmei_payout)]
-        print("\n===== (B) 本命に複勝払戻有りのベットのみ対象（複勝 本命1頭買い）=====")
-        _evaluate_strategy(df_test_with_honmei_payout)
-    else:
-        print("\n[WARN] 本命に複勝払戻データが存在するベットがありません")
+    # 6. デバッグ情報
+    evaluate_debug(df_test)
 
 
 def main() -> None:
