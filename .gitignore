@@ -97,3 +97,5 @@ src/netkeiba.db
 data/keiba.db
 data/*.db
 
+netkeiba.db
+src/netkeiba.db
