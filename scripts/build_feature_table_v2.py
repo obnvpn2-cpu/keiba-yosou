@@ -146,11 +146,114 @@ def compute_horse_history_features(hr: pd.DataFrame) -> pd.DataFrame:
     df["hr_recent3_big_loss_count"] = g["finish_order"].apply(rolling_big_loss_prev)
 
     # ========================================
+    # 2b. 直近5走統計（直前まで）
+    # ========================================
+
+    def rolling_mean_prev_5(s: pd.Series) -> pd.Series:
+        """直前までの rolling mean (window=5)"""
+        return s.shift(1).rolling(window=5, min_periods=1).mean()
+
+    def rolling_min_prev_5(s: pd.Series) -> pd.Series:
+        """直前までの rolling min (window=5)"""
+        return s.shift(1).rolling(window=5, min_periods=1).min()
+
+    def rolling_sum_prev_5(s: pd.Series) -> pd.Series:
+        """直前までの rolling sum (window=5)"""
+        return s.shift(1).rolling(window=5, min_periods=1).sum()
+
+    def rolling_count_prev_5(s: pd.Series) -> pd.Series:
+        """直前までの rolling count (window=5)"""
+        return s.shift(1).rolling(window=5, min_periods=1).count()
+
+    # 直近5走の出走数（最大5）
+    df["hr_recent5_starts"] = df["hr_career_starts"].clip(upper=5)
+
+    # 直近5走の平均着順
+    df["hr_recent5_avg_finish"] = g["finish_order"].apply(rolling_mean_prev_5)
+
+    # 直近5走の最良着順
+    df["hr_recent5_best_finish"] = g["finish_order"].apply(rolling_min_prev_5)
+
+    # 直近5走の上がり3F平均
+    df["hr_recent5_avg_last3f"] = g["last_3f"].apply(rolling_mean_prev_5)
+
+    # 直近5走の人気平均
+    df["hr_recent5_avg_popularity"] = g["popularity"].apply(rolling_mean_prev_5)
+
+    # 直近5走の大敗カウント（finish_order >= 10）
+    def rolling_big_loss_prev_5(s: pd.Series) -> pd.Series:
+        big_loss_flag = (s >= 10).astype(int)
+        return big_loss_flag.shift(1).rolling(window=5, min_periods=1).sum()
+
+    df["hr_recent5_big_loss_count"] = g["finish_order"].apply(rolling_big_loss_prev_5)
+
+    # ========================================
     # 3. ローテーション
     # ========================================
 
     # 前走からの日数（今走 - 前走）
     df["hr_days_since_prev"] = g["race_date_dt"].diff().dt.days
+
+    # ========================================
+    # 4. トレンド系特徴量（直近3走）
+    # ========================================
+
+    def compute_recent3_finish_trend(s: pd.Series) -> pd.Series:
+        """
+        直近3走の着順トレンド
+        trend = f3 - (f1 + f2) / k
+        負の値 = 上向き（最近の方が良い）、正の値 = 下り坂
+        """
+        shifted = s.shift(1)  # 今走を除外
+        result = pd.Series(index=s.index, dtype=float)
+
+        for idx in range(len(s)):
+            # 過去3走を取得（最大3走）
+            past_3 = shifted.iloc[max(0, idx-2):idx+1]
+
+            if len(past_3) == 0:
+                result.iloc[idx] = np.nan
+                continue
+
+            if len(past_3) == 1:
+                # 履歴1走のみ：トレンド計算不可
+                result.iloc[idx] = 0.0
+                continue
+
+            # 最新のレース（f3）とそれ以前の平均
+            f_recent = past_3.iloc[-1]
+            f_prev_avg = past_3.iloc[:-1].mean()
+
+            result.iloc[idx] = f_recent - f_prev_avg
+
+        return result
+
+    df["hr_recent3_finish_trend"] = g["finish_order"].apply(compute_recent3_finish_trend)
+
+    def compute_recent3_last_vs_best_diff(s: pd.Series) -> pd.Series:
+        """
+        直近3走の「最新着順 - ベスト着順」
+        0 = 最新レースがベスト、正の値 = ベストより悪化
+        """
+        shifted = s.shift(1)  # 今走を除外
+        result = pd.Series(index=s.index, dtype=float)
+
+        for idx in range(len(s)):
+            # 過去3走を取得（最大3走）
+            past_3 = shifted.iloc[max(0, idx-2):idx+1]
+
+            if len(past_3) == 0:
+                result.iloc[idx] = np.nan
+                continue
+
+            f_recent = past_3.iloc[-1]
+            f_best = past_3.min()
+
+            result.iloc[idx] = f_recent - f_best
+
+        return result
+
+    df["hr_recent3_last_vs_best_diff"] = g["finish_order"].apply(compute_recent3_last_vs_best_diff)
 
     # ========================================
     # 出力カラムを選択
@@ -179,6 +282,16 @@ def compute_horse_history_features(hr: pd.DataFrame) -> pd.DataFrame:
         "hr_recent3_avg_win_odds",
         "hr_recent3_avg_popularity",
         "hr_recent3_big_loss_count",
+        # recent5
+        "hr_recent5_starts",
+        "hr_recent5_avg_finish",
+        "hr_recent5_best_finish",
+        "hr_recent5_avg_last3f",
+        "hr_recent5_avg_popularity",
+        "hr_recent5_big_loss_count",
+        # trend
+        "hr_recent3_finish_trend",
+        "hr_recent3_last_vs_best_diff",
         # rotation
         "hr_days_since_prev",
     ]
