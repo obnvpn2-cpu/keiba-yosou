@@ -1,333 +1,272 @@
-# KEIBA SCENARIO AI
+# Scenario-Aware Racing Intelligence (keiba-scenario-ai)
 
-**人間と協業する競馬予想AI**
+> **人間と協業する競馬予想AI**  
+> 「ベースモデル × シナリオ補正 × わかりやすい UI」で、  
+> 競馬ファンが自分のシナリオを反映した予想を作れることを目指すプロジェクトです。
 
-このプロジェクトは、  
-「機械学習モデルのベース予測」と「人間が考えるレースシナリオ（ペース・バイアス・展開）」を組み合わせて  
-**“シナリオ補正後の期待値” を出すこと**を目的とした競馬予想システムです。
-
----
-
-## 🔧 全体アーキテクチャ
-
-大きく3レイヤ構成です。
-
-1. **ベース予測レイヤ**
-   - LightGBM を使った勝率予測モデル
-   - 入力は SQLite の `feature_table`
-2. **シナリオ補正レイヤ**
-   - 人間が指定するシナリオ（ペース・馬場バイアス・隊列など）を受け取り、
-   - ベース予測に対して log-odds 空間で補正をかける
-3. **UI / API レイヤ**
-   - Python + FastAPI による API
-   - Next.js ベースのフロントエンド（`keiba-ui/`）で可視化予定
+- データソース：**JRA（db.netkeiba.com）**
+- 期間：**2021–2024 年の全レース（平地中心）**
+- DB：SQLite（リポジトリ直下 `netkeiba.db`）
+- ベースモデル：複勝 in3 確率予測（ロジスティック回帰 → 将来 LightGBM 等に発展）
+- シナリオ補正：ペース・バイアス・脚質など人間の入力でベース予測を調整
 
 ---
 
-## 📂 ディレクトリ構成（主要）
+## 1. リポジトリ概要
 
-リポジトリルート直下：
+大きく 3 レイヤ構成です。
+
+1. **Data / Features**
+   - `src/ingestion/`：スクレイピング～DB格納
+   - `scripts/build_horse_results.py`：馬の履歴テーブル
+   - `scripts/build_feature_table_v2.py`：学習用テーブル
+2. **Base Model**
+   - `scripts/train_eval_logistic.py`：ロジスティック回帰による複勝 in3 予測
+   - 今後 LightGBM などのモデルを追加予定
+3. **Scenario & UI**
+   - `scenario/`：ペース・バイアス・脚質を反映する補正レイヤ
+   - `ui/`：JSON を読んで展開シナリオを可視化する簡易フロント
+
+---
+
+## 2. セットアップ
+
+### 2.1 Python 環境
+
+- Python 3.11+ 推奨
+- 必要ライブラリ（例）：
+
+```bash
+pip install -r requirements.txt
+# or
+pip install pandas numpy scikit-learn lightgbm requests beautifulsoup4
+```
+
+（実際の requirements はリポジトリ内のファイルを参照）
+
+### 2.2 DB の位置
+
+- プロジェクトの **正とする DB** はリポジトリ直下の：
 
 ```text
-keiba-scenario-ai/
-├── src/
-│   ├── ingestion/                 # netkeiba スクレイピング & DB 保存
-│   │   ├── scraper.py             # Cookie 認証付き HTTP クライアント
-│   │   ├── parser.py              # レース詳細 HTML / JSONP パーサ
-│   │   ├── models.py              # dataclass 群
-│   │   ├── db.py                  # SQLite への保存ロジック
-│   │   └── ingest_runner.py       # CLI エントリポイント
-│   │
-│   ├── features/
-│   │   ├── __init__.py            # build_feature_table エントリ
-│   │   ├── feature_builder.py     # 特徴量生成（ラップ比特徴量含む）
-│   │   └── sqlite_store_feature.py# feature_table 作成 & INSERT
-│   │
-│   ├── base_model.py              # LightGBM ベース勝率モデル
-│   ├── base_feature_builder.py    # 旧 feature builder 等（必要に応じて移行）
-│   ├── calibration.py             # 確率キャリブレーション (Platt / Isotonic)
-│   ├── baba_adjustment.py         # 馬場補正モデル (log-odds)
-│   ├── pace_prediction.py         # ペース予測モデル
-│   ├── pace_adjustment.py         # ペース補正モデル
-│   ├── probability_integration.py # 補正結果の統合
-│   ├── synergy_score.py           # 相性スコア
-│   ├── backtest.py                # バックテスト
-│   ├── shap_explainer.py          # SHAP 解析
-│   ├── api.py                     # FastAPI エンドポイント
-│   ├── timeline_manager.py        # 時系列分割・リーク防止
-│   └── ...                        # テストやユーティリティ
-│
-├── keiba-ui/                      # Next.js UI プロジェクト（WIP）
-├── data/                          # ローカル用データ格納（*.db など）※ Git 管理外推奨
-├── models/                        # 学習済みモデル格納
-├── requirements.txt               # Python 依存パッケージ
-└── README.md                      # このファイル
-````
+netkeiba.db
+```
 
-※ `src/netkeiba.db` や `data/*.db` はローカル生成用で、Git 管理から外す想定です。
+- ingestion・スクリプトはすべて `--db` オプションでパスを受け取る形に統一しています。
+- 古いコードには `src/netkeiba.db` や `data/keiba.db` などの記述が残っている場合がありますが、  
+  **現在は `netkeiba.db`（リポジトリ直下）を優先**してください。
 
 ---
 
-## 🧲 データ取得（netkeiba ingestion）
+## 3. データパイプライン
 
-### 1. Cookie 設定
+### 3.1 JRA レース情報の ingestion
 
-`src/ingestion/.env.example` を基に `.env` を作成し、
-netkeiba の Cookie 値を環境変数として設定します。
+レース一覧 → 詳細ページ → DB 保存までを一括で行います。
 
 ```bash
 cd src
-cp ingestion/.env.example .env
-nano .env  # 各 NETKEIBA_COOKIE_XXX にブラウザから取得した値を入れる
+python -m ingestion.ingest_runner \
+  --start-year 2021 --end-year 2024 \
+  --db ../netkeiba.db
 ```
 
-`.env` の中身イメージ：
-
-```dotenv
-NETKEIBA_COOKIE_netkeiba=...
-NETKEIBA_COOKIE_nkauth=...
-NETKEIBA_COOKIE_ga_netkeiba_member=...
-# など、scraper.py が読む Cookie 群
-```
-
-### 2. 2024 年 JRA 全レースを取得する
+- 必要に応じて年を分割して実行することもできます。
 
 ```bash
+# 例：2021 年だけ
 cd src
-
-# ドライラン（DB 書き込みなしでレース ID などの流れだけ確認）
-python -m ingestion.ingest_runner --start-year 2024 --end-year 2024 --dry-run
-
-# 本番 ingestion（netkeiba.db に書き込み）
-python -m ingestion.ingest_runner --start-year 2024 --end-year 2024
+python -m ingestion.ingest_runner \
+  --start-year 2021 --end-year 2021 \
+  --db ../netkeiba.db
 ```
 
-### 3. 特定レースだけ再取得する（デバッグ用）
+- 主なテーブル：
+  - `races`：レース条件（日時・コース・クラス・頭数など）
+  - `race_results`：各馬の着順・タイム・人気など
+  - `payouts`：馬券種別ごとの払戻（本プロジェクトは主に `複勝` を利用）
+  - `corners`, `lap_times`, `horse_laps`, `short_comments`：  
+    コーナー通過順・ラップ・馬ごとのラップ・コメント（シナリオ／将来拡張用）
+
+### 3.2 馬ごとの履歴テーブル：`horse_results`
 
 ```bash
-cd src
-
-# 例: 有馬記念（2024-12-22, race_id=202406050811）だけ再取得
-python -m ingestion.ingest_runner --race-ids 202406050811 -v
+python scripts/build_horse_results.py --db netkeiba.db
 ```
 
-ingestion の結果は `src/netkeiba.db` に保存されます（`ingestion/db.py` の `DEFAULT_DB_PATH`）。
+- `horse_results(horse_id, race_id, race_date, start_index, finish_order, last3f, odds, popularity, prize, ...)`
+- 各馬の出走履歴を `race_date` でソートし、`start_index` を付与。
+- ここから **履歴特徴量 `hr_*`** を計算します（リーク防止のため「今走を除外」）。
 
-主に以下のテーブルが作られます：
-
-* `races`：レース基本情報
-* `race_results`：各馬の成績
-* `payouts`：払戻情報
-* `lap_times`：レース全体のラップ
-* `horse_laps`：各馬の 200m ごとの個別ラップ
-* `corners`：通過順位 など
-
----
-
-## 🏇 horse_laps とラップ系特徴量
-
-### horse_laps テーブル
-
-netkeiba の「個別ラップ」API (`ajax_race_result_horse_laptime.html`) から JSONP を取得し、
-HTML テーブルに変換した上で、以下の形式で保存しています：
-
-* `race_id TEXT`
-* `horse_id TEXT`
-* `section_m INTEGER`
-
-  * コース距離が偶数（例: 1400m, 1000m） → 200, 400, ..., 距離
-  * コース距離が奇数（例: 1300m, 2500m） → 100, 300, ..., 距離
-* `time_sec REAL`
-
-  * 区間ラップ（秒）
-* `position INTEGER`
-
-  * 位置情報（現時点では主に `NULL`。将来拡張用）
-
-### ラップ比特徴量（hlap_*）
-
-`features/feature_builder.py` 内で、`horse_laps` と `lap_times` を用いて
-**「その馬のラップがレース平均と比べてどれだけ速い/遅いか」** を特徴量にしています。
-
-`feature_table` に追加されるカラム：
-
-* `hlap_overall_vs_race`
-
-  * レース全区間の平均差分
-* `hlap_early_vs_race`
-
-  * 0〜40% 区間の平均差分
-* `hlap_mid_vs_race`
-
-  * 40〜80% 区間の平均差分
-* `hlap_late_vs_race`
-
-  * 80〜100% 区間の平均差分
-* `hlap_last600_vs_race`
-
-  * ゴール前 600m（距離 600m 分）の平均差分
-
-計算イメージ：
-
-* 各区間で
-  `delta = 馬のラップ秒数 - レース平均ラップ秒数`
-* 指定したゾーンごとに `delta` を平均したものを特徴量として使う
-  → マイナスなら「そのゾーンで平均より速い」、プラスなら「遅い」。
-
----
-
-## 📊 feature_table の生成
-
-### 1. feature_table を作り直す（必要なら一度 DROP）
+### 3.3 学習用テーブル：`feature_table_v2`
 
 ```bash
-cd src
-python
+python scripts/build_feature_table_v2.py --db netkeiba.db
 ```
 
-```python
-import sqlite3
-conn = sqlite3.connect("netkeiba.db")
-conn.execute("DROP TABLE IF EXISTS feature_table")
-conn.commit()
-conn.close()
-exit()
-```
+- 役割：
+  - 旧 `feature_table`（v1）のレース条件・簡易履歴集計に加え、
+  - `horse_results` から計算した `hr_*` 履歴特徴を横持ちで追加。
+- 主な列：
+  - キー・ターゲット：
+    - `race_id, horse_id, target_win, target_in3, target_value`
+  - レース条件：
+    - `course, surface, surface_id, distance, distance_cat`
+    - `track_condition, track_condition_id, field_size, race_class`
+    - `race_year, race_month, waku, umaban, horse_weight, horse_weight_diff`
+  - v1 由来の履歴集計：
+    - `n_starts_total, win_rate_total, in3_rate_total`
+    - `n_starts_dist_cat, win_rate_dist_cat, in3_rate_dist_cat` など
+  - 履歴特徴 `hr_*`（近況・成長軸）
+    - 生涯成績系（start数・勝率・平均着順・賞金など）
+    - 直近3走系（平均着順・ベスト着順・上がり・人気など）
+    - 直近5走系（平均着順・大敗回数など）
+    - トレンド系（成績の上向き／下り坂指標）
+    - 間隔（`hr_days_since_prev` など）
 
-### 2. feature_table を再構築
+> 補足：  
+> 以前は個別ラップから作る `hlap_*` 特徴を学習テーブルに入れていましたが、  
+> データの制約などにより、**現行の `feature_table_v2` では `hlap_*` 系は一度外しています**。  
+> ラップ情報はテーブル（`horse_laps` 等）としては残っており、  
+> シナリオレイヤや将来モデルで再利用する想定です。
+
+---
+
+## 4. ベースモデル（ロジスティック回帰）の評価
+
+### 4.1 学習・評価スクリプト
 
 ```bash
-cd src
-
-python -c "import sqlite3, logging; logging.basicConfig(level=logging.INFO); from features import build_feature_table; conn = sqlite3.connect('netkeiba.db'); build_feature_table(conn)"
+python scripts/train_eval_logistic.py --db netkeiba.db
 ```
 
-ログ上で
+- データ：
+  - `feature_table_v2`（なければ `feature_table` をフォールバック）
+  - `race_results`（`horse_no`）
+  - `payouts`（`bet_type = '複勝'`）
+- スプリット：
+  - train: race_year ∈ {2021, 2022, 2023}
+  - test : race_year = 2024
+- モデル：
+  - `LogisticRegression(max_iter=1000)`（複勝 in3 の二値分類）
 
-* `Loaded races: ...`
-* `Loaded race_results: ...`
-* `Loaded lap_times: ...`
-* `Loaded horse_laps: ...`
-* `Feature table built: N rows`
+### 4.2 出力される指標（現状）
 
-と出ていれば OK。
+- **Global Metrics**
+  - Accuracy（0.5 閾値）
+  - ROC-AUC
+  - Log Loss
+  - Brier Score
+- **Ranking Evaluation**
+  - テストレース数
+  - Top1 / Top2 / Top3 カバー率
+  - 複勝圏内の馬のうち、最も高く予測された馬の平均順位
+- **Strategy: Top1 All Races**
+  - 全レースで「予測確率最大の 1頭」を複勝 1点買いした場合の
+    - ベット数 / 的中数 / 的中率 / 投資 / 払戻 / 回収率
+- **Strategy: Top1 with Thresholds**
+  - 閾値（0.25 / 0.30 / 0.35 / 0.40）以上のレースだけベットした場合の
+    - Bets / Hits / Hit% / ROI% / AvgProb
+- **Calibration Evaluation**
+  - 10 ビンでのキャリブレーションと ECE（Expected Calibration Error）
+- **Debug Information**
+  - 複勝払戻の欠損率
+  - 1レースあたりの払戻件数（平均・最小・最大）
+  - 払戻件数が 3 未満のレース数 など
 
-### 3. ラップ特徴量の確認例
-
-```bash
-cd src
-python
-```
-
-```python
-import sqlite3
-import pandas as pd
-
-conn = sqlite3.connect("netkeiba.db")
-
-df = pd.read_sql_query(
-    """
-    SELECT
-        race_id,
-        horse_id,
-        hlap_overall_vs_race,
-        hlap_early_vs_race,
-        hlap_mid_vs_race,
-        hlap_late_vs_race,
-        hlap_last600_vs_race
-    FROM feature_table
-    WHERE race_id IN ('202406050811', '202408070108')
-    ORDER BY race_id, horse_id
-    LIMIT 20
-    """,
-    conn,
-)
-print(df.to_string(index=False))
-```
-
-ここで `hlap_*` が `NULL` ではなく数値として埋まっていればラップ系特徴量の生成は成功しています。
+> 現時点のログ例（2021–23 学習 / 2024 テスト、特徴量 46 本）では、  
+> Accuracy ≒ 0.79, ROC-AUC ≒ 0.74, 複勝 top1 全レース買いの回収率 ≒ 79% 程度。  
+> まだ「控除率を超える水準」には届いておらず、  
+> **「現状の実力を測るためのベンチマーク」** として位置づけています。
 
 ---
 
-## 🤖 モデル・補正レイヤ（概要）
+## 5. シナリオ補正レイヤ & UI（概要）
 
-Phase 1 で実装済みのモジュール（詳細コードは各ファイル参照）：
+### 5.1 シナリオ補正レイヤ（scenario/）
 
-* `base_model.py`
-  LightGBM によるベース勝率モデル
-* `calibration.py`
-  Platt Scaling / Isotonic Regression による確率キャリブレーション
-* `baba_adjustment.py`
-  馬場状態に応じた log-odds 補正
-* `pace_prediction.py`
-  前半・後半ラップの連続値予測
-* `pace_adjustment.py`
-  ペースによる有利・不利を log-odds で補正
-* `probability_integration.py`
-  補正済み log-odds を統合して最終的な勝率に変換
-* `backtest.py`
-  オッズ・控除率を考慮したバックテスト
-* `shap_explainer.py`
-  SHAP による特徴量重要度と説明テキスト生成
-* `api.py`
-  FastAPI による推論 API
+- 入力：
+  - ベースモデルの win / in3 確率
+  - 人間が指定する：
+    - 予想ペース（スロー / ミドル / ハイ）
+    - 馬場バイアス（内/外・前/後）
+    - 想定隊列（逃げ・先行・差し・追い込み） など
+- 出力：
+  - 補正後の win / in3 確率
+  - シナリオ前後で「どの馬がどれだけ得／損しているか」の差分情報
 
-モデルの訓練〜推論フロー自体は、旧 README の記述と大枠は変わっていません。
-ベースモデルの入力として、**新たにラップ比特徴量（`hlap_*`）を含む `feature_table`** が使えるようになった、というのが今回のアップデートです。
+### 5.2 UI（ui/）
+
+- `run_scenario_prediction.py` で JSON を生成し、
+- `run_scenario_ui.py` で Web UI を立ち上げ、
+- ブラウザ上でシナリオごとの変化を可視化する構成になっています。
+
+（詳細な使い方は各スクリプト内の docstring を参照）
 
 ---
 
-## ⚙️ セットアップ（再掲）
+## 6. ヒューマン予想家からのインスピレーション
 
-```bash
-# ルートで
-python -m venv venv
-source venv/bin/activate   # Windows: venv\Scripts\activate
+プロジェクトでは、
 
-pip install -r requirements.txt
-```
+- **キムラヨウヘイ**
+- **のれん**
+- **メシ馬**
 
-その後、
+といった予想家の G1 / 重賞の見解を md で整理し、  
+そこから **「共通して重視している 9 つの視点（軸）」** を抽出しています。
 
-1. `src/ingestion/.env` に Cookie を設定
-2. `python -m ingestion.ingest_runner ...` で `netkeiba.db` を作成
-3. `build_feature_table(conn)` で `feature_table` を構築
-4. ベースモデル学習・バックテスト・API 起動…という流れで利用します。
+この 9 軸は、
 
----
+- 近況・成長
+- 条件適性（距離 / コース / 馬場）
+- 地力・レースレベル
+- 位置取り・脚質 × 展開
+- 馬場バイアス・枠順
+- ローテーション・仕上がり
+- メンタル・レースセンス
+- 陣営・騎手意図
+- オッズ・期待値バランス
 
-## 🛑 Git 運用上の注意
+といった要素で構成されており、  
+**「人間の予想ロジックをどう特徴量に落とすか」** を設計するためのフレームとして使っています。
 
-* **コミットしないもの**
-
-  * `src/netkeiba.db`
-  * `data/*.db`
-  * `keiba-ui/node_modules/` など
-
-`.gitignore` に
-
-```gitignore
-keiba-ui/node_modules/
-src/netkeiba.db
-data/*.db
-```
-
-を入れて、**大きい DB や依存パッケージは Git 管理から外す**運用を前提としています。
+今後、`feature_table_v2` 以降の拡張では、  
+この 9 軸をガイドラインにして特徴量を 100 本以上に増やしていく予定です。
 
 ---
 
-## 👤 作成者
+## 7. 今後のロードマップ（ざっくり）
 
-* obn
-* Claude (Anthropic)
-* ChatGPT (OpenAI)
+1. **評価ロジックの安定化**
+   - `train_eval_logistic.py` を、今後も全モデル共通で使える「物差し」として維持。
+   - 評価時に必要なログ・サマリを整える。
+2. **特徴量の拡張（100+ 本へ）**
+   - `horse_results` ベースの hr_* をさらに強化（近況・成長軸）。
+   - `horse_profiles`（馬のプロフィール）、`pedigree`（血統）、`jockey_stats` / `trainer_stats` などのテーブルを追加。
+   - レースレベル・オッズ系の特徴量も充実させる。
+3. **モデル側の強化**
+   - LightGBM / XGBoost などツリー系モデルでの評価。
+   - オッズを目的関数に組み込んだ期待値志向モデルの検討。
+   - キャリブレーションレイヤ（Platt / Isotonic 等）の追加。
+4. **シナリオレイヤとの統合強化**
+   - ベースモデル出力のキャリブレーションを前提に、  
+     シナリオ補正後の確率も一貫性を維持する設計へ。
 
 ---
 
-**最終更新: 2025-12-14**
+## 8. 開発者・エージェント向けメモ
 
-* netkeiba ingestion パイプライン（JRA 2024 全レース）
-* 個別ラップ (`horse_laps`) 取得
-* ラップ比特徴量 (`hlap_*`) を feature_table に追加
+- DB スキーマを変更する場合は、
+  - 影響するスクリプトを確認した上で、
+  - README / AGENT に仕様と意図を追記してください。
+- 新しい特徴量を追加したら、
+  - 欠損率・分布の sanity check
+  - 「未来の情報を混ぜていないか」のチェック
+  を忘れずに。
+- `AGENT.md` はコードを書くエージェント向けの詳細ガイドラインです。  
+  エージェント側の修正方針はそちらを参照してください。
 
-````
+---
+
+最終更新日: **2025-12-18**
