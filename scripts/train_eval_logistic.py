@@ -522,6 +522,146 @@ def evaluate_debug(df: pd.DataFrame, payout_col: str = "fukusho_payout") -> Dict
     }
 
 
+def run_sanity_check_payout(df: pd.DataFrame) -> None:
+    """
+    複勝払戻 JOIN の健全性チェック (SANITY CHECK)
+
+    目的：fukusho_payout の欠損が「負け馬の自然な NULL」なのか、
+         「JOIN 不整合による異常」なのかを判定する。
+    """
+    logger.info("=" * 80)
+    logger.info("SANITY CHECK: fukusho_payout JOIN integrity")
+    logger.info("=" * 80)
+
+    # 必要なカラムの存在確認
+    required_cols = ["fukusho_payout", "target_in3", "race_id"]
+    optional_cols = ["horse_id", "umaban", "field_size"]
+
+    missing_required = [c for c in required_cols if c not in df.columns]
+    if missing_required:
+        logger.error(f"FATAL: Required columns missing: {missing_required}")
+        logger.error(f"Available columns (first 50): {df.columns.tolist()[:50]}")
+        raise RuntimeError(f"Cannot run sanity check: missing columns {missing_required}")
+
+    # 基本統計
+    n_total = len(df)
+    overall_missing = df["fukusho_payout"].isna().mean()
+
+    logger.info(f"Total rows:                    {n_total:,}")
+    logger.info(f"Overall fukusho_payout missing: {overall_missing:.1%} ({df['fukusho_payout'].isna().sum():,} rows)")
+    logger.info("")
+
+    # target_in3 別の欠損率
+    df_in3 = df[df["target_in3"] == 1]
+    df_not_in3 = df[df["target_in3"] == 0]
+
+    in3_missing = df_in3["fukusho_payout"].isna().mean() if len(df_in3) > 0 else float("nan")
+    notin3_missing = df_not_in3["fukusho_payout"].isna().mean() if len(df_not_in3) > 0 else float("nan")
+
+    logger.info("Breakdown by target_in3:")
+    logger.info(f"  in3 (target_in3==1):     {len(df_in3):,} rows, missing: {in3_missing:.1%}")
+    logger.info(f"  not-in3 (target_in3==0): {len(df_not_in3):,} rows, missing: {notin3_missing:.1%}")
+    logger.info("")
+
+    # ⚠️ in3 なのに fukusho_payout が NULL の行（潜在的な JOIN 問題）
+    in3_but_null = df_in3[df_in3["fukusho_payout"].isna()]
+    n_in3_but_null = len(in3_but_null)
+
+    if n_in3_but_null > 0:
+        logger.warning(f"⚠️  Found {n_in3_but_null:,} rows where target_in3==1 BUT fukusho_payout is NULL!")
+        logger.warning("    This may indicate JOIN issues or data corruption.")
+        logger.warning("    Showing up to 30 samples:")
+        logger.warning("")
+
+        # サンプル表示
+        sample_cols = ["race_id", "horse_id"] if "horse_id" in df.columns else ["race_id"]
+        if "umaban" in df.columns:
+            sample_cols.append("umaban")
+
+        sample = in3_but_null[sample_cols].head(30)
+        for idx, row in sample.iterrows():
+            logger.warning(f"    {dict(row)}")
+
+        if n_in3_but_null > 30:
+            logger.warning(f"    ... and {n_in3_but_null - 30:,} more rows")
+        logger.warning("")
+    else:
+        logger.info("✅ All in3 horses have fukusho_payout (no JOIN issues detected)")
+        logger.info("")
+
+    # レース単位での払戻件数チェック
+    logger.info("Per-race payout count analysis:")
+
+    payout_counts = []
+    field_sizes = []
+
+    for race_id, race_df in df.groupby("race_id"):
+        n_payout = race_df["fukusho_payout"].notna().sum()
+        payout_counts.append(n_payout)
+
+        if "field_size" in df.columns:
+            field_sizes.append(race_df["field_size"].iloc[0] if len(race_df) > 0 else 0)
+        else:
+            field_sizes.append(len(race_df))  # 出走頭数の推定
+
+    payout_counts = np.array(payout_counts)
+    field_sizes = np.array(field_sizes)
+
+    # describe 統計
+    logger.info(f"  Payout count per race:")
+    logger.info(f"    Mean:   {payout_counts.mean():.2f}")
+    logger.info(f"    Std:    {payout_counts.std():.2f}")
+    logger.info(f"    Min:    {payout_counts.min()}")
+    logger.info(f"    25%:    {np.percentile(payout_counts, 25):.0f}")
+    logger.info(f"    50%:    {np.percentile(payout_counts, 50):.0f}")
+    logger.info(f"    75%:    {np.percentile(payout_counts, 75):.0f}")
+    logger.info(f"    Max:    {payout_counts.max()}")
+    logger.info("")
+
+    # < 3 件のレース（理論的には top3 なので 3 件あるべき）
+    races_with_few = np.where(payout_counts < 3)[0]
+
+    if len(races_with_few) > 0:
+        logger.warning(f"⚠️  Found {len(races_with_few):,} races with < 3 payouts (expected 3 for top-3 finish)")
+        logger.warning("    Showing up to 10 samples:")
+
+        for i in races_with_few[:10]:
+            race_id = df.groupby("race_id").groups.keys().__iter__()
+            for _ in range(i + 1):
+                race_id = next(iter(df.groupby("race_id").groups.keys()))
+
+            race_ids_list = list(df.groupby("race_id").groups.keys())
+            race_id_sample = race_ids_list[i] if i < len(race_ids_list) else "N/A"
+
+            logger.warning(f"      race_id={race_id_sample}, payout_count={payout_counts[i]}, field_size={field_sizes[i]}")
+
+        if len(races_with_few) > 10:
+            logger.warning(f"      ... and {len(races_with_few) - 10:,} more races")
+        logger.warning("")
+    else:
+        logger.info("✅ All races have >= 3 payouts (expected for top-3 finish)")
+        logger.info("")
+
+    # 期待欠損率の計算（理論値との比較）
+    avg_field_size = field_sizes.mean()
+    expected_missing = 1.0 - (3.0 / avg_field_size) if avg_field_size > 0 else float("nan")
+
+    logger.info("Expected vs Actual missing rate:")
+    logger.info(f"  Avg field size:        {avg_field_size:.1f} horses")
+    logger.info(f"  Expected missing rate: {expected_missing:.1%} (1 - 3/{avg_field_size:.1f})")
+    logger.info(f"  Actual missing rate:   {overall_missing:.1%}")
+    logger.info(f"  Difference:            {(overall_missing - expected_missing):.1%}")
+
+    if abs(overall_missing - expected_missing) < 0.05:
+        logger.info("  ✅ Actual missing rate matches theory (within 5%)")
+    else:
+        logger.warning(f"  ⚠️  Actual missing rate differs from theory by {abs(overall_missing - expected_missing):.1%}")
+
+    logger.info("")
+    logger.info("=" * 80)
+    logger.info("")
+
+
 def _evaluate_strategy(df: pd.DataFrame) -> None:
     """複勝本命1頭買い戦略を評価するヘルパー関数"""
     bets = 0
@@ -595,7 +735,21 @@ def main() -> None:
         default="netkeiba.db",
         help="Path to SQLite database (default: netkeiba.db)",
     )
+    parser.add_argument(
+        "--sanity-payout",
+        action="store_true",
+        help="Run sanity check for fukusho_payout JOIN integrity",
+    )
+    parser.add_argument(
+        "--sanity-only",
+        action="store_true",
+        help="Run sanity check only and exit (implies --sanity-payout)",
+    )
     args = parser.parse_args()
+
+    # --sanity-only implies --sanity-payout
+    if args.sanity_only:
+        args.sanity_payout = True
 
     db_path = os.path.abspath(args.db)
     print(f"[INFO] Database path: {db_path}")
@@ -606,6 +760,16 @@ def main() -> None:
     conn = sqlite3.connect(db_path)
     try:
         df = load_dataset(conn)
+
+        # Run sanity check if requested
+        if args.sanity_payout:
+            run_sanity_check_payout(df)
+
+            # Exit if --sanity-only
+            if args.sanity_only:
+                logger.info("Sanity check completed. Exiting (--sanity-only mode).")
+                return
+
         df_train, df_test = split_by_race(df)
 
         if df_train.empty or df_test.empty:
