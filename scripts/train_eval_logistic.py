@@ -29,10 +29,24 @@ EXCLUDED_COLUMNS = {
     "target_win",
     "target_in3",
     "target_value",
+    "finish_order",
+    "finish_position",
+    "paid_places",
+    "payout_count",
+    "should_have_payout",
 }
+
+PROHIBITED_PATTERNS = (
+    "target",
+    "payout",
+    "paid_",
+    "should_have",
+)
 
 
 def load_dataset(conn: sqlite3.Connection) -> pd.DataFrame:
+    hr_cols_in_table: List[str] = []
+
     # Check which feature table exists
     cursor = conn.cursor()
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'feature_table%'")
@@ -161,19 +175,55 @@ def split_by_race(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
 
 
 
-def build_feature_matrix(df: pd.DataFrame) -> Tuple[pd.DataFrame, np.ndarray]:
+def _is_prohibited_feature(col: str) -> bool:
+    """Return True if the column name should never be used as a feature (leak protection)."""
+    normalized = col.lower()
+    if normalized in EXCLUDED_COLUMNS:
+        return True
+    if normalized.startswith("finish_") or normalized.endswith("_finish"):
+        return True
+    if normalized in {"finish_order", "finish_position"}:
+        return True
+    if any(pattern in normalized for pattern in PROHIBITED_PATTERNS):
+        return True
+    return False
+
+
+def build_feature_matrix(df: pd.DataFrame, debug_features: bool = False) -> Tuple[pd.DataFrame, np.ndarray]:
     feature_cols: List[str] = []
+    prohibited_found: List[str] = []
+
     for col in df.columns:
-        if col in EXCLUDED_COLUMNS:
+        if not pd.api.types.is_numeric_dtype(df[col]):
             continue
-        if pd.api.types.is_numeric_dtype(df[col]):
-            feature_cols.append(col)
+        if _is_prohibited_feature(col):
+            prohibited_found.append(col)
+            continue
+        feature_cols.append(col)
 
     # Count hr_* features
     hr_feature_cols = [c for c in feature_cols if c.startswith("hr_")]
 
-    print(f"[INFO] feature cols ({len(feature_cols)}): {feature_cols}")
-    print(f"[INFO] hr_* feature cols ({len(hr_feature_cols)}): {hr_feature_cols}")
+    leaking_cols = [c for c in feature_cols if _is_prohibited_feature(c)]
+    if leaking_cols:
+        raise RuntimeError(
+            "Prohibited columns detected in feature set (possible data leak): "
+            f"{sorted(leaking_cols)}"
+        )
+
+    if prohibited_found:
+        print(f"[INFO] Prohibited columns present in dataset and excluded from features ({len(prohibited_found)}): {sorted(set(prohibited_found))}")
+
+    if debug_features:
+        print(f"[INFO] feature cols count: {len(feature_cols)}")
+        if feature_cols:
+            preview_head = feature_cols[:15]
+            preview_tail = feature_cols[-15:] if len(feature_cols) > 15 else []
+            print(f"[INFO] feature cols (head): {preview_head}")
+            if preview_tail:
+                print(f"[INFO] feature cols (tail): {preview_tail}")
+        print(f"[INFO] hr_* feature cols ({len(hr_feature_cols)}): {hr_feature_cols}")
+        print(f"[INFO] Prohibited column check: {'none detected in features' if not prohibited_found else 'excluded columns listed above'}")
 
     X = df[feature_cols].fillna(0)
     y = df["target_in3"].astype(int).values
@@ -1036,6 +1086,11 @@ def main() -> None:
         default=100,
         help="Maximum number of anomaly records to export to CSV (0 = export all, default: 100)",
     )
+    parser.add_argument(
+        "--debug-features",
+        action="store_true",
+        help="Output feature column summary and prohibited column checks before training",
+    )
     args = parser.parse_args()
 
     # --sanity-only implies --sanity-payout
@@ -1071,8 +1126,8 @@ def main() -> None:
         if df_train.empty or df_test.empty:
             raise RuntimeError("train or test dataset is empty; check data availability")
 
-        X_train, y_train = build_feature_matrix(df_train)
-        X_test, y_test = build_feature_matrix(df_test)
+        X_train, y_train = build_feature_matrix(df_train, debug_features=args.debug_features)
+        X_test, y_test = build_feature_matrix(df_test, debug_features=args.debug_features)
 
         scaler, model = train_model(X_train, y_train)
         evaluate(df_test, scaler, model, X_test, y_test, exclude_missing_payout=args.exclude_missing_payout)
