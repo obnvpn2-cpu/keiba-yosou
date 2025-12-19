@@ -298,27 +298,78 @@ def evaluate_strategy_top1_all(
     y_true_col: str = "target_in3",
     y_pred_col: str = "pred_in3_prob",
     payout_col: str = "fukusho_payout",
+    exclude_missing_payout: bool = True,
 ) -> Dict[str, float]:
     """
     戦略A：全レースで予測確率最大の馬に複勝ベット
+
+    Args:
+        exclude_missing_payout: True の場合、target_in3==1 なのに payout が NULL のレースを除外
     """
-    n_races = 0
-    n_hits = 0
-    total_return = 0.0
+    # 除外前の計算
+    n_races_before = 0
+    n_hits_before = 0
+    total_return_before = 0.0
+    excluded_races = []
 
     for race_id, race_df in df.groupby("race_id"):
         if race_df.empty:
             continue
 
-        n_races += 1
+        n_races_before += 1
+        best_idx = race_df[y_pred_col].idxmax()
+        chosen = race_df.loc[best_idx]
+
+        payout = chosen.get(payout_col)
+        is_in3 = int(chosen[y_true_col]) == 1
+
+        # 除外対象のレースを記録
+        if exclude_missing_payout and is_in3 and pd.isna(payout):
+            excluded_races.append(race_id)
+
+        if pd.notna(payout):
+            total_return_before += float(payout)
+            if is_in3:
+                n_hits_before += 1
+
+    # 除外後の計算
+    n_races_after = 0
+    n_hits_after = 0
+    total_return_after = 0.0
+
+    for race_id, race_df in df.groupby("race_id"):
+        if race_df.empty:
+            continue
+
+        # 除外対象のレースをスキップ
+        if exclude_missing_payout and race_id in excluded_races:
+            continue
+
+        n_races_after += 1
         best_idx = race_df[y_pred_col].idxmax()
         chosen = race_df.loc[best_idx]
 
         payout = chosen.get(payout_col)
         if pd.notna(payout):
-            total_return += float(payout)
+            total_return_after += float(payout)
             if int(chosen[y_true_col]) == 1:
-                n_hits += 1
+                n_hits_after += 1
+
+    # 除外統計
+    n_excluded_races = len(excluded_races)
+    n_excluded_rows = df[df["race_id"].isin(excluded_races)].shape[0] if n_excluded_races > 0 else 0
+
+    # メトリクス計算
+    if exclude_missing_payout and n_excluded_races > 0:
+        # 除外後の結果を使用
+        n_races = n_races_after
+        n_hits = n_hits_after
+        total_return = total_return_after
+    else:
+        # 除外前の結果を使用
+        n_races = n_races_before
+        n_hits = n_hits_before
+        total_return = total_return_before
 
     total_bet = n_races * bet_amount
     hit_rate = n_hits / n_races if n_races > 0 else 0.0
@@ -327,12 +378,32 @@ def evaluate_strategy_top1_all(
     logger.info("=" * 60)
     logger.info("Strategy: Top1 All Races (全レース top1 買い)")
     logger.info("=" * 60)
+
+    if exclude_missing_payout and n_excluded_races > 0:
+        logger.info(f"⚠️  Excluded races (in3 but payout NULL): {n_excluded_races:,} races ({n_excluded_rows:,} rows)")
+        logger.info("")
+        logger.info("Results (AFTER exclusion):")
+
     logger.info(f"ベットレース数:  {n_races:,}")
     logger.info(f"的中数:          {n_hits:,}")
     logger.info(f"的中率:          {hit_rate:.3f}")
     logger.info(f"総投資額:        {total_bet:,} 円")
     logger.info(f"総払戻:          {int(total_return):,} 円")
     logger.info(f"回収率:          {roi:.1f} %")
+
+    # 除外の影響を表示
+    if exclude_missing_payout and n_excluded_races > 0:
+        total_bet_before = n_races_before * bet_amount
+        hit_rate_before = n_hits_before / n_races_before if n_races_before > 0 else 0.0
+        roi_before = (total_return_before / total_bet_before * 100) if total_bet_before > 0 else 0.0
+
+        logger.info("")
+        logger.info("Impact of exclusion:")
+        logger.info(f"  Races:    {n_races_before:,} → {n_races:,} (Δ {n_races - n_races_before:+,})")
+        logger.info(f"  Hits:     {n_hits_before:,} → {n_hits:,} (Δ {n_hits - n_hits_before:+,})")
+        logger.info(f"  Hit rate: {hit_rate_before:.3f} → {hit_rate:.3f} (Δ {hit_rate - hit_rate_before:+.3f})")
+        logger.info(f"  ROI:      {roi_before:.1f}% → {roi:.1f}% (Δ {roi - roi_before:+.1f}%)")
+
     logger.info("")
 
     return {
@@ -342,6 +413,8 @@ def evaluate_strategy_top1_all(
         "total_bet": total_bet,
         "total_return": total_return,
         "roi": roi,
+        "n_excluded_races": n_excluded_races if exclude_missing_payout else 0,
+        "n_excluded_rows": n_excluded_rows if exclude_missing_payout else 0,
     }
 
 
@@ -352,10 +425,30 @@ def evaluate_strategy_top1_thresholds(
     y_pred_col: str = "pred_in3_prob",
     payout_col: str = "fukusho_payout",
     y_true_col: str = "target_in3",
+    exclude_missing_payout: bool = True,
 ) -> List[Dict[str, float]]:
     """
     閾値付き戦略：予測確率が閾値以上の場合のみベット
+
+    Args:
+        exclude_missing_payout: True の場合、target_in3==1 なのに payout が NULL のレースを除外
     """
+    # 除外対象のレースを事前に特定
+    excluded_races = []
+    if exclude_missing_payout:
+        for race_id, race_df in df.groupby("race_id"):
+            if race_df.empty:
+                continue
+
+            best_idx = race_df[y_pred_col].idxmax()
+            chosen = race_df.loc[best_idx]
+
+            payout = chosen.get(payout_col)
+            is_in3 = int(chosen[y_true_col]) == 1
+
+            if is_in3 and pd.isna(payout):
+                excluded_races.append(race_id)
+
     results = []
 
     for thr in thresholds:
@@ -366,6 +459,10 @@ def evaluate_strategy_top1_thresholds(
 
         for race_id, race_df in df.groupby("race_id"):
             if race_df.empty:
+                continue
+
+            # 除外対象のレースをスキップ
+            if exclude_missing_payout and race_id in excluded_races:
                 continue
 
             best_idx = race_df[y_pred_col].idxmax()
@@ -403,6 +500,11 @@ def evaluate_strategy_top1_thresholds(
     logger.info("=" * 60)
     logger.info("Strategy: Top1 with Thresholds (閾値付き戦略)")
     logger.info("=" * 60)
+
+    if exclude_missing_payout and len(excluded_races) > 0:
+        logger.info(f"⚠️  Excluded races (in3 but payout NULL): {len(excluded_races):,} races")
+        logger.info("")
+
     logger.info(f"{'Threshold':>10} {'Bets':>6} {'Hits':>6} {'Hit%':>7} {'ROI%':>8} {'AvgProb':>8}")
     logger.info("-" * 60)
 
@@ -522,12 +624,16 @@ def evaluate_debug(df: pd.DataFrame, payout_col: str = "fukusho_payout") -> Dict
     }
 
 
-def run_sanity_check_payout(df: pd.DataFrame) -> None:
+def run_sanity_check_payout(df: pd.DataFrame, detail: bool = False) -> None:
     """
     複勝払戻 JOIN の健全性チェック (SANITY CHECK)
 
     目的：fukusho_payout の欠損が「負け馬の自然な NULL」なのか、
          「JOIN 不整合による異常」なのかを判定する。
+
+    Args:
+        df: データフレーム
+        detail: True の場合、詳細な異常レース情報を CSV 出力
     """
     logger.info("=" * 80)
     logger.info("SANITY CHECK: fukusho_payout JOIN integrity")
@@ -658,6 +764,76 @@ def run_sanity_check_payout(df: pd.DataFrame) -> None:
         logger.warning(f"  ⚠️  Actual missing rate differs from theory by {abs(overall_missing - expected_missing):.1%}")
 
     logger.info("")
+
+    # --sanity-detail: 詳細な異常レース情報を CSV 出力
+    if detail and len(races_with_few) > 0:
+        logger.info("-" * 80)
+        logger.info("DETAIL MODE: Generating anomaly CSV report")
+        logger.info("-" * 80)
+
+        # artifacts ディレクトリを作成
+        import os
+        artifacts_dir = "artifacts"
+        if not os.path.exists(artifacts_dir):
+            os.makedirs(artifacts_dir)
+            logger.info(f"Created directory: {artifacts_dir}/")
+
+        csv_path = os.path.join(artifacts_dir, "sanity_payout_anomalies.csv")
+
+        # 異常レースの詳細情報を収集
+        anomaly_records = []
+        race_ids_list = list(df.groupby("race_id").groups.keys())
+
+        for i in races_with_few[:min(len(races_with_few), 100)]:  # 最大100レース
+            if i >= len(race_ids_list):
+                continue
+
+            race_id = race_ids_list[i]
+            race_df = df[df["race_id"] == race_id]
+
+            n_payout = race_df["fukusho_payout"].notna().sum()
+            field_size_val = field_sizes[i] if i < len(field_sizes) else len(race_df)
+
+            # in3 だが payout NULL の馬を抽出
+            in3_but_null_in_race = race_df[
+                (race_df["target_in3"] == 1) &
+                (race_df["fukusho_payout"].isna())
+            ]
+
+            for idx, row in in3_but_null_in_race.iterrows():
+                anomaly_records.append({
+                    "race_id": race_id,
+                    "payout_count": n_payout,
+                    "field_size": field_size_val,
+                    "horse_id": row.get("horse_id", "N/A"),
+                    "umaban": row.get("umaban", "N/A"),
+                    "target_in3": row.get("target_in3", "N/A"),
+                    "fukusho_payout": "NULL",
+                })
+
+            # in3 だが payout NULL の馬がいないレースも記録（payout_count < 3 のため）
+            if len(in3_but_null_in_race) == 0:
+                anomaly_records.append({
+                    "race_id": race_id,
+                    "payout_count": n_payout,
+                    "field_size": field_size_val,
+                    "horse_id": "N/A",
+                    "umaban": "N/A",
+                    "target_in3": "N/A",
+                    "fukusho_payout": "N/A (< 3 payouts but no in3 NULL)",
+                })
+
+        # CSV 保存
+        if anomaly_records:
+            df_anomalies = pd.DataFrame(anomaly_records)
+            df_anomalies.to_csv(csv_path, index=False)
+            logger.info(f"✅ Saved {len(anomaly_records)} anomaly records to: {csv_path}")
+            logger.info(f"   Unique races in CSV: {df_anomalies['race_id'].nunique()}")
+        else:
+            logger.info("No anomaly records to save.")
+
+        logger.info("")
+
     logger.info("=" * 80)
     logger.info("")
 
@@ -698,9 +874,19 @@ def _evaluate_strategy(df: pd.DataFrame) -> None:
     print(f"回収率:         {roi * 100:.1f} %")
 
 
-def evaluate(df_test: pd.DataFrame, scaler: StandardScaler, model: LogisticRegression, X_test: pd.DataFrame, y_test: np.ndarray) -> None:
+def evaluate(
+    df_test: pd.DataFrame,
+    scaler: StandardScaler,
+    model: LogisticRegression,
+    X_test: pd.DataFrame,
+    y_test: np.ndarray,
+    exclude_missing_payout: bool = True,
+) -> None:
     """
     総合評価関数：各種評価メトリクスを実行
+
+    Args:
+        exclude_missing_payout: True の場合、戦略評価で payout 不明レースを除外
     """
     X_test_scaled = scaler.transform(X_test)
     proba = model.predict_proba(X_test_scaled)[:, 1]
@@ -715,11 +901,11 @@ def evaluate(df_test: pd.DataFrame, scaler: StandardScaler, model: LogisticRegre
     evaluate_ranking(df_test)
 
     # 3. 戦略A：全レースで top1 買い
-    evaluate_strategy_top1_all(df_test)
+    evaluate_strategy_top1_all(df_test, exclude_missing_payout=exclude_missing_payout)
 
     # 4. 閾値付き戦略
     thresholds = [0.25, 0.30, 0.35, 0.40]
-    evaluate_strategy_top1_thresholds(df_test, thresholds=thresholds)
+    evaluate_strategy_top1_thresholds(df_test, thresholds=thresholds, exclude_missing_payout=exclude_missing_payout)
 
     # 5. キャリブレーション評価
     evaluate_calibration(df_test, n_bins=10)
@@ -745,10 +931,32 @@ def main() -> None:
         action="store_true",
         help="Run sanity check only and exit (implies --sanity-payout)",
     )
+    parser.add_argument(
+        "--sanity-detail",
+        action="store_true",
+        help="Output detailed anomaly report to CSV (requires --sanity-payout)",
+    )
+    parser.add_argument(
+        "--exclude-missing-payout",
+        action="store_true",
+        default=True,
+        help="Exclude races where target_in3==1 but payout is NULL from strategy evaluation (default: True)",
+    )
+    parser.add_argument(
+        "--no-exclude-missing-payout",
+        dest="exclude_missing_payout",
+        action="store_false",
+        help="Do NOT exclude races with missing payout (opposite of --exclude-missing-payout)",
+    )
     args = parser.parse_args()
 
     # --sanity-only implies --sanity-payout
     if args.sanity_only:
+        args.sanity_payout = True
+
+    # --sanity-detail requires --sanity-payout
+    if args.sanity_detail and not args.sanity_payout:
+        logger.warning("--sanity-detail requires --sanity-payout, enabling it automatically")
         args.sanity_payout = True
 
     db_path = os.path.abspath(args.db)
@@ -763,7 +971,7 @@ def main() -> None:
 
         # Run sanity check if requested
         if args.sanity_payout:
-            run_sanity_check_payout(df)
+            run_sanity_check_payout(df, detail=args.sanity_detail)
 
             # Exit if --sanity-only
             if args.sanity_only:
@@ -779,7 +987,7 @@ def main() -> None:
         X_test, y_test = build_feature_matrix(df_test)
 
         scaler, model = train_model(X_train, y_train)
-        evaluate(df_test, scaler, model, X_test, y_test)
+        evaluate(df_test, scaler, model, X_test, y_test, exclude_missing_payout=args.exclude_missing_payout)
     finally:
         conn.close()
 
