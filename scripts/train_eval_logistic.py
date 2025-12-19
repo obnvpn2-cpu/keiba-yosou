@@ -28,6 +28,12 @@ PROHIBITED_EXACT = {
     "payout_count",
     "should_have_payout",
     "fukusho_payout",
+    # Scope separation: track condition handled by scenario layer, not base model
+    "track_condition",
+    "track_condition_id",
+    # Early-preview (前日) only: exclude same-day weight info
+    "horse_weight",
+    "horse_weight_diff",
 }
 
 # Columns that must never be used as features if their names contain these substrings
@@ -236,7 +242,6 @@ def build_feature_matrix(df: pd.DataFrame, debug_features: bool = False) -> Tupl
     prohibited_exact_hits: List[str] = []
     prohibited_pattern_hits: List[str] = []
 
-    # Collect numeric feature candidates while excluding prohibited columns
     for col in df.columns:
         if not pd.api.types.is_numeric_dtype(df[col]):
             continue
@@ -254,19 +259,20 @@ def build_feature_matrix(df: pd.DataFrame, debug_features: bool = False) -> Tupl
     # Count hr_* features
     hr_feature_cols = [c for c in feature_cols if c.startswith("hr_")]
 
-    # Fail-fast: if any prohibited column somehow entered feature_cols, stop immediately
     leaking_cols = [c for c in feature_cols if _prohibited_reason(c)[0]]
     if leaking_cols:
         _log_prohibited_summary(prohibited_exact_hits, prohibited_pattern_hits, leaking_cols)
-        raise ValueError(f"Prohibited columns detected in feature set: {sorted(set(leaking_cols))}")
+        raise RuntimeError(
+            "Prohibited columns detected in feature set (possible data leak): "
+            f"{sorted(leaking_cols)}"
+        )
 
-    # Debug output only when requested (avoid noisy logs in normal runs)
-    if debug_features:
-        _log_prohibited_summary(prohibited_exact_hits, prohibited_pattern_hits, [])
-        _log_feature_overview(feature_cols, hr_feature_cols)
+    _log_prohibited_summary(prohibited_exact_hits, prohibited_pattern_hits, leaking_cols)
+    _log_feature_overview(feature_cols, hr_feature_cols)
 
     X = df[feature_cols].fillna(0)
     y = df["target_in3"].astype(int).values
+
     return X, y
 
 
