@@ -96,7 +96,8 @@ def load_dataset(conn: sqlite3.Connection) -> pd.DataFrame:
             SELECT
                 race_id,
                 horse_id,
-                horse_no
+                horse_no,
+                finish_order
             FROM race_results
         ),
         fuku AS (
@@ -110,6 +111,7 @@ def load_dataset(conn: sqlite3.Connection) -> pd.DataFrame:
         SELECT
             f.*,
             rr.horse_no,
+            rr.finish_order,
             fuku.fukusho_payout
         FROM f
         JOIN rr
@@ -304,8 +306,17 @@ def evaluate_strategy_top1_all(
     戦略A：全レースで予測確率最大の馬に複勝ベット
 
     Args:
-        exclude_missing_payout: True の場合、target_in3==1 なのに payout が NULL のレースを除外
+        exclude_missing_payout: True の場合、should_have_payout (JRAルール) なのに payout が NULL のレースを除外
     """
+    # paid_places の計算（JRAルール）
+    def calculate_paid_places(field_size):
+        if field_size >= 8:
+            return 3
+        elif field_size >= 5:
+            return 2
+        else:
+            return 0
+
     # 除外前の計算
     n_races_before = 0
     n_hits_before = 0
@@ -323,9 +334,18 @@ def evaluate_strategy_top1_all(
         payout = chosen.get(payout_col)
         is_in3 = int(chosen[y_true_col]) == 1
 
-        # 除外対象のレースを記録
-        if exclude_missing_payout and is_in3 and pd.isna(payout):
-            excluded_races.append(race_id)
+        # JRAルールに基づく除外判定
+        if exclude_missing_payout:
+            field_size = chosen.get("field_size", len(race_df))
+            paid_places = calculate_paid_places(field_size)
+            finish_order = chosen.get("finish_order", 999)
+
+            # should_have_payout = 払戻対象着順なのに
+            should_have_payout = (finish_order <= paid_places) and (paid_places > 0)
+
+            # 真の異常：should_have_payout なのに payout が NULL
+            if should_have_payout and pd.isna(payout):
+                excluded_races.append(race_id)
 
         if pd.notna(payout):
             total_return_before += float(payout)
@@ -380,7 +400,7 @@ def evaluate_strategy_top1_all(
     logger.info("=" * 60)
 
     if exclude_missing_payout and n_excluded_races > 0:
-        logger.info(f"⚠️  Excluded races (in3 but payout NULL): {n_excluded_races:,} races ({n_excluded_rows:,} rows)")
+        logger.info(f"⚠️  Excluded races (should have payout but NULL, JRA rules): {n_excluded_races:,} races ({n_excluded_rows:,} rows)")
         logger.info("")
         logger.info("Results (AFTER exclusion):")
 
@@ -431,8 +451,17 @@ def evaluate_strategy_top1_thresholds(
     閾値付き戦略：予測確率が閾値以上の場合のみベット
 
     Args:
-        exclude_missing_payout: True の場合、target_in3==1 なのに payout が NULL のレースを除外
+        exclude_missing_payout: True の場合、should_have_payout (JRAルール) なのに payout が NULL のレースを除外
     """
+    # paid_places の計算（JRAルール）
+    def calculate_paid_places(field_size):
+        if field_size >= 8:
+            return 3
+        elif field_size >= 5:
+            return 2
+        else:
+            return 0
+
     # 除外対象のレースを事前に特定
     excluded_races = []
     if exclude_missing_payout:
@@ -444,9 +473,17 @@ def evaluate_strategy_top1_thresholds(
             chosen = race_df.loc[best_idx]
 
             payout = chosen.get(payout_col)
-            is_in3 = int(chosen[y_true_col]) == 1
 
-            if is_in3 and pd.isna(payout):
+            # JRAルールに基づく除外判定
+            field_size = chosen.get("field_size", len(race_df))
+            paid_places = calculate_paid_places(field_size)
+            finish_order = chosen.get("finish_order", 999)
+
+            # should_have_payout = 払戻対象着順なのに
+            should_have_payout = (finish_order <= paid_places) and (paid_places > 0)
+
+            # 真の異常：should_have_payout なのに payout が NULL
+            if should_have_payout and pd.isna(payout):
                 excluded_races.append(race_id)
 
     results = []
@@ -502,7 +539,7 @@ def evaluate_strategy_top1_thresholds(
     logger.info("=" * 60)
 
     if exclude_missing_payout and len(excluded_races) > 0:
-        logger.info(f"⚠️  Excluded races (in3 but payout NULL): {len(excluded_races):,} races")
+        logger.info(f"⚠️  Excluded races (should have payout but NULL, JRA rules): {len(excluded_races):,} races")
         logger.info("")
 
     logger.info(f"{'Threshold':>10} {'Bets':>6} {'Hits':>6} {'Hit%':>7} {'ROI%':>8} {'AvgProb':>8}")
@@ -624,19 +661,25 @@ def evaluate_debug(df: pd.DataFrame, payout_col: str = "fukusho_payout") -> Dict
     }
 
 
-def run_sanity_check_payout(df: pd.DataFrame, detail: bool = False) -> None:
+def run_sanity_check_payout(df: pd.DataFrame, detail: bool = False, anomaly_limit: int = 100) -> None:
     """
     複勝払戻 JOIN の健全性チェック (SANITY CHECK)
 
     目的：fukusho_payout の欠損が「負け馬の自然な NULL」なのか、
          「JOIN 不整合による異常」なのかを判定する。
 
+    JRAルール:
+    - 8頭以上: 3着まで払戻 (paid_places=3)
+    - 5-7頭: 2着まで払戻 (paid_places=2)
+    - 4頭以下: 複勝発売なし (paid_places=0)
+
     Args:
         df: データフレーム
         detail: True の場合、詳細な異常レース情報を CSV 出力
+        anomaly_limit: CSV 出力する異常レース数の上限（0 = 全件）
     """
     logger.info("=" * 80)
-    logger.info("SANITY CHECK: fukusho_payout JOIN integrity")
+    logger.info("SANITY CHECK: fukusho_payout JOIN integrity (JRA rules-based)")
     logger.info("=" * 80)
 
     # 必要なカラムの存在確認
@@ -649,6 +692,11 @@ def run_sanity_check_payout(df: pd.DataFrame, detail: bool = False) -> None:
         logger.error(f"Available columns (first 50): {df.columns.tolist()[:50]}")
         raise RuntimeError(f"Cannot run sanity check: missing columns {missing_required}")
 
+    # finish_order が必要（着順判定のため）
+    # race_results から取得するか、target_value から推定
+    # ここでは finish_order がない場合のフォールバック処理を追加
+    has_finish_order = "finish_order" in df.columns or "target_value" in df.columns
+
     # 基本統計
     n_total = len(df)
     overall_missing = df["fukusho_payout"].isna().mean()
@@ -657,104 +705,152 @@ def run_sanity_check_payout(df: pd.DataFrame, detail: bool = False) -> None:
     logger.info(f"Overall fukusho_payout missing: {overall_missing:.1%} ({df['fukusho_payout'].isna().sum():,} rows)")
     logger.info("")
 
-    # target_in3 別の欠損率
+    # field_size の分布を計算
+    logger.info("Field size distribution:")
+
+    field_sizes = []
+    for race_id, race_df in df.groupby("race_id"):
+        if "field_size" in df.columns:
+            fs = race_df["field_size"].iloc[0] if len(race_df) > 0 else len(race_df)
+        else:
+            fs = len(race_df)
+        field_sizes.append(fs)
+
+    field_sizes_array = np.array(field_sizes)
+
+    # field_size カテゴリ別のレース数
+    fs_le4 = (field_sizes_array <= 4).sum()
+    fs_5_7 = ((field_sizes_array >= 5) & (field_sizes_array <= 7)).sum()
+    fs_ge8 = (field_sizes_array >= 8).sum()
+
+    logger.info(f"  <= 4 horses (no fukusho):    {fs_le4:,} races")
+    logger.info(f"  5-7 horses (paid_places=2):  {fs_5_7:,} races")
+    logger.info(f"  >= 8 horses (paid_places=3): {fs_ge8:,} races")
+    logger.info("")
+
+    # payout_count の分布を計算
+    logger.info("Payout count distribution:")
+
+    payout_counts = []
+    for race_id, race_df in df.groupby("race_id"):
+        n_payout = race_df["fukusho_payout"].notna().sum()
+        payout_counts.append(n_payout)
+
+    payout_counts_array = np.array(payout_counts)
+
+    pc_0 = (payout_counts_array == 0).sum()
+    pc_2 = (payout_counts_array == 2).sum()
+    pc_3 = (payout_counts_array == 3).sum()
+    pc_4_plus = (payout_counts_array >= 4).sum()
+    pc_other = len(payout_counts_array) - pc_0 - pc_2 - pc_3 - pc_4_plus
+
+    logger.info(f"  payout_count = 0:  {pc_0:,} races")
+    logger.info(f"  payout_count = 2:  {pc_2:,} races")
+    logger.info(f"  payout_count = 3:  {pc_3:,} races")
+    logger.info(f"  payout_count >= 4: {pc_4_plus:,} races")
+    if pc_other > 0:
+        logger.info(f"  payout_count = 1 or other: {pc_other:,} races")
+    logger.info("")
+
+    # JRAルールに基づく paid_places の計算と異常検知
+    logger.info("Anomaly detection (JRA rules-based):")
+
+    # レースごとに paid_places を計算し、データフレームに追加
+    df = df.copy()
+    race_paid_places = {}
+
+    for race_id, race_df in df.groupby("race_id"):
+        if "field_size" in df.columns:
+            fs = race_df["field_size"].iloc[0] if len(race_df) > 0 else len(race_df)
+        else:
+            fs = len(race_df)
+
+        if fs >= 8:
+            paid_places = 3
+        elif fs >= 5:
+            paid_places = 2
+        else:
+            paid_places = 0
+
+        race_paid_places[race_id] = paid_places
+
+    df["paid_places"] = df["race_id"].map(race_paid_places)
+
+    # finish_order を取得または推定
+    if "finish_order" in df.columns:
+        df["finish_position"] = df["finish_order"]
+    elif "target_value" in df.columns:
+        # target_value から finish_order を推定（逆変換）
+        # これは不正確なので警告を出す
+        logger.warning("finish_order not found, estimating from target_value (may be inaccurate)")
+        df["finish_position"] = df["target_value"]  # 仮の処理
+    else:
+        # finish_order がない場合、target_in3 から推定（最悪のフォールバック）
+        logger.warning("finish_order not found, using target_in3 for rough estimation")
+        df["finish_position"] = 999  # ダミー値
+
+    # should_have_payout の判定
+    df["should_have_payout"] = (df["finish_position"] <= df["paid_places"]) & (df["paid_places"] > 0)
+
+    # 異常: should_have_payout なのに fukusho_payout が NULL
+    df["is_anomaly"] = df["should_have_payout"] & df["fukusho_payout"].isna()
+
+    n_anomaly_rows = df["is_anomaly"].sum()
+    n_anomaly_races = df[df["is_anomaly"]]["race_id"].nunique()
+
+    logger.info(f"  Rows that SHOULD have payout:       {df['should_have_payout'].sum():,}")
+    logger.info(f"  Anomaly rows (should have but NULL): {n_anomaly_rows:,}")
+    logger.info(f"  Anomaly races:                       {n_anomaly_races:,}")
+    logger.info("")
+
+    if n_anomaly_rows > 0:
+        logger.warning(f"⚠️  Found {n_anomaly_rows:,} anomaly rows in {n_anomaly_races:,} races!")
+        logger.warning("    These horses finished within paid places but have no fukusho_payout.")
+        logger.warning("    Showing up to 30 samples:")
+        logger.warning("")
+
+        # サンプル表示
+        sample_cols = ["race_id", "horse_id", "finish_position", "paid_places", "field_size"] if "horse_id" in df.columns else ["race_id", "finish_position", "paid_places"]
+        if "umaban" in df.columns:
+            sample_cols.insert(2, "umaban")
+
+        anomaly_df = df[df["is_anomaly"]]
+        sample = anomaly_df[sample_cols].head(30)
+
+        for idx, row in sample.iterrows():
+            logger.warning(f"    {dict(row)}")
+
+        if n_anomaly_rows > 30:
+            logger.warning(f"    ... and {n_anomaly_rows - 30:,} more rows")
+        logger.warning("")
+    else:
+        logger.info("✅ No anomalies detected (all horses within paid places have payout)")
+        logger.info("")
+
+    # target_in3 別の統計（参考情報）
     df_in3 = df[df["target_in3"] == 1]
     df_not_in3 = df[df["target_in3"] == 0]
 
     in3_missing = df_in3["fukusho_payout"].isna().mean() if len(df_in3) > 0 else float("nan")
     notin3_missing = df_not_in3["fukusho_payout"].isna().mean() if len(df_not_in3) > 0 else float("nan")
 
-    logger.info("Breakdown by target_in3:")
+    logger.info("Reference: Breakdown by target_in3 (not used for anomaly detection):")
     logger.info(f"  in3 (target_in3==1):     {len(df_in3):,} rows, missing: {in3_missing:.1%}")
     logger.info(f"  not-in3 (target_in3==0): {len(df_not_in3):,} rows, missing: {notin3_missing:.1%}")
+    logger.info(f"  Note: in3 with NULL payout may be legitimate (e.g., 3rd place in 5-7 horse race)")
     logger.info("")
-
-    # ⚠️ in3 なのに fukusho_payout が NULL の行（潜在的な JOIN 問題）
-    in3_but_null = df_in3[df_in3["fukusho_payout"].isna()]
-    n_in3_but_null = len(in3_but_null)
-
-    if n_in3_but_null > 0:
-        logger.warning(f"⚠️  Found {n_in3_but_null:,} rows where target_in3==1 BUT fukusho_payout is NULL!")
-        logger.warning("    This may indicate JOIN issues or data corruption.")
-        logger.warning("    Showing up to 30 samples:")
-        logger.warning("")
-
-        # サンプル表示
-        sample_cols = ["race_id", "horse_id"] if "horse_id" in df.columns else ["race_id"]
-        if "umaban" in df.columns:
-            sample_cols.append("umaban")
-
-        sample = in3_but_null[sample_cols].head(30)
-        for idx, row in sample.iterrows():
-            logger.warning(f"    {dict(row)}")
-
-        if n_in3_but_null > 30:
-            logger.warning(f"    ... and {n_in3_but_null - 30:,} more rows")
-        logger.warning("")
-    else:
-        logger.info("✅ All in3 horses have fukusho_payout (no JOIN issues detected)")
-        logger.info("")
-
-    # レース単位での払戻件数チェック
-    logger.info("Per-race payout count analysis:")
-
-    payout_counts = []
-    field_sizes = []
-
-    for race_id, race_df in df.groupby("race_id"):
-        n_payout = race_df["fukusho_payout"].notna().sum()
-        payout_counts.append(n_payout)
-
-        if "field_size" in df.columns:
-            field_sizes.append(race_df["field_size"].iloc[0] if len(race_df) > 0 else 0)
-        else:
-            field_sizes.append(len(race_df))  # 出走頭数の推定
-
-    payout_counts = np.array(payout_counts)
-    field_sizes = np.array(field_sizes)
-
-    # describe 統計
-    logger.info(f"  Payout count per race:")
-    logger.info(f"    Mean:   {payout_counts.mean():.2f}")
-    logger.info(f"    Std:    {payout_counts.std():.2f}")
-    logger.info(f"    Min:    {payout_counts.min()}")
-    logger.info(f"    25%:    {np.percentile(payout_counts, 25):.0f}")
-    logger.info(f"    50%:    {np.percentile(payout_counts, 50):.0f}")
-    logger.info(f"    75%:    {np.percentile(payout_counts, 75):.0f}")
-    logger.info(f"    Max:    {payout_counts.max()}")
-    logger.info("")
-
-    # < 3 件のレース（理論的には top3 なので 3 件あるべき）
-    races_with_few = np.where(payout_counts < 3)[0]
-
-    if len(races_with_few) > 0:
-        logger.warning(f"⚠️  Found {len(races_with_few):,} races with < 3 payouts (expected 3 for top-3 finish)")
-        logger.warning("    Showing up to 10 samples:")
-
-        for i in races_with_few[:10]:
-            race_id = df.groupby("race_id").groups.keys().__iter__()
-            for _ in range(i + 1):
-                race_id = next(iter(df.groupby("race_id").groups.keys()))
-
-            race_ids_list = list(df.groupby("race_id").groups.keys())
-            race_id_sample = race_ids_list[i] if i < len(race_ids_list) else "N/A"
-
-            logger.warning(f"      race_id={race_id_sample}, payout_count={payout_counts[i]}, field_size={field_sizes[i]}")
-
-        if len(races_with_few) > 10:
-            logger.warning(f"      ... and {len(races_with_few) - 10:,} more races")
-        logger.warning("")
-    else:
-        logger.info("✅ All races have >= 3 payouts (expected for top-3 finish)")
-        logger.info("")
 
     # 期待欠損率の計算（理論値との比較）
-    avg_field_size = field_sizes.mean()
-    expected_missing = 1.0 - (3.0 / avg_field_size) if avg_field_size > 0 else float("nan")
+    avg_field_size = field_sizes_array.mean()
+
+    # paid_places の平均を計算
+    avg_paid_places = np.array([race_paid_places[rid] for rid in df["race_id"].unique()]).mean()
+    expected_missing = 1.0 - (avg_paid_places / avg_field_size) if avg_field_size > 0 else float("nan")
 
     logger.info("Expected vs Actual missing rate:")
     logger.info(f"  Avg field size:        {avg_field_size:.1f} horses")
-    logger.info(f"  Expected missing rate: {expected_missing:.1%} (1 - 3/{avg_field_size:.1f})")
+    logger.info(f"  Avg paid places:       {avg_paid_places:.1f}")
+    logger.info(f"  Expected missing rate: {expected_missing:.1%} (1 - {avg_paid_places:.1f}/{avg_field_size:.1f})")
     logger.info(f"  Actual missing rate:   {overall_missing:.1%}")
     logger.info(f"  Difference:            {(overall_missing - expected_missing):.1%}")
 
@@ -766,7 +862,7 @@ def run_sanity_check_payout(df: pd.DataFrame, detail: bool = False) -> None:
     logger.info("")
 
     # --sanity-detail: 詳細な異常レース情報を CSV 出力
-    if detail and len(races_with_few) > 0:
+    if detail and n_anomaly_rows > 0:
         logger.info("-" * 80)
         logger.info("DETAIL MODE: Generating anomaly CSV report")
         logger.info("-" * 80)
@@ -782,46 +878,29 @@ def run_sanity_check_payout(df: pd.DataFrame, detail: bool = False) -> None:
 
         # 異常レースの詳細情報を収集
         anomaly_records = []
-        race_ids_list = list(df.groupby("race_id").groups.keys())
+        anomaly_df = df[df["is_anomaly"]]
 
-        for i in races_with_few[:min(len(races_with_few), 100)]:  # 最大100レース
-            if i >= len(race_ids_list):
-                continue
+        # anomaly_limit の処理
+        if anomaly_limit == 0:
+            # 全件出力
+            records_to_export = anomaly_df
+            logger.info(f"Exporting ALL {len(anomaly_df)} anomaly records (anomaly_limit=0)")
+        else:
+            # 上限あり
+            records_to_export = anomaly_df.head(anomaly_limit)
+            logger.info(f"Exporting up to {anomaly_limit} anomaly records")
 
-            race_id = race_ids_list[i]
-            race_df = df[df["race_id"] == race_id]
-
-            n_payout = race_df["fukusho_payout"].notna().sum()
-            field_size_val = field_sizes[i] if i < len(field_sizes) else len(race_df)
-
-            # in3 だが payout NULL の馬を抽出
-            in3_but_null_in_race = race_df[
-                (race_df["target_in3"] == 1) &
-                (race_df["fukusho_payout"].isna())
-            ]
-
-            for idx, row in in3_but_null_in_race.iterrows():
-                anomaly_records.append({
-                    "race_id": race_id,
-                    "payout_count": n_payout,
-                    "field_size": field_size_val,
-                    "horse_id": row.get("horse_id", "N/A"),
-                    "umaban": row.get("umaban", "N/A"),
-                    "target_in3": row.get("target_in3", "N/A"),
-                    "fukusho_payout": "NULL",
-                })
-
-            # in3 だが payout NULL の馬がいないレースも記録（payout_count < 3 のため）
-            if len(in3_but_null_in_race) == 0:
-                anomaly_records.append({
-                    "race_id": race_id,
-                    "payout_count": n_payout,
-                    "field_size": field_size_val,
-                    "horse_id": "N/A",
-                    "umaban": "N/A",
-                    "target_in3": "N/A",
-                    "fukusho_payout": "N/A (< 3 payouts but no in3 NULL)",
-                })
+        for idx, row in records_to_export.iterrows():
+            anomaly_records.append({
+                "race_id": row.get("race_id", "N/A"),
+                "horse_id": row.get("horse_id", "N/A"),
+                "umaban": row.get("umaban", "N/A"),
+                "finish_position": row.get("finish_position", "N/A"),
+                "paid_places": row.get("paid_places", "N/A"),
+                "field_size": row.get("field_size", len(df[df["race_id"] == row.get("race_id")])),
+                "target_in3": row.get("target_in3", "N/A"),
+                "fukusho_payout": "NULL",
+            })
 
         # CSV 保存
         if anomaly_records:
@@ -829,6 +908,9 @@ def run_sanity_check_payout(df: pd.DataFrame, detail: bool = False) -> None:
             df_anomalies.to_csv(csv_path, index=False)
             logger.info(f"✅ Saved {len(anomaly_records)} anomaly records to: {csv_path}")
             logger.info(f"   Unique races in CSV: {df_anomalies['race_id'].nunique()}")
+
+            if len(anomaly_df) > len(anomaly_records):
+                logger.info(f"   Note: {len(anomaly_df) - len(anomaly_records)} additional anomalies not exported (limit={anomaly_limit})")
         else:
             logger.info("No anomaly records to save.")
 
@@ -948,6 +1030,12 @@ def main() -> None:
         action="store_false",
         help="Do NOT exclude races with missing payout (opposite of --exclude-missing-payout)",
     )
+    parser.add_argument(
+        "--anomaly-limit",
+        type=int,
+        default=100,
+        help="Maximum number of anomaly records to export to CSV (0 = export all, default: 100)",
+    )
     args = parser.parse_args()
 
     # --sanity-only implies --sanity-payout
@@ -971,7 +1059,7 @@ def main() -> None:
 
         # Run sanity check if requested
         if args.sanity_payout:
-            run_sanity_check_payout(df, detail=args.sanity_detail)
+            run_sanity_check_payout(df, detail=args.sanity_detail, anomaly_limit=args.anomaly_limit)
 
             # Exit if --sanity-only
             if args.sanity_only:
