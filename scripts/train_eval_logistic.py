@@ -15,24 +15,33 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
 
-EXCLUDED_COLUMNS = {
+PROHIBITED_EXACT = {
     "race_id",
     "horse_id",
-    "race_class",
-    "course",
-    "surface",
-    "track_condition",
-    "created_at",
-    "updated_at",
     "horse_no",
-    "fukusho_payout",
     "target_win",
     "target_in3",
     "target_value",
+    "finish_order",
+    "finish_position",
+    "paid_places",
+    "payout_count",
+    "should_have_payout",
+    "fukusho_payout",
 }
+
+# Columns that must never be used as features if their names contain these substrings
+PROHIBITED_PATTERNS = (
+    "target",
+    "payout",
+    "paid_",
+    "should_have",
+)
 
 
 def load_dataset(conn: sqlite3.Connection) -> pd.DataFrame:
+    hr_cols_in_table: List[str] = []
+
     # Check which feature table exists
     cursor = conn.cursor()
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'feature_table%'")
@@ -161,22 +170,103 @@ def split_by_race(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
 
 
 
-def build_feature_matrix(df: pd.DataFrame) -> Tuple[pd.DataFrame, np.ndarray]:
+def _prohibited_reason(col: str) -> Tuple[bool, str]:
+    """
+    Check if column is prohibited as a feature.
+
+    Returns:
+        (is_prohibited, reason) where reason is 'exact' or 'pattern:<pattern>'
+    """
+    normalized = col.lower()
+    if normalized in PROHIBITED_EXACT:
+        return True, "exact"
+
+    for pattern in PROHIBITED_PATTERNS:
+        if pattern in normalized:
+            return True, f"pattern:{pattern}"
+
+    return False, ""
+
+
+def _log_feature_overview(feature_cols: List[str], hr_feature_cols: List[str]) -> None:
+    print("=" * 60)
+    print("[INFO] Feature columns summary")
+    print("=" * 60)
+    print(f"[INFO] feature cols count: {len(feature_cols)}")
+
+    head_preview = feature_cols[:30]
+    tail_preview = feature_cols[-30:] if len(feature_cols) > 30 else []
+    print(f"[INFO] feature cols (head 30): {head_preview}")
+    if tail_preview:
+        print(f"[INFO] feature cols (tail 30): {tail_preview}")
+    print(f"[INFO] hr_* feature cols ({len(hr_feature_cols)}): {hr_feature_cols}")
+    print("=" * 60)
+
+    artifacts_dir = "artifacts"
+    os.makedirs(artifacts_dir, exist_ok=True)
+    features_path = os.path.join(artifacts_dir, "features_used.txt")
+    try:
+        with open(features_path, "w", encoding="utf-8") as f:
+            for col in feature_cols:
+                f.write(f"{col}\n")
+        print(f"[INFO] Saved full feature list to: {features_path}")
+    except OSError as e:
+        print(f"[WARN] Failed to write feature list to {features_path}: {e}")
+
+
+def _log_prohibited_summary(
+    prohibited_exact_hits: List[str],
+    prohibited_pattern_hits: List[str],
+    detected_in_features: List[str],
+) -> None:
+    print("=" * 60)
+    print("[INFO] Prohibited column check")
+    print("=" * 60)
+    print(f"[INFO] Excluded by exact match ({len(prohibited_exact_hits)}): {sorted(set(prohibited_exact_hits))}")
+    print(f"[INFO] Excluded by pattern match ({len(prohibited_pattern_hits)}): {sorted(set(prohibited_pattern_hits))}")
+    if detected_in_features:
+        print(f"[ERROR] Prohibited columns detected in feature set: {sorted(set(detected_in_features))}")
+    else:
+        print("[INFO] No prohibited columns present in feature set.")
+    print("=" * 60)
+
+
+def build_feature_matrix(df: pd.DataFrame, debug_features: bool = False) -> Tuple[pd.DataFrame, np.ndarray]:
     feature_cols: List[str] = []
+    prohibited_exact_hits: List[str] = []
+    prohibited_pattern_hits: List[str] = []
+
     for col in df.columns:
-        if col in EXCLUDED_COLUMNS:
+        if not pd.api.types.is_numeric_dtype(df[col]):
             continue
-        if pd.api.types.is_numeric_dtype(df[col]):
-            feature_cols.append(col)
+
+        is_prohibited, reason = _prohibited_reason(col)
+        if is_prohibited:
+            if reason == "exact":
+                prohibited_exact_hits.append(col)
+            elif reason.startswith("pattern:"):
+                prohibited_pattern_hits.append(col)
+            continue
+
+        feature_cols.append(col)
 
     # Count hr_* features
     hr_feature_cols = [c for c in feature_cols if c.startswith("hr_")]
 
-    print(f"[INFO] feature cols ({len(feature_cols)}): {feature_cols}")
-    print(f"[INFO] hr_* feature cols ({len(hr_feature_cols)}): {hr_feature_cols}")
+    leaking_cols = [c for c in feature_cols if _prohibited_reason(c)[0]]
+    if leaking_cols:
+        _log_prohibited_summary(prohibited_exact_hits, prohibited_pattern_hits, leaking_cols)
+        raise RuntimeError(
+            "Prohibited columns detected in feature set (possible data leak): "
+            f"{sorted(leaking_cols)}"
+        )
+
+    _log_prohibited_summary(prohibited_exact_hits, prohibited_pattern_hits, leaking_cols)
+    _log_feature_overview(feature_cols, hr_feature_cols)
 
     X = df[feature_cols].fillna(0)
     y = df["target_in3"].astype(int).values
+
     return X, y
 
 
@@ -1036,6 +1126,11 @@ def main() -> None:
         default=100,
         help="Maximum number of anomaly records to export to CSV (0 = export all, default: 100)",
     )
+    parser.add_argument(
+        "--debug-features",
+        action="store_true",
+        help="Output feature column summary and prohibited column checks before training",
+    )
     args = parser.parse_args()
 
     # --sanity-only implies --sanity-payout
@@ -1063,6 +1158,8 @@ def main() -> None:
 
             # Exit if --sanity-only
             if args.sanity_only:
+                # Still run feature inspection so --debug-features surfaces prohibited columns / feature list
+                build_feature_matrix(df, debug_features=args.debug_features)
                 logger.info("Sanity check completed. Exiting (--sanity-only mode).")
                 return
 
@@ -1071,8 +1168,8 @@ def main() -> None:
         if df_train.empty or df_test.empty:
             raise RuntimeError("train or test dataset is empty; check data availability")
 
-        X_train, y_train = build_feature_matrix(df_train)
-        X_test, y_test = build_feature_matrix(df_test)
+        X_train, y_train = build_feature_matrix(df_train, debug_features=args.debug_features)
+        X_test, y_test = build_feature_matrix(df_test, debug_features=args.debug_features)
 
         scaler, model = train_model(X_train, y_train)
         evaluate(df_test, scaler, model, X_test, y_test, exclude_missing_payout=args.exclude_missing_payout)
