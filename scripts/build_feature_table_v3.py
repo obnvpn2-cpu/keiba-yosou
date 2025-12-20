@@ -2,9 +2,11 @@
 """
 build_feature_table_v3.py
 
-9軸特徴量の第1弾（軸②④⑥）を feature_table_v2 に追加して feature_table_v3 を構築する。
+9軸特徴量のうち5軸（①②③④⑥）を feature_table_v2 に追加して feature_table_v3 を構築する。
 
+軸①: 近況・成長（直近の着順・上がり3Fトレンド）
 軸②: 距離・コース条件適性
+軸③: 地力・レースレベル（クラス・賞金）
 軸④: ローテーション・臨戦過程
 軸⑥: 脚質・位置取り × 展開（corners由来）
 
@@ -63,7 +65,8 @@ def load_horse_results(conn: sqlite3.Connection) -> pd.DataFrame:
         hr.finish_order,
         hr.frame_no,
         hr.horse_no,
-        hr.last_3f
+        hr.last_3f,
+        hr.prize_money
     FROM horse_results hr
     WHERE hr.race_date IS NOT NULL
     ORDER BY hr.horse_id, hr.race_date, hr.race_id
@@ -345,6 +348,230 @@ def compute_ax2_features(hr: pd.DataFrame, base: pd.DataFrame) -> pd.DataFrame:
 
     result = df[ax2_cols].copy()
     logger.info(f"  - ax2_ features computed: {len([c for c in ax2_cols if c.startswith('ax2_')])} columns")
+
+    return result
+
+
+# ============================================================
+# Axis 1: Recent Form / Growth Features (ax1_)
+# ============================================================
+
+
+def compute_ax1_features(hr: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute axis 1 features: recent form and growth.
+
+    All features use shift(1) to exclude current race.
+    """
+    logger.info("Computing ax1_ features (recent form/growth)...")
+
+    df = hr.copy()
+    df["race_date_dt"] = pd.to_datetime(df["race_date"])
+    df = df.sort_values(["horse_id", "race_date_dt", "race_id"]).reset_index(drop=True)
+
+    g = df.groupby("horse_id", group_keys=False)
+
+    # ========================================
+    # 1. Last race stats (前走成績)
+    # ========================================
+
+    df["ax1_last_finish"] = g["finish_order"].shift(1)
+    df["ax1_last_last3f"] = g["last_3f"].shift(1)
+
+    # ========================================
+    # 2. Recent form trends (直近のトレンド)
+    # ========================================
+
+    def rolling_mean_prev(s: pd.Series, window: int) -> pd.Series:
+        """Rolling mean of previous N races (excluding current)."""
+        return s.shift(1).rolling(window=window, min_periods=1).mean()
+
+    def rolling_min_prev(s: pd.Series, window: int) -> pd.Series:
+        """Rolling min of previous N races (excluding current)."""
+        return s.shift(1).rolling(window=window, min_periods=1).min()
+
+    def compute_slope(s: pd.Series, window: int) -> pd.Series:
+        """
+        Compute slope (trend) over recent N races.
+        Negative slope = improving (finish order decreasing)
+        Positive slope = declining
+        """
+        shifted = s.shift(1)
+
+        def get_slope(x):
+            if len(x.dropna()) < 2:
+                return 0.0
+            y = x.dropna().values
+            n = len(y)
+            if n < 2:
+                return 0.0
+            # Linear regression slope: (y_last - y_first) / (n - 1)
+            return (y[-1] - y[0]) / (n - 1) if n > 1 else 0.0
+
+        return shifted.rolling(window=window, min_periods=2).apply(get_slope, raw=False)
+
+    # Recent 3 stats
+    df["ax1_recent3_avg_finish"] = g["finish_order"].apply(lambda x: rolling_mean_prev(x, 3))
+    df["ax1_recent3_avg_last3f"] = g["last_3f"].apply(lambda x: rolling_mean_prev(x, 3))
+
+    # Slope/trend features
+    df["ax1_recent3_finish_slope"] = g["finish_order"].apply(lambda x: compute_slope(x, 3))
+    df["ax1_recent3_last3f_slope"] = g["last_3f"].apply(lambda x: compute_slope(x, 3))
+
+    # Best finish in recent 5
+    df["ax1_best_finish_recent5"] = g["finish_order"].apply(lambda x: rolling_min_prev(x, 5))
+
+    # ========================================
+    # 3. Improvement indicators
+    # ========================================
+
+    # Compare last race to recent average
+    df["ax1_last_vs_avg3_finish"] = df["ax1_last_finish"] - df["ax1_recent3_avg_finish"]
+    df["ax1_last_vs_avg3_last3f"] = df["ax1_last_last3f"] - df["ax1_recent3_avg_last3f"]
+
+    # ========================================
+    # Handle first race (no history)
+    # ========================================
+
+    first_mask = df["ax1_last_finish"].isna()
+    df.loc[first_mask, "ax1_last_finish"] = 0
+    df.loc[first_mask, "ax1_last_last3f"] = 0
+    df.loc[first_mask, "ax1_recent3_finish_slope"] = 0
+    df.loc[first_mask, "ax1_recent3_last3f_slope"] = 0
+    df.loc[first_mask, "ax1_last_vs_avg3_finish"] = 0
+    df.loc[first_mask, "ax1_last_vs_avg3_last3f"] = 0
+
+    # ========================================
+    # Output columns
+    # ========================================
+
+    ax1_cols = [
+        "race_id", "horse_id",
+        "ax1_last_finish", "ax1_last_last3f",
+        "ax1_recent3_avg_finish", "ax1_recent3_avg_last3f",
+        "ax1_recent3_finish_slope", "ax1_recent3_last3f_slope",
+        "ax1_best_finish_recent5",
+        "ax1_last_vs_avg3_finish", "ax1_last_vs_avg3_last3f",
+    ]
+
+    result = df[ax1_cols].copy()
+    logger.info(f"  - ax1_ features computed: {len([c for c in ax1_cols if c.startswith('ax1_')])} columns")
+
+    return result
+
+
+# ============================================================
+# Axis 3: Class Level / Prize Features (ax3_)
+# ============================================================
+
+
+def compute_ax3_features(hr: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute axis 3 features: class level and prize money.
+
+    All features use shift(1) to exclude current race.
+    """
+    logger.info("Computing ax3_ features (class level/prize)...")
+
+    df = hr.copy()
+    df["race_date_dt"] = pd.to_datetime(df["race_date"])
+    df = df.sort_values(["horse_id", "race_date_dt", "race_id"]).reset_index(drop=True)
+
+    # Compute class rank for each race
+    df["_class_rank"] = df.apply(
+        lambda row: get_class_rank(row.get("race_class"), row.get("grade")),
+        axis=1
+    )
+
+    g = df.groupby("horse_id", group_keys=False)
+
+    # ========================================
+    # 1. Class level stats (直近のクラスレベル)
+    # ========================================
+
+    def rolling_max_prev(s: pd.Series, window: int) -> pd.Series:
+        """Rolling max of previous N races (excluding current)."""
+        return s.shift(1).rolling(window=window, min_periods=1).max()
+
+    def rolling_mean_prev(s: pd.Series, window: int) -> pd.Series:
+        """Rolling mean of previous N races (excluding current)."""
+        return s.shift(1).rolling(window=window, min_periods=1).mean()
+
+    def rolling_sum_prev(s: pd.Series, window: int) -> pd.Series:
+        """Rolling sum of previous N races (excluding current)."""
+        return s.shift(1).rolling(window=window, min_periods=1).sum()
+
+    # Best class in recent 5 races
+    df["ax3_best_class_recent5"] = g["_class_rank"].apply(lambda x: rolling_max_prev(x, 5))
+
+    # Average class in recent 5 races
+    df["ax3_avg_class_recent5"] = g["_class_rank"].apply(lambda x: rolling_mean_prev(x, 5))
+
+    # ========================================
+    # 2. Prize money stats (賞金関連)
+    # ========================================
+
+    # Fill NaN prize_money with 0
+    df["prize_money"] = df["prize_money"].fillna(0)
+
+    # Total prize in recent 5 races
+    df["ax3_total_prize_recent5"] = g["prize_money"].apply(lambda x: rolling_sum_prev(x, 5))
+
+    # Average prize in recent 3 races
+    df["ax3_avg_prize_recent3"] = g["prize_money"].apply(lambda x: rolling_mean_prev(x, 3))
+
+    # Prize trend (recent vs older)
+    def compute_prize_trend(s: pd.Series) -> pd.Series:
+        """
+        Compute prize trend: avg of last 2 races - avg of races 3-5.
+        Positive = improving prize earnings
+        """
+        shifted = s.shift(1)
+
+        def get_trend(x):
+            vals = x.dropna().values
+            if len(vals) < 3:
+                return 0.0
+            recent = vals[-2:].mean() if len(vals) >= 2 else vals[-1]
+            older = vals[:-2].mean() if len(vals) > 2 else vals[0]
+            return recent - older
+
+        return shifted.rolling(window=5, min_periods=3).apply(get_trend, raw=False)
+
+    df["ax3_prize_trend_recent5"] = g["prize_money"].apply(compute_prize_trend)
+
+    # ========================================
+    # 3. Class-based performance
+    # ========================================
+
+    # Current class vs best class achieved
+    df["ax3_curr_vs_best_class"] = df["_class_rank"] - df["ax3_best_class_recent5"].fillna(0)
+
+    # ========================================
+    # Handle first race (no history)
+    # ========================================
+
+    first_mask = g["race_id"].cumcount() == 0
+    df.loc[first_mask, "ax3_best_class_recent5"] = 0
+    df.loc[first_mask, "ax3_avg_class_recent5"] = 0
+    df.loc[first_mask, "ax3_total_prize_recent5"] = 0
+    df.loc[first_mask, "ax3_avg_prize_recent3"] = 0
+    df.loc[first_mask, "ax3_prize_trend_recent5"] = 0
+    df.loc[first_mask, "ax3_curr_vs_best_class"] = 0
+
+    # ========================================
+    # Output columns
+    # ========================================
+
+    ax3_cols = [
+        "race_id", "horse_id",
+        "ax3_best_class_recent5", "ax3_avg_class_recent5",
+        "ax3_total_prize_recent5", "ax3_avg_prize_recent3",
+        "ax3_prize_trend_recent5", "ax3_curr_vs_best_class",
+    ]
+
+    result = df[ax3_cols].copy()
+    logger.info(f"  - ax3_ features computed: {len([c for c in ax3_cols if c.startswith('ax3_')])} columns")
 
     return result
 
@@ -701,7 +928,7 @@ def build_feature_table_v3(
     target_table: str = "feature_table_v3",
     limit: Optional[int] = None,
 ) -> None:
-    """Build feature_table_v3 by adding ax2_/ax4_/ax6_ features to v2."""
+    """Build feature_table_v3 by adding ax1_/ax2_/ax3_/ax4_/ax6_ features to v2."""
 
     # Load base table
     base = load_feature_table_v2(conn)
@@ -716,13 +943,19 @@ def build_feature_table_v3(
     races = load_races_for_corners(conn)
     race_results = load_race_results_for_corners(conn)
 
-    # Compute axis 2 features
+    # Compute axis 1 features (recent form/growth)
+    ax1 = compute_ax1_features(hr)
+
+    # Compute axis 2 features (condition suitability)
     ax2 = compute_ax2_features(hr, base)
 
-    # Compute axis 4 features
+    # Compute axis 3 features (class level/prize)
+    ax3 = compute_ax3_features(hr)
+
+    # Compute axis 4 features (rotation/schedule)
     ax4 = compute_ax4_features(hr)
 
-    # Compute axis 6 features
+    # Compute axis 6 features (running style)
     ax6_horse, ax6_race = compute_ax6_features(hr, corners, race_results, races)
 
     # Merge all features
@@ -731,12 +964,26 @@ def build_feature_table_v3(
     # Start with base
     merged = base.copy()
 
+    # Merge ax1
+    ax1_cols_to_merge = [c for c in ax1.columns if c.startswith("ax1_")]
+    ax1_for_merge = ax1[["race_id", "horse_id"] + ax1_cols_to_merge].drop_duplicates(
+        subset=["race_id", "horse_id"]
+    )
+    merged = merged.merge(ax1_for_merge, on=["race_id", "horse_id"], how="left")
+
     # Merge ax2
     ax2_cols_to_merge = [c for c in ax2.columns if c.startswith("ax2_")]
     ax2_for_merge = ax2[["race_id", "horse_id"] + ax2_cols_to_merge].drop_duplicates(
         subset=["race_id", "horse_id"]
     )
     merged = merged.merge(ax2_for_merge, on=["race_id", "horse_id"], how="left")
+
+    # Merge ax3
+    ax3_cols_to_merge = [c for c in ax3.columns if c.startswith("ax3_")]
+    ax3_for_merge = ax3[["race_id", "horse_id"] + ax3_cols_to_merge].drop_duplicates(
+        subset=["race_id", "horse_id"]
+    )
+    merged = merged.merge(ax3_for_merge, on=["race_id", "horse_id"], how="left")
 
     # Merge ax4
     ax4_cols_to_merge = [c for c in ax4.columns if c.startswith("ax4_")]
@@ -760,20 +1007,28 @@ def build_feature_table_v3(
     logger.info(f"Final merged rows: {len(merged):,}")
 
     # Log new column counts
+    ax1_final = [c for c in merged.columns if c.startswith("ax1_")]
     ax2_final = [c for c in merged.columns if c.startswith("ax2_")]
+    ax3_final = [c for c in merged.columns if c.startswith("ax3_")]
     ax4_final = [c for c in merged.columns if c.startswith("ax4_")]
     ax6_final = [c for c in merged.columns if c.startswith("ax6_")]
 
+    logger.info(f"New ax1_ columns: {len(ax1_final)}")
     logger.info(f"New ax2_ columns: {len(ax2_final)}")
+    logger.info(f"New ax3_ columns: {len(ax3_final)}")
     logger.info(f"New ax4_ columns: {len(ax4_final)}")
     logger.info(f"New ax6_ columns: {len(ax6_final)}")
+    logger.info(f"ax1_ columns: {ax1_final}")
     logger.info(f"ax2_ columns: {ax2_final}")
+    logger.info(f"ax3_ columns: {ax3_final}")
     logger.info(f"ax4_ columns: {ax4_final}")
     logger.info(f"ax6_ columns: {ax6_final}")
 
     # Report missing rates for new columns
+    all_ax_cols = ax1_final + ax2_final + ax3_final + ax4_final + ax6_final
+    logger.info(f"\nTotal new ax*_ columns: {len(all_ax_cols)}")
     logger.info("\nMissing rates for new columns:")
-    for col in ax2_final + ax4_final + ax6_final:
+    for col in all_ax_cols:
         missing = merged[col].isna().sum()
         missing_pct = 100 * missing / len(merged)
         if missing_pct > 0:
@@ -791,7 +1046,7 @@ def build_feature_table_v3(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Build feature_table_v3 with ax2_/ax4_/ax6_ features"
+        description="Build feature_table_v3 with ax1_/ax2_/ax3_/ax4_/ax6_ features"
     )
     parser.add_argument(
         "--db",
