@@ -51,37 +51,146 @@ def load_feature_table_v2(conn: sqlite3.Connection) -> pd.DataFrame:
     return df
 
 
-def load_horse_results(conn: sqlite3.Connection) -> pd.DataFrame:
-    """Load horse_results with surface/course info from races table."""
-    logger.info("Loading horse_results...")
+def get_table_columns(conn: sqlite3.Connection, table_name: str) -> List[str]:
+    """Get list of column names for a table using PRAGMA."""
+    cursor = conn.cursor()
+    cursor.execute(f"PRAGMA table_info({table_name})")
+    columns = [row[1] for row in cursor.fetchall()]
+    return columns
 
-    query = """
-    SELECT
-        hr.horse_id,
-        hr.race_id,
-        hr.race_date,
-        hr.place,
-        hr.course_type,
-        hr.distance,
-        hr.track_condition,
-        hr.field_size,
-        hr.race_class,
-        hr.grade,
-        hr.finish_order,
-        hr.frame_no,
-        hr.horse_no,
-        hr.last_3f,
-        hr.prize_money,
-        hr.jockey_id,
-        hr.trainer_id,
-        hr.win_odds,
-        hr.popularity
-    FROM horse_results hr
-    WHERE hr.race_date IS NOT NULL
-    ORDER BY hr.horse_id, hr.race_date, hr.race_id
+
+def load_horse_results(conn: sqlite3.Connection) -> pd.DataFrame:
     """
+    Load horse_results with dynamic column detection.
+
+    - Uses PRAGMA to check which columns exist in horse_results and race_results
+    - JOINs with race_results to get jockey_id/trainer_id if not in horse_results
+    - Falls back to NULL columns if data cannot be obtained
+    """
+    logger.info("Loading horse_results with dynamic column detection...")
+
+    # Get columns from both tables
+    hr_cols = get_table_columns(conn, "horse_results")
+    rr_cols = get_table_columns(conn, "race_results")
+
+    logger.info(f"  horse_results columns: {hr_cols}")
+    logger.info(f"  race_results columns: {rr_cols}")
+
+    # Required base columns from horse_results
+    hr_base_cols = [
+        "horse_id", "race_id", "race_date", "place", "course_type", "distance",
+        "track_condition", "field_size", "race_class", "grade", "finish_order",
+        "frame_no", "horse_no", "last_3f", "prize_money"
+    ]
+
+    # Optional columns that may be in horse_results
+    hr_optional_cols = ["win_odds", "popularity"]
+
+    # Columns we need from race_results (jockey_id, trainer_id)
+    rr_target_cols = ["jockey_id", "trainer_id"]
+
+    # Build SELECT for horse_results
+    hr_select_parts = []
+    for col in hr_base_cols:
+        if col in hr_cols:
+            hr_select_parts.append(f"hr.{col}")
+        else:
+            logger.warning(f"  Column '{col}' not found in horse_results, using NULL")
+            hr_select_parts.append(f"NULL AS {col}")
+
+    for col in hr_optional_cols:
+        if col in hr_cols:
+            hr_select_parts.append(f"hr.{col}")
+        else:
+            logger.info(f"  Optional column '{col}' not in horse_results, using NULL")
+            hr_select_parts.append(f"NULL AS {col}")
+
+    # Check if jockey_id/trainer_id are in horse_results directly
+    jockey_in_hr = "jockey_id" in hr_cols
+    trainer_in_hr = "trainer_id" in hr_cols
+
+    if jockey_in_hr:
+        hr_select_parts.append("hr.jockey_id")
+        logger.info("  jockey_id found in horse_results")
+    if trainer_in_hr:
+        hr_select_parts.append("hr.trainer_id")
+        logger.info("  trainer_id found in horse_results")
+
+    # Determine if we need to JOIN with race_results
+    need_jockey_from_rr = not jockey_in_hr and "jockey_id" in rr_cols
+    need_trainer_from_rr = not trainer_in_hr and "trainer_id" in rr_cols
+    need_join = need_jockey_from_rr or need_trainer_from_rr
+
+    # Determine JOIN key
+    join_key = None
+    join_clause = ""
+
+    if need_join:
+        # Priority: (race_id, horse_id) > (race_id, horse_no) > (race_id, frame_no)
+        if "horse_id" in rr_cols and "horse_id" in hr_cols:
+            join_key = "(race_id, horse_id)"
+            join_clause = "LEFT JOIN race_results rr ON hr.race_id = rr.race_id AND hr.horse_id = rr.horse_id"
+        elif "horse_no" in rr_cols and "horse_no" in hr_cols:
+            join_key = "(race_id, horse_no)"
+            join_clause = "LEFT JOIN race_results rr ON hr.race_id = rr.race_id AND hr.horse_no = rr.horse_no"
+        elif "frame_no" in rr_cols and "frame_no" in hr_cols:
+            join_key = "(race_id, frame_no)"
+            join_clause = "LEFT JOIN race_results rr ON hr.race_id = rr.race_id AND hr.frame_no = rr.frame_no"
+        else:
+            logger.warning("  Cannot determine JOIN key for race_results, falling back to NULL")
+            need_join = False
+
+        if join_key:
+            logger.info(f"  JOIN key selected: {join_key}")
+
+    # Add jockey_id/trainer_id from race_results or NULL
+    if need_jockey_from_rr and need_join:
+        hr_select_parts.append("rr.jockey_id")
+        logger.info("  jockey_id will be loaded from race_results via JOIN")
+    elif not jockey_in_hr:
+        hr_select_parts.append("NULL AS jockey_id")
+        logger.warning("  jockey_id not available, using NULL")
+
+    if need_trainer_from_rr and need_join:
+        hr_select_parts.append("rr.trainer_id")
+        logger.info("  trainer_id will be loaded from race_results via JOIN")
+    elif not trainer_in_hr:
+        hr_select_parts.append("NULL AS trainer_id")
+        logger.warning("  trainer_id not available, using NULL")
+
+    # Build final query
+    select_clause = ",\n        ".join(hr_select_parts)
+
+    if need_join:
+        query = f"""
+        SELECT
+            {select_clause}
+        FROM horse_results hr
+        {join_clause}
+        WHERE hr.race_date IS NOT NULL
+        ORDER BY hr.horse_id, hr.race_date, hr.race_id
+        """
+    else:
+        query = f"""
+        SELECT
+            {select_clause}
+        FROM horse_results hr
+        WHERE hr.race_date IS NOT NULL
+        ORDER BY hr.horse_id, hr.race_date, hr.race_id
+        """
+
+    logger.info(f"  Executing query...")
     df = pd.read_sql_query(query, conn)
-    logger.info(f"horse_results rows: {len(df):,}")
+    logger.info(f"  horse_results rows: {len(df):,}")
+
+    # Report NULL rates for key columns
+    for col in ["jockey_id", "trainer_id", "win_odds", "popularity"]:
+        if col in df.columns:
+            null_count = df[col].isna().sum()
+            null_pct = 100 * null_count / len(df) if len(df) > 0 else 0
+            if null_pct > 0:
+                logger.info(f"  {col} NULL rate: {null_count:,}/{len(df):,} ({null_pct:.1f}%)")
+
     return df
 
 
@@ -1049,6 +1158,7 @@ def compute_ax8_features(hr: pd.DataFrame) -> pd.DataFrame:
     Compute axis 8 features: jockey and trainer performance (as-of).
 
     All features are cumulative stats up to (but not including) current race.
+    Handles cases where jockey_id/trainer_id are all NULL gracefully.
     """
     logger.info("Computing ax8_ features (jockey/trainer)...")
 
@@ -1059,6 +1169,15 @@ def compute_ax8_features(hr: pd.DataFrame) -> pd.DataFrame:
     # Add is_in3 target for cumulative calculation
     df["is_in3"] = df["finish_order"].between(1, 3).astype(int)
 
+    # Check data availability
+    jockey_available = "jockey_id" in df.columns and df["jockey_id"].notna().any()
+    trainer_available = "trainer_id" in df.columns and df["trainer_id"].notna().any()
+
+    if not jockey_available:
+        logger.warning("  jockey_id is all NULL or missing - ax8_jockey_* will be 0")
+    if not trainer_available:
+        logger.warning("  trainer_id is all NULL or missing - ax8_trainer_* will be 0")
+
     # ========================================
     # Jockey stats (as-of)
     # ========================================
@@ -1066,7 +1185,7 @@ def compute_ax8_features(hr: pd.DataFrame) -> pd.DataFrame:
     logger.info("  - Computing jockey stats...")
     jockey_stats = []
 
-    if "jockey_id" in df.columns and df["jockey_id"].notna().any():
+    if jockey_available:
         # Sort by date for cumulative calculation
         df_sorted = df.sort_values(["jockey_id", "race_date_dt", "race_id"]).reset_index(drop=True)
 
@@ -1099,7 +1218,7 @@ def compute_ax8_features(hr: pd.DataFrame) -> pd.DataFrame:
     logger.info("  - Computing trainer stats...")
     trainer_stats = []
 
-    if "trainer_id" in df.columns and df["trainer_id"].notna().any():
+    if trainer_available:
         df_sorted = df.sort_values(["trainer_id", "race_date_dt", "race_id"]).reset_index(drop=True)
 
         for trainer_id, group in df_sorted.groupby("trainer_id"):
