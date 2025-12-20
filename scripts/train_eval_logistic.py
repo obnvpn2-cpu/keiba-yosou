@@ -70,6 +70,14 @@ RR_SMALLER_IS_BETTER = {
     "hr_days_since_prev",
 }
 
+# Columns that must never be used as features if their names contain these substrings
+PROHIBITED_PATTERNS = (
+    "target",
+    "payout",
+    "paid_",
+    "should_have",
+)
+
 
 def load_dataset(conn: sqlite3.Connection) -> pd.DataFrame:
     hr_cols_in_table: List[str] = []
