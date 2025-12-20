@@ -92,15 +92,30 @@ RR_SMALLER_IS_BETTER = {
 
 
 def load_dataset(conn: sqlite3.Connection) -> pd.DataFrame:
-    """Load dataset from feature_table_v2 (or fallback to feature_table)."""
+    """Load dataset from feature_table_v3/v2/v1 (prefers v3 > v2 > v1)."""
     hr_cols_in_table: List[str] = []
+    ax_cols_in_table: List[str] = []
 
     # Check which feature table exists
     cursor = conn.cursor()
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'feature_table%'")
     available_tables = [row[0] for row in cursor.fetchall()]
 
-    if 'feature_table_v2' in available_tables:
+    if 'feature_table_v3' in available_tables:
+        feature_table_name = 'feature_table_v3'
+        print(f"[INFO] Using feature_table_v3")
+
+        # Check columns in feature_table_v3
+        cursor.execute(f"PRAGMA table_info({feature_table_name})")
+        table_columns = [row[1] for row in cursor.fetchall()]
+        hr_cols_in_table = [c for c in table_columns if c.startswith("hr_")]
+        ax_cols_in_table = [c for c in table_columns if c.startswith("ax")]
+        print(f"[INFO] hr_* columns in {feature_table_name} table: {len(hr_cols_in_table)}")
+        print(f"[INFO] ax*_ columns in {feature_table_name} table: {len(ax_cols_in_table)}")
+        if ax_cols_in_table:
+            print(f"[INFO] ax*_ columns: {ax_cols_in_table}")
+
+    elif 'feature_table_v2' in available_tables:
         feature_table_name = 'feature_table_v2'
         print(f"[INFO] Using feature_table_v2")
 
@@ -121,9 +136,9 @@ def load_dataset(conn: sqlite3.Connection) -> pd.DataFrame:
         print(f"[WARN] This means hr_* features will NOT be available")
     else:
         raise RuntimeError(
-            "Neither feature_table_v2 nor feature_table found in database.\n"
+            "Neither feature_table_v3 nor feature_table_v2 nor feature_table found in database.\n"
             "Please run:\n"
-            "  python scripts/build_feature_table_v2.py --db <your_db_path>\n"
+            "  python scripts/build_feature_table_v3.py --db <your_db_path>\n"
             "or check your database path."
         )
 
@@ -143,8 +158,8 @@ def load_dataset(conn: sqlite3.Connection) -> pd.DataFrame:
         "avg_horse_weight"
     ]
 
-    # Add hr_* columns if available
-    select_cols = base_cols + hr_cols_in_table
+    # Add hr_* and ax*_ columns if available
+    select_cols = base_cols + hr_cols_in_table + ax_cols_in_table
     select_cols_sql = ",\n                ".join(select_cols)
 
     query = f"""
