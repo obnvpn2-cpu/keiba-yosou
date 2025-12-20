@@ -15,24 +15,65 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
 
-EXCLUDED_COLUMNS = {
+PROHIBITED_EXACT = {
     "race_id",
     "horse_id",
-    "race_class",
-    "course",
-    "surface",
-    "track_condition",
-    "created_at",
-    "updated_at",
     "horse_no",
-    "fukusho_payout",
     "target_win",
     "target_in3",
     "target_value",
+    "finish_order",
+    "finish_position",
+    "paid_places",
+    "payout_count",
+    "should_have_payout",
+    "fukusho_payout",
+    # Scope separation: track condition handled by scenario layer, not base model
+    "track_condition",
+    "track_condition_id",
+    # Early-preview (前日) only: exclude same-day weight info
+    "horse_weight",
+    "horse_weight_diff",
+}
+
+# Columns that must never be used as features if their names contain these substrings
+PROHIBITED_PATTERNS = (
+    "target",
+    "payout",
+    "paid_",
+    "should_have",
+)
+
+DEFAULT_RR_COLS = [
+    "hr_career_in3_rate",
+    "hr_career_win_rate",
+    "hr_career_avg_finish",
+    "hr_career_avg_last3f",
+    "hr_recent5_avg_finish",
+    "hr_recent5_best_finish",
+    "hr_recent5_avg_last3f",
+    "hr_recent5_big_loss_count",
+    "hr_recent3_avg_win_odds",
+    "hr_recent3_finish_trend",
+    "hr_days_since_prev",
+]
+
+# Columns where lower is better; rankings/z-scores will be inverted to make larger = better
+RR_SMALLER_IS_BETTER = {
+    "hr_career_avg_finish",
+    "hr_career_avg_last3f",
+    "hr_recent5_avg_finish",
+    "hr_recent5_best_finish",
+    "hr_recent5_avg_last3f",
+    "hr_recent5_big_loss_count",
+    "hr_recent3_avg_win_odds",
+    "hr_days_since_prev",
 }
 
 
 def load_dataset(conn: sqlite3.Connection) -> pd.DataFrame:
+    hr_cols_in_table: List[str] = []
+
     # Check which feature table exists
     cursor = conn.cursor()
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'feature_table%'")
@@ -161,22 +202,193 @@ def split_by_race(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
 
 
 
-def build_feature_matrix(df: pd.DataFrame) -> Tuple[pd.DataFrame, np.ndarray]:
-    feature_cols: List[str] = []
-    for col in df.columns:
-        if col in EXCLUDED_COLUMNS:
+def _prohibited_reason(col: str) -> Tuple[bool, str]:
+    """
+    Check if column is prohibited as a feature.
+
+    Returns:
+        (is_prohibited, reason) where reason is 'exact' or 'pattern:<pattern>'
+    """
+    normalized = col.lower()
+    if normalized in PROHIBITED_EXACT:
+        return True, "exact"
+
+    for pattern in PROHIBITED_PATTERNS:
+        if pattern in normalized:
+            return True, f"pattern:{pattern}"
+
+    return False, ""
+
+
+def _log_feature_overview(feature_cols: List[str], hr_feature_cols: List[str]) -> None:
+    print("=" * 60)
+    print("[INFO] Feature columns summary")
+    print("=" * 60)
+    print(f"[INFO] feature cols count: {len(feature_cols)}")
+
+    head_preview = feature_cols[:30]
+    tail_preview = feature_cols[-30:] if len(feature_cols) > 30 else []
+    print(f"[INFO] feature cols (head 30): {head_preview}")
+    if tail_preview:
+        print(f"[INFO] feature cols (tail 30): {tail_preview}")
+    print(f"[INFO] hr_* feature cols ({len(hr_feature_cols)}): {hr_feature_cols}")
+    print("=" * 60)
+
+    artifacts_dir = "artifacts"
+    os.makedirs(artifacts_dir, exist_ok=True)
+    features_path = os.path.join(artifacts_dir, "features_used.txt")
+    try:
+        with open(features_path, "w", encoding="utf-8") as f:
+            for col in feature_cols:
+                f.write(f"{col}\n")
+        print(f"[INFO] Saved full feature list to: {features_path}")
+    except OSError as e:
+        print(f"[WARN] Failed to write feature list to {features_path}: {e}")
+
+
+def _log_prohibited_summary(
+    prohibited_exact_hits: List[str],
+    prohibited_pattern_hits: List[str],
+    detected_in_features: List[str],
+) -> None:
+    print("=" * 60)
+    print("[INFO] Prohibited column check")
+    print("=" * 60)
+    print(f"[INFO] Excluded by exact match ({len(prohibited_exact_hits)}): {sorted(set(prohibited_exact_hits))}")
+    print(f"[INFO] Excluded by pattern match ({len(prohibited_pattern_hits)}): {sorted(set(prohibited_pattern_hits))}")
+    if detected_in_features:
+        print(f"[ERROR] Prohibited columns detected in feature set: {sorted(set(detected_in_features))}")
+    else:
+        print("[INFO] No prohibited columns present in feature set.")
+    print("=" * 60)
+
+
+def _log_rr_summary(
+    enabled: bool,
+    rr_kind: str,
+    created_cols: List[str],
+    used_base_cols: List[str],
+) -> None:
+    print("=" * 60)
+    print("[INFO] Relative (rr_) feature generation")
+    print("=" * 60)
+    print(f"[INFO] add_rr enabled: {enabled}")
+    print(f"[INFO] rr_kind: {rr_kind}")
+    print(f"[INFO] rr base cols used ({len(used_base_cols)}): {used_base_cols}")
+    print(f"[INFO] rr created cols count: {len(created_cols)}")
+    if created_cols:
+        head = created_cols[:15]
+        tail = created_cols[-15:] if len(created_cols) > 15 else []
+        print(f"[INFO] rr created cols (head): {head}")
+        if tail:
+            print(f"[INFO] rr created cols (tail): {tail}")
+    print("=" * 60)
+
+
+def _add_rr_features(
+    df: pd.DataFrame,
+    rr_kind: str,
+    rr_cols: List[str],
+) -> Tuple[pd.DataFrame, List[str], List[str]]:
+    """
+    Add race-relative (rr_) features computed per race_id.
+
+    Returns:
+        df_with_rr, created_rr_cols, used_base_cols
+    """
+    df = df.copy()
+    created_cols: List[str] = []
+    used_base_cols: List[str] = []
+
+    valid_rr_cols = []
+    for col in rr_cols:
+        if col not in df.columns:
+            print(f"[WARN] rr base column not found and skipped: {col}")
             continue
-        if pd.api.types.is_numeric_dtype(df[col]):
-            feature_cols.append(col)
+        if not pd.api.types.is_numeric_dtype(df[col]):
+            print(f"[WARN] rr base column is not numeric and skipped: {col}")
+            continue
+        valid_rr_cols.append(col)
+
+    if not valid_rr_cols:
+        print("[WARN] No valid rr base columns found; skipping rr feature generation.")
+        return df, created_cols, used_base_cols
+
+    grouped = df.groupby("race_id")
+
+    for col in valid_rr_cols:
+        series = df[col]
+        used_base_cols.append(col)
+
+        if rr_kind in ("rank_pct", "both"):
+            rank = grouped[col].rank(pct=True, method="average")
+            if col in RR_SMALLER_IS_BETTER:
+                rank = 1 - rank
+            new_col = f"rr_rank_pct_{col}"
+            df[new_col] = rank
+            created_cols.append(new_col)
+
+        if rr_kind in ("zscore", "both"):
+            mean = grouped[col].transform("mean")
+            std = grouped[col].transform("std")
+            z = (series - mean) / std.replace(0, np.nan)
+            z = z.fillna(0)
+            if col in RR_SMALLER_IS_BETTER:
+                z = -z
+            new_col = f"rr_zscore_{col}"
+            df[new_col] = z
+            created_cols.append(new_col)
+
+    artifacts_dir = "artifacts"
+    os.makedirs(artifacts_dir, exist_ok=True)
+    rr_path = os.path.join(artifacts_dir, "rr_cols_used.txt")
+    try:
+        with open(rr_path, "w", encoding="utf-8") as f:
+            for col in created_cols:
+                f.write(f"{col}\n")
+        print(f"[INFO] Saved rr feature list to: {rr_path}")
+    except OSError as e:
+        print(f"[WARN] Failed to write rr feature list to {rr_path}: {e}")
+
+    return df, created_cols, used_base_cols
+
+
+def build_feature_matrix(df: pd.DataFrame, debug_features: bool = False) -> Tuple[pd.DataFrame, np.ndarray]:
+    feature_cols: List[str] = []
+    prohibited_exact_hits: List[str] = []
+    prohibited_pattern_hits: List[str] = []
+
+    for col in df.columns:
+        if not pd.api.types.is_numeric_dtype(df[col]):
+            continue
+
+        is_prohibited, reason = _prohibited_reason(col)
+        if is_prohibited:
+            if reason == "exact":
+                prohibited_exact_hits.append(col)
+            elif reason.startswith("pattern:"):
+                prohibited_pattern_hits.append(col)
+            continue
+
+        feature_cols.append(col)
 
     # Count hr_* features
     hr_feature_cols = [c for c in feature_cols if c.startswith("hr_")]
 
-    print(f"[INFO] feature cols ({len(feature_cols)}): {feature_cols}")
-    print(f"[INFO] hr_* feature cols ({len(hr_feature_cols)}): {hr_feature_cols}")
+    leaking_cols = [c for c in feature_cols if _prohibited_reason(c)[0]]
+    if leaking_cols:
+        _log_prohibited_summary(prohibited_exact_hits, prohibited_pattern_hits, leaking_cols)
+        raise RuntimeError(
+            "Prohibited columns detected in feature set (possible data leak): "
+            f"{sorted(leaking_cols)}"
+        )
+
+    _log_prohibited_summary(prohibited_exact_hits, prohibited_pattern_hits, leaking_cols)
+    _log_feature_overview(feature_cols, hr_feature_cols)
 
     X = df[feature_cols].fillna(0)
     y = df["target_in3"].astype(int).values
+
     return X, y
 
 
@@ -1036,6 +1248,27 @@ def main() -> None:
         default=100,
         help="Maximum number of anomaly records to export to CSV (0 = export all, default: 100)",
     )
+    parser.add_argument(
+        "--debug-features",
+        action="store_true",
+        help="Output feature column summary and prohibited column checks before training",
+    )
+    parser.add_argument(
+        "--add-rr",
+        action="store_true",
+        help="Add race-relative (rr_) features computed within each race_id",
+    )
+    parser.add_argument(
+        "--rr-kind",
+        choices=["rank_pct", "zscore", "both"],
+        default="rank_pct",
+        help="Type of rr_ features to add (default: rank_pct)",
+    )
+    parser.add_argument(
+        "--rr-cols",
+        type=str,
+        help="Comma-separated list of base columns to use for rr_ features (default set will be used if omitted)",
+    )
     args = parser.parse_args()
 
     # --sanity-only implies --sanity-payout
@@ -1057,12 +1290,26 @@ def main() -> None:
     try:
         df = load_dataset(conn)
 
+        if args.add_rr:
+            if args.rr_cols:
+                rr_cols = [c.strip() for c in args.rr_cols.split(",") if c.strip()]
+            else:
+                rr_cols = DEFAULT_RR_COLS
+
+            df, rr_created_cols, rr_base_cols_used = _add_rr_features(df, args.rr_kind, rr_cols)
+            if args.debug_features:
+                _log_rr_summary(True, args.rr_kind, rr_created_cols, rr_base_cols_used)
+        elif args.debug_features:
+            _log_rr_summary(False, args.rr_kind, [], [])
+
         # Run sanity check if requested
         if args.sanity_payout:
             run_sanity_check_payout(df, detail=args.sanity_detail, anomaly_limit=args.anomaly_limit)
 
             # Exit if --sanity-only
             if args.sanity_only:
+                # Still run feature inspection so --debug-features surfaces prohibited columns / feature list
+                build_feature_matrix(df, debug_features=args.debug_features)
                 logger.info("Sanity check completed. Exiting (--sanity-only mode).")
                 return
 
@@ -1071,8 +1318,8 @@ def main() -> None:
         if df_train.empty or df_test.empty:
             raise RuntimeError("train or test dataset is empty; check data availability")
 
-        X_train, y_train = build_feature_matrix(df_train)
-        X_test, y_test = build_feature_matrix(df_test)
+        X_train, y_train = build_feature_matrix(df_train, debug_features=args.debug_features)
+        X_test, y_test = build_feature_matrix(df_test, debug_features=args.debug_features)
 
         scaler, model = train_model(X_train, y_train)
         evaluate(df_test, scaler, model, X_test, y_test, exclude_missing_payout=args.exclude_missing_payout)
