@@ -557,6 +557,47 @@ def save_model(
     for i, row in importance_df.head(20).iterrows():
         print(f"  {row['feature']}: {row['importance']:.4f}")
 
+    # ========================================
+    # Prefix-based gain summary (ax1-ax9, rr, other)
+    # ========================================
+    try:
+        def get_prefix_group(feature_name: str) -> str:
+            """Classify feature into ax1-ax9, rr, or other."""
+            for i in range(1, 10):
+                if feature_name.startswith(f"ax{i}_"):
+                    return f"ax{i}"
+            if feature_name.startswith("rr_"):
+                return "rr"
+            return "other"
+
+        importance_df["prefix"] = importance_df["feature"].apply(get_prefix_group)
+        prefix_summary = importance_df.groupby("prefix")["importance"].sum().reset_index()
+        prefix_summary.columns = ["prefix", "gain_sum"]
+        total_gain = prefix_summary["gain_sum"].sum()
+        prefix_summary["share_pct"] = 100.0 * prefix_summary["gain_sum"] / total_gain if total_gain > 0 else 0.0
+        prefix_summary = prefix_summary.sort_values("gain_sum", ascending=False)
+
+        print("\n[INFO] Gain summary by prefix (ax1-ax9 / rr / other):")
+        print(f"  {'prefix':<8} {'gain_sum':>14} {'share':>8}")
+        print(f"  {'-'*8} {'-'*14} {'-'*8}")
+        for _, row in prefix_summary.iterrows():
+            print(f"  {row['prefix']:<8} {row['gain_sum']:>14.0f} {row['share_pct']:>7.2f}%")
+        print(f"  {'-'*8} {'-'*14} {'-'*8}")
+        print(f"  {'TOTAL':<8} {total_gain:>14.0f} {'100.00':>7}%")
+
+        # Save to artifacts/feature_importance_gain.csv (fail-soft)
+        try:
+            artifacts_dir = "artifacts"
+            os.makedirs(artifacts_dir, exist_ok=True)
+            artifacts_importance_path = os.path.join(artifacts_dir, "feature_importance_gain.csv")
+            importance_df[["feature", "importance"]].to_csv(artifacts_importance_path, index=False)
+            print(f"[INFO] Saved feature importance to: {artifacts_importance_path}")
+        except Exception as e:
+            print(f"[WARNING] Failed to save to artifacts: {e}")
+
+    except Exception as e:
+        print(f"[WARNING] Failed to compute prefix-based gain summary: {e}")
+
 
 # ========================================
 # Evaluation Functions

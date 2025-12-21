@@ -64,17 +64,17 @@ def load_horse_results(conn: sqlite3.Connection) -> pd.DataFrame:
     Load horse_results with dynamic column detection.
 
     - Uses PRAGMA to check which columns exist in horse_results and race_results
-    - JOINs with race_results to get jockey_id/trainer_id if not in horse_results
+    - JOINs with race_results (uniquified subquery) to get jockey_id/trainer_id if not in horse_results
     - Falls back to NULL columns if data cannot be obtained
     """
     logger.info("Loading horse_results with dynamic column detection...")
 
     # Get columns from both tables
-    hr_cols = get_table_columns(conn, "horse_results")
-    rr_cols = get_table_columns(conn, "race_results")
+    hr_cols = set(get_table_columns(conn, "horse_results"))
+    rr_cols = set(get_table_columns(conn, "race_results"))
 
-    logger.info(f"  horse_results columns: {hr_cols}")
-    logger.info(f"  race_results columns: {rr_cols}")
+    logger.info(f"  horse_results columns ({len(hr_cols)}): {sorted(hr_cols)}")
+    logger.info(f"  race_results columns ({len(rr_cols)}): {sorted(rr_cols)}")
 
     # Required base columns from horse_results
     hr_base_cols = [
@@ -86,10 +86,7 @@ def load_horse_results(conn: sqlite3.Connection) -> pd.DataFrame:
     # Optional columns that may be in horse_results
     hr_optional_cols = ["win_odds", "popularity"]
 
-    # Columns we need from race_results (jockey_id, trainer_id)
-    rr_target_cols = ["jockey_id", "trainer_id"]
-
-    # Build SELECT for horse_results
+    # Build SELECT for horse_results base columns
     hr_select_parts = []
     for col in hr_base_cols:
         if col in hr_cols:
@@ -108,60 +105,85 @@ def load_horse_results(conn: sqlite3.Connection) -> pd.DataFrame:
     # Check if jockey_id/trainer_id are in horse_results directly
     jockey_in_hr = "jockey_id" in hr_cols
     trainer_in_hr = "trainer_id" in hr_cols
+    jockey_in_rr = "jockey_id" in rr_cols
+    trainer_in_rr = "trainer_id" in rr_cols
+
+    logger.info(f"  jockey_id in horse_results: {jockey_in_hr}")
+    logger.info(f"  trainer_id in horse_results: {trainer_in_hr}")
+    logger.info(f"  jockey_id in race_results: {jockey_in_rr}")
+    logger.info(f"  trainer_id in race_results: {trainer_in_rr}")
 
     if jockey_in_hr:
         hr_select_parts.append("hr.jockey_id")
-        logger.info("  jockey_id found in horse_results")
     if trainer_in_hr:
         hr_select_parts.append("hr.trainer_id")
-        logger.info("  trainer_id found in horse_results")
 
     # Determine if we need to JOIN with race_results
-    need_jockey_from_rr = not jockey_in_hr and "jockey_id" in rr_cols
-    need_trainer_from_rr = not trainer_in_hr and "trainer_id" in rr_cols
+    need_jockey_from_rr = not jockey_in_hr and jockey_in_rr
+    need_trainer_from_rr = not trainer_in_hr and trainer_in_rr
     need_join = need_jockey_from_rr or need_trainer_from_rr
 
-    # Determine JOIN key
-    join_key = None
+    logger.info(f"  need_join: {need_join} (jockey_from_rr={need_jockey_from_rr}, trainer_from_rr={need_trainer_from_rr})")
+
+    # Determine JOIN key (only safe composite keys)
+    join_keys = None
     join_clause = ""
+    rr_subquery = ""
 
     if need_join:
-        # Priority: (race_id, horse_id) > (race_id, horse_no) > (race_id, frame_no)
-        if "horse_id" in rr_cols and "horse_id" in hr_cols:
-            join_key = "(race_id, horse_id)"
-            join_clause = "LEFT JOIN race_results rr ON hr.race_id = rr.race_id AND hr.horse_id = rr.horse_id"
-        elif "horse_no" in rr_cols and "horse_no" in hr_cols:
-            join_key = "(race_id, horse_no)"
-            join_clause = "LEFT JOIN race_results rr ON hr.race_id = rr.race_id AND hr.horse_no = rr.horse_no"
-        elif "frame_no" in rr_cols and "frame_no" in hr_cols:
-            join_key = "(race_id, frame_no)"
-            join_clause = "LEFT JOIN race_results rr ON hr.race_id = rr.race_id AND hr.frame_no = rr.frame_no"
+        # Priority: (race_id, horse_id) > (race_id, horse_no)
+        # Note: race_id alone is forbidden (many-to-many risk)
+        if "race_id" in rr_cols and "horse_id" in rr_cols and "horse_id" in hr_cols:
+            join_keys = ["race_id", "horse_id"]
+        elif "race_id" in rr_cols and "horse_no" in rr_cols and "horse_no" in hr_cols:
+            join_keys = ["race_id", "horse_no"]
         else:
-            logger.warning("  Cannot determine JOIN key for race_results, falling back to NULL")
+            logger.warning("  FALLBACK: Cannot determine safe JOIN key for race_results")
+            logger.warning("    Available in rr: race_id={}, horse_id={}, horse_no={}".format(
+                "race_id" in rr_cols, "horse_id" in rr_cols, "horse_no" in rr_cols
+            ))
             need_join = False
 
-        if join_key:
-            logger.info(f"  JOIN key selected: {join_key}")
+        if join_keys:
+            logger.info(f"  join_keys: {join_keys}")
 
-    # Add jockey_id/trainer_id from race_results or NULL
+            # Build uniquifying subquery with GROUP BY
+            rr_select_cols = join_keys.copy()
+            if need_jockey_from_rr:
+                rr_select_cols.append("MAX(jockey_id) AS jockey_id")
+            if need_trainer_from_rr:
+                rr_select_cols.append("MAX(trainer_id) AS trainer_id")
+
+            rr_select_str = ", ".join(rr_select_cols[:len(join_keys)])  # join keys without MAX
+            rr_agg_str = ", ".join(rr_select_cols[len(join_keys):])  # aggregated columns
+            if rr_agg_str:
+                rr_select_str = rr_select_str + ", " + rr_agg_str
+
+            group_by_str = ", ".join(join_keys)
+            rr_subquery = f"(SELECT {rr_select_str} FROM race_results GROUP BY {group_by_str}) rr_uniq"
+
+            join_conditions = " AND ".join([f"hr.{k} = rr_uniq.{k}" for k in join_keys])
+            join_clause = f"LEFT JOIN {rr_subquery} ON {join_conditions}"
+
+    # Add jockey_id/trainer_id from race_results subquery or NULL
     if need_jockey_from_rr and need_join:
-        hr_select_parts.append("rr.jockey_id")
-        logger.info("  jockey_id will be loaded from race_results via JOIN")
+        hr_select_parts.append("rr_uniq.jockey_id")
+        logger.info("  jockey_id will be loaded from race_results via JOIN (uniquified)")
     elif not jockey_in_hr:
         hr_select_parts.append("NULL AS jockey_id")
-        logger.warning("  jockey_id not available, using NULL")
+        logger.warning("  FALLBACK: jockey_id not available anywhere, using NULL")
 
     if need_trainer_from_rr and need_join:
-        hr_select_parts.append("rr.trainer_id")
-        logger.info("  trainer_id will be loaded from race_results via JOIN")
+        hr_select_parts.append("rr_uniq.trainer_id")
+        logger.info("  trainer_id will be loaded from race_results via JOIN (uniquified)")
     elif not trainer_in_hr:
         hr_select_parts.append("NULL AS trainer_id")
-        logger.warning("  trainer_id not available, using NULL")
+        logger.warning("  FALLBACK: trainer_id not available anywhere, using NULL")
 
     # Build final query
     select_clause = ",\n        ".join(hr_select_parts)
 
-    if need_join:
+    if need_join and join_clause:
         query = f"""
         SELECT
             {select_clause}
@@ -179,7 +201,7 @@ def load_horse_results(conn: sqlite3.Connection) -> pd.DataFrame:
         ORDER BY hr.horse_id, hr.race_date, hr.race_id
         """
 
-    logger.info(f"  Executing query...")
+    logger.info("  Executing query...")
     df = pd.read_sql_query(query, conn)
     logger.info(f"  horse_results rows: {len(df):,}")
 
@@ -188,8 +210,7 @@ def load_horse_results(conn: sqlite3.Connection) -> pd.DataFrame:
         if col in df.columns:
             null_count = df[col].isna().sum()
             null_pct = 100 * null_count / len(df) if len(df) > 0 else 0
-            if null_pct > 0:
-                logger.info(f"  {col} NULL rate: {null_count:,}/{len(df):,} ({null_pct:.1f}%)")
+            logger.info(f"  {col} null_rate: {null_count:,}/{len(df):,} ({null_pct:.1f}%)")
 
     return df
 
