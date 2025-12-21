@@ -1169,11 +1169,11 @@ def evaluate_strategy_top1_gap_odds(
         return []
 
     if prob_thresholds is None:
-        prob_thresholds = [0.25, 0.30, 0.35, 0.40]
+        prob_thresholds = [0.38, 0.40, 0.42, 0.45]
     if gap_thresholds is None:
-        gap_thresholds = [0.02, 0.04, 0.06, 0.08, 0.10]
+        gap_thresholds = [0.03, 0.04, 0.05, 0.06]
     if odds_thresholds is None:
-        odds_thresholds = [3, 5, 8, 12, 15]
+        odds_thresholds = [6, 7, 8, 9, 10, 12, 15]
 
     # paid_places の計算（JRAルール）
     def calculate_paid_places(field_size):
@@ -1321,13 +1321,39 @@ def evaluate_strategy_top1_gap_odds(
 
     # Best row by ROI (ベットがあるものの中で最良)
     results_with_bets = [r for r in results if r["n_bet_races"] > 0]
+    logger.info("-" * 90)
+
+    # Best ROI (no constraint)
     if results_with_bets:
         best = max(results_with_bets, key=lambda x: x["roi"])
-        logger.info("-" * 90)
         logger.info(
-            f"Best ROI: ProbTh={best['prob_th']:.2f}, GapTh={best['gap_th']:.2f}, "
+            f"Best ROI (no constraint): ProbTh={best['prob_th']:.2f}, GapTh={best['gap_th']:.2f}, "
             f"OddsTh={best['odds_th']:.0f}, Bets={best['n_bet_races']}, ROI={best['roi']:.1f}%"
         )
+    else:
+        logger.info("Best ROI (no constraint): none")
+
+    # Best ROI (Bets>=500)
+    results_500 = [r for r in results if r["n_bet_races"] >= 500]
+    if results_500:
+        best_500 = max(results_500, key=lambda x: x["roi"])
+        logger.info(
+            f"Best ROI (Bets>=500):     ProbTh={best_500['prob_th']:.2f}, GapTh={best_500['gap_th']:.2f}, "
+            f"OddsTh={best_500['odds_th']:.0f}, Bets={best_500['n_bet_races']}, ROI={best_500['roi']:.1f}%"
+        )
+    else:
+        logger.info("Best ROI (Bets>=500):     none")
+
+    # Best ROI (Bets>=1000)
+    results_1000 = [r for r in results if r["n_bet_races"] >= 1000]
+    if results_1000:
+        best_1000 = max(results_1000, key=lambda x: x["roi"])
+        logger.info(
+            f"Best ROI (Bets>=1000):    ProbTh={best_1000['prob_th']:.2f}, GapTh={best_1000['gap_th']:.2f}, "
+            f"OddsTh={best_1000['odds_th']:.0f}, Bets={best_1000['n_bet_races']}, ROI={best_1000['roi']:.1f}%"
+        )
+    else:
+        logger.info("Best ROI (Bets>=1000):    none")
 
     logger.info("")
 
