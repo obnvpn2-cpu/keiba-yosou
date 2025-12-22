@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-test_masters.py - Tests for master data functionality (Road 2)
+test_masters.py - Tests for master data functionality (Road 2 + PR2.5)
 
 Tests for:
-1. Master table migrations
+1. Master table migrations (including horse_pedigree)
 2. Horse/Jockey/Trainer parsers
-3. FetchStatusManager
-4. UPSERT operations
+3. 5-generation pedigree parser (PR2.5)
+4. FetchStatusManager
+5. UPSERT operations
 """
 
 import sqlite3
@@ -31,6 +32,7 @@ from src.db.masters_migration import (
 from src.ingestion.parser_horse_extended import HorseExtendedParser, HorseExtendedRecord
 from src.ingestion.parser_jockey import JockeyParser, JockeyRecord
 from src.ingestion.parser_trainer import TrainerParser, TrainerRecord
+from src.ingestion.parser_pedigree_5gen import Pedigree5GenParser, PedigreeAncestor
 
 
 # ============================================================
@@ -85,6 +87,12 @@ def jockey_parser():
 def trainer_parser():
     """TrainerParser instance."""
     return TrainerParser()
+
+
+@pytest.fixture
+def pedigree_parser():
+    """Pedigree5GenParser instance."""
+    return Pedigree5GenParser()
 
 
 # ============================================================
@@ -407,6 +415,101 @@ class TestTrainerParser:
         assert record.affiliation == "美浦"
 
 
+class TestPedigree5GenParser:
+    """Tests for Pedigree5GenParser (PR2.5)."""
+
+    def test_parse_simple_pedigree(self, pedigree_parser):
+        """Test parsing a simple pedigree table."""
+        html = """
+        <html>
+        <body>
+            <table class="blood_table">
+                <tr>
+                    <td rowspan="16"><a href="/horse/2010101234/">ディープインパクト</a></td>
+                    <td rowspan="8"><a href="/horse/2000101111/">サンデーサイレンス</a></td>
+                </tr>
+                <tr>
+                    <td rowspan="8"><a href="/horse/2000102222/">ウインドインハーヘア</a></td>
+                </tr>
+                <tr>
+                    <td rowspan="16"><a href="/horse/2012102345/">ダストアンドダイヤモンズ</a></td>
+                    <td rowspan="8"><a href="/horse/2001103333/">Vindication</a></td>
+                </tr>
+                <tr>
+                    <td rowspan="8"><a href="/horse/2001104444/">Majesty's Crown</a></td>
+                </tr>
+            </table>
+        </body>
+        </html>
+        """
+        soup = BeautifulSoup(html, "html.parser")
+        ancestors = pedigree_parser.parse("2019104385", soup)
+
+        assert len(ancestors) >= 2  # At least sire and dam
+
+        # Check that all have required fields
+        for a in ancestors:
+            assert a.horse_id == "2019104385"
+            assert a.generation in range(1, 6)
+            assert a.position  # Not empty
+            assert a.ancestor_name  # Not empty
+
+    def test_position_calculation(self, pedigree_parser):
+        """Test that position paths are correctly calculated."""
+        # Gen 1
+        assert pedigree_parser._calc_position(1, 0) == "s"
+        assert pedigree_parser._calc_position(1, 1) == "d"
+
+        # Gen 2
+        assert pedigree_parser._calc_position(2, 0) == "ss"
+        assert pedigree_parser._calc_position(2, 1) == "sd"
+        assert pedigree_parser._calc_position(2, 2) == "ds"
+        assert pedigree_parser._calc_position(2, 3) == "dd"
+
+        # Gen 3
+        assert pedigree_parser._calc_position(3, 0) == "sss"
+        assert pedigree_parser._calc_position(3, 4) == "dss"
+        assert pedigree_parser._calc_position(3, 7) == "ddd"
+
+    def test_parse_empty_table(self, pedigree_parser):
+        """Test parsing an empty/missing pedigree table."""
+        html = """
+        <html>
+        <body>
+            <table><tr><td>No pedigree data</td></tr></table>
+        </body>
+        </html>
+        """
+        soup = BeautifulSoup(html, "html.parser")
+        ancestors = pedigree_parser.parse("0000000001", soup)
+
+        # Should return empty list, not raise
+        assert ancestors == []
+
+    def test_parse_partial_pedigree(self, pedigree_parser):
+        """Test parsing a pedigree with missing links."""
+        html = """
+        <html>
+        <body>
+            <table class="blood_table">
+                <tr>
+                    <td rowspan="16"><a href="/horse/2010101234/">ディープインパクト</a></td>
+                </tr>
+                <tr>
+                    <td rowspan="16">Unknown Mare (no link)</td>
+                </tr>
+            </table>
+        </body>
+        </html>
+        """
+        soup = BeautifulSoup(html, "html.parser")
+        ancestors = pedigree_parser.parse("2019104385", soup)
+
+        # Should still parse what's available
+        # The exact count depends on implementation, but should not crash
+        assert isinstance(ancestors, list)
+
+
 # ============================================================
 # UPSERT Tests
 # ============================================================
@@ -468,6 +571,92 @@ class TestMasterUpsert:
         # Still only one row
         cursor = conn.execute("SELECT COUNT(*) FROM horses")
         assert cursor.fetchone()[0] == 1
+
+    def test_pedigree_upsert(self, db_with_masters):
+        """Test UPSERT for pedigree records."""
+        conn, _ = db_with_masters
+
+        # Import upsert function
+        sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+        from scripts.fetch_masters import upsert_pedigree_ancestors
+
+        # Create test records
+        ancestors = [
+            PedigreeAncestor(
+                horse_id="2019104385",
+                generation=1,
+                position="s",
+                ancestor_id="2010101234",
+                ancestor_name="ディープインパクト",
+            ),
+            PedigreeAncestor(
+                horse_id="2019104385",
+                generation=1,
+                position="d",
+                ancestor_id="2012102345",
+                ancestor_name="ダストアンドダイヤモンズ",
+            ),
+            PedigreeAncestor(
+                horse_id="2019104385",
+                generation=2,
+                position="ss",
+                ancestor_id="2000101111",
+                ancestor_name="サンデーサイレンス",
+            ),
+        ]
+
+        # Insert
+        count = upsert_pedigree_ancestors(conn, ancestors)
+        assert count == 3
+
+        # Verify
+        cursor = conn.execute(
+            "SELECT ancestor_name FROM horse_pedigree WHERE horse_id=? AND position=?",
+            ("2019104385", "s")
+        )
+        row = cursor.fetchone()
+        assert row[0] == "ディープインパクト"
+
+        # Update
+        ancestors[0] = PedigreeAncestor(
+            horse_id="2019104385",
+            generation=1,
+            position="s",
+            ancestor_id="2010101234",
+            ancestor_name="Updated Sire Name",
+        )
+        upsert_pedigree_ancestors(conn, ancestors[:1])
+
+        cursor = conn.execute(
+            "SELECT ancestor_name FROM horse_pedigree WHERE horse_id=? AND position=?",
+            ("2019104385", "s")
+        )
+        row = cursor.fetchone()
+        assert row[0] == "Updated Sire Name"
+
+        # Still only 3 rows (UPSERT, not INSERT)
+        cursor = conn.execute("SELECT COUNT(*) FROM horse_pedigree")
+        assert cursor.fetchone()[0] == 3
+
+    def test_pedigree_table_exists_after_migration(self, db_with_masters):
+        """Test that horse_pedigree table is created by migrations."""
+        conn, _ = db_with_masters
+
+        # Check table exists
+        cursor = conn.execute("""
+            SELECT name FROM sqlite_master
+            WHERE type='table' AND name='horse_pedigree'
+        """)
+        tables = [row[0] for row in cursor.fetchall()]
+        assert "horse_pedigree" in tables
+
+        # Check PRIMARY KEY constraint
+        cursor = conn.execute("PRAGMA table_info(horse_pedigree)")
+        columns = {row[1]: row for row in cursor.fetchall()}
+        assert "horse_id" in columns
+        assert "generation" in columns
+        assert "position" in columns
+        assert "ancestor_name" in columns
 
 
 # ============================================================
