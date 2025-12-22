@@ -1,14 +1,29 @@
 #!/usr/bin/env python3
 """
-masters_migration.py - Schema Migration for Master Tables (Road 2)
+masters_migration.py - Schema Migration for Master Tables (Road 2 + PR2.5)
 
 Adds tables for:
-- horses: Horse master data with pedigree
+- horses: Horse master data with basic pedigree
 - jockeys: Jockey master data
 - trainers: Trainer master data
 - fetch_status: Track fetch progress for resume capability
+- horse_pedigree: 5-generation pedigree (normalized, PR2.5)
 
 These migrations integrate with src/db/schema_migration.py
+
+【重要: 未来リーク防止ルール】
+Master tables contain mostly "static" attributes that don't change over time:
+- horse: name, sex, birth_date, coat_color, breeder, pedigree
+- jockey/trainer: name, affiliation, birth_date
+
+The following fields are TIME-SENSITIVE and may cause future leakage:
+- total_prize, total_starts, total_wins, career_wins, career_in3, career_starts
+- These values grow over time as the entity participates in more races
+
+*** DO NOT USE CAREER STATS FOR ML FEATURES ***
+
+If you need career stats, compute them as-of the race date from race_results.
+The scraped_at / updated_at fields indicate when the data was fetched.
 """
 
 import sqlite3
@@ -35,7 +50,7 @@ CREATE TABLE IF NOT EXISTS horses (
     owner TEXT,
     owner_id TEXT,
 
-    -- Pedigree (血統)
+    -- Pedigree (血統) - Basic 3-gen from horse profile
     sire_id TEXT,                -- 父 horse_id
     sire_name TEXT,              -- 父 名前
     dam_id TEXT,                 -- 母 horse_id
@@ -48,14 +63,32 @@ CREATE TABLE IF NOT EXISTS horses (
     sire_dam_name TEXT,          -- 父母
     dam_dam_name TEXT,           -- 母母
 
-    -- Stats from profile page (optional)
-    total_prize INTEGER,         -- 総獲得賞金
-    total_starts INTEGER,
-    total_wins INTEGER,
+    -- Stats from profile page
+    -- *** WARNING: TIME-SENSITIVE - DO NOT USE FOR ML FEATURES ***
+    -- These values grow over time. Use as-of computation from race_results instead.
+    total_prize INTEGER,         -- 総獲得賞金 (scraped_at時点)
+    total_starts INTEGER,        -- 出走数 (scraped_at時点)
+    total_wins INTEGER,          -- 勝利数 (scraped_at時点)
 
     -- Metadata
     created_at TEXT DEFAULT (datetime('now', 'localtime')),
     updated_at TEXT DEFAULT (datetime('now', 'localtime'))
+);
+"""
+
+# PR2.5: 5-generation pedigree table (normalized)
+CREATE_HORSE_PEDIGREE_TABLE = """
+CREATE TABLE IF NOT EXISTS horse_pedigree (
+    horse_id TEXT NOT NULL,
+    generation INTEGER NOT NULL,      -- 1..5 (1=父母, 2=祖父母, ...)
+    position TEXT NOT NULL,           -- "s", "d", "ss", "sd", ... (sire/dam path)
+    ancestor_id TEXT,                 -- 祖先の horse_id (リンクがあれば)
+    ancestor_name TEXT NOT NULL,      -- 祖先の名前
+
+    created_at TEXT DEFAULT (datetime('now', 'localtime')),
+    updated_at TEXT DEFAULT (datetime('now', 'localtime')),
+
+    PRIMARY KEY (horse_id, generation, position)
 );
 """
 
@@ -69,9 +102,11 @@ CREATE TABLE IF NOT EXISTS jockeys (
     debut_year INTEGER,
 
     -- Career stats (from profile, as-of fetch time)
-    career_wins INTEGER,
-    career_in3 INTEGER,
-    career_starts INTEGER,
+    -- *** WARNING: TIME-SENSITIVE - DO NOT USE FOR ML FEATURES ***
+    -- These values grow over time. Use as-of computation from race_results instead.
+    career_wins INTEGER,         -- 勝利数 (scraped_at時点)
+    career_in3 INTEGER,          -- 3着内数 (scraped_at時点)
+    career_starts INTEGER,       -- 出走数 (scraped_at時点)
 
     -- Metadata
     created_at TEXT DEFAULT (datetime('now', 'localtime')),
@@ -88,9 +123,11 @@ CREATE TABLE IF NOT EXISTS trainers (
     affiliation TEXT,            -- 所属 (美浦/栗東)
 
     -- Career stats (from profile, as-of fetch time)
-    career_wins INTEGER,
-    career_in3 INTEGER,
-    career_starts INTEGER,
+    -- *** WARNING: TIME-SENSITIVE - DO NOT USE FOR ML FEATURES ***
+    -- These values grow over time. Use as-of computation from race_results instead.
+    career_wins INTEGER,         -- 勝利数 (scraped_at時点)
+    career_in3 INTEGER,          -- 3着内数 (scraped_at時点)
+    career_starts INTEGER,       -- 出走数 (scraped_at時点)
 
     -- Metadata
     created_at TEXT DEFAULT (datetime('now', 'localtime')),
@@ -129,6 +166,14 @@ CREATE INDEX IF NOT EXISTS idx_fetch_status_status ON fetch_status(status);
 CREATE INDEX IF NOT EXISTS idx_fetch_status_type_status ON fetch_status(entity_type, status);
 """
 
+# PR2.5: Indexes for horse_pedigree
+CREATE_PEDIGREE_INDEXES = """
+-- horse_pedigree indexes for ancestry queries
+CREATE INDEX IF NOT EXISTS idx_horse_pedigree_horse_id ON horse_pedigree(horse_id);
+CREATE INDEX IF NOT EXISTS idx_horse_pedigree_ancestor_id ON horse_pedigree(ancestor_id);
+CREATE INDEX IF NOT EXISTS idx_horse_pedigree_gen ON horse_pedigree(generation);
+"""
+
 
 # ============================================================
 # Migration Definitions (for schema_migration.py)
@@ -159,6 +204,17 @@ ROAD2_MIGRATIONS = [
         "id": "014_create_masters_indexes",
         "description": "Create indexes for master tables",
         "up": CREATE_INDEXES,
+    },
+    # PR2.5: 5-generation pedigree
+    {
+        "id": "015_create_horse_pedigree_table",
+        "description": "Create horse_pedigree table for 5-gen normalized pedigree",
+        "up": CREATE_HORSE_PEDIGREE_TABLE,
+    },
+    {
+        "id": "016_create_pedigree_indexes",
+        "description": "Create indexes for horse_pedigree table",
+        "up": CREATE_PEDIGREE_INDEXES,
     },
 ]
 
@@ -222,7 +278,9 @@ def create_master_tables(conn: sqlite3.Connection) -> None:
     conn.executescript(CREATE_JOCKEYS_TABLE)
     conn.executescript(CREATE_TRAINERS_TABLE)
     conn.executescript(CREATE_FETCH_STATUS_TABLE)
+    conn.executescript(CREATE_HORSE_PEDIGREE_TABLE)  # PR2.5
     conn.executescript(CREATE_INDEXES)
+    conn.executescript(CREATE_PEDIGREE_INDEXES)  # PR2.5
     conn.commit()
     logger.info("Master tables created/verified")
 
