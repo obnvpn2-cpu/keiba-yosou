@@ -397,14 +397,32 @@ def build_feature_table_v2(
     if run_qa:
         run_qa_checks(merged, hr)
 
-    # SQLite に保存
-    logger.info(f"Dropping and creating {target_table}...")
-    cur = conn.cursor()
-    cur.execute(f"DROP TABLE IF EXISTS {target_table}")
-    conn.commit()
+    # SQLite に保存 (UNIQUE制約付き)
+    logger.info(f"Saving {target_table} with UPSERT support...")
 
-    merged.to_sql(target_table, conn, index=False)
-    logger.info(f"✅ Wrote table {target_table}: {len(merged):,} rows")
+    # Import UPSERT utilities
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+
+    try:
+        from src.db.upsert import create_table_from_df
+        # Use new idempotent table creation
+        create_table_from_df(
+            conn, merged, target_table,
+            key_columns=["race_id", "horse_id"],
+            if_exists="replace"
+        )
+        logger.info(f"✅ Wrote table {target_table}: {len(merged):,} rows")
+        logger.info(f"Created UNIQUE INDEX on ({target_table}.race_id, {target_table}.horse_id)")
+    except ImportError:
+        # Fallback to old method if src.db not available
+        logger.warning("src.db.upsert not available, using pandas to_sql (no UNIQUE constraint)")
+        cur = conn.cursor()
+        cur.execute(f"DROP TABLE IF EXISTS {target_table}")
+        conn.commit()
+        merged.to_sql(target_table, conn, index=False)
+        logger.info(f"✅ Wrote table {target_table}: {len(merged):,} rows")
 
     # hr_* カラム数を表示
     hr_cols = [c for c in merged.columns if c.startswith("hr_")]
