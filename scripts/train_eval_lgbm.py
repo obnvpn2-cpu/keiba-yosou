@@ -1360,6 +1360,251 @@ def evaluate_strategy_top1_gap_odds(
     return results
 
 
+def evaluate_strategy_top1_gap_odds_popdiff(
+    df: pd.DataFrame,
+    prob_thresholds: List[float] = None,
+    gap_thresholds: List[float] = None,
+    odds_thresholds: List[float] = None,
+    diff_thresholds: List[float] = None,
+    bet_amount: int = 100,
+    y_pred_col: str = "pred_in3_prob",
+    payout_col: str = "fukusho_payout",
+    y_true_col: str = "target_in3",
+    odds_proxy_col: str = "ax9_avg_win_odds_recent5",
+    popdiff_col: str = "ax9_finish_minus_popularity_mean_recent5",
+    exclude_missing_payout: bool = True,
+) -> List[Dict[str, float]]:
+    """
+    Gap+OddsProxy+PopDiff戦略評価：4条件でフィルタリング
+
+    - prob_th: Top1予測確率の最小閾値
+    - gap_th: Top1とTop2の予測確率差の最小閾値
+    - odds_th: オッズプロキシの最小閾値
+    - diff_th: 人気差(着順-人気)の最小閾値
+    - 4つの条件すべてを満たすレースのみベット
+    """
+    # 必須列の存在チェック
+    if odds_proxy_col not in df.columns:
+        logger.warning(
+            f"[SKIP] Strategy: Top1 with Prob+Gap+OddsProxy+PopDiff - "
+            f"column '{odds_proxy_col}' not found in dataframe"
+        )
+        return []
+
+    if popdiff_col not in df.columns:
+        logger.warning(
+            f"[SKIP] Strategy: Top1 with Prob+Gap+OddsProxy+PopDiff - "
+            f"column '{popdiff_col}' not found in dataframe"
+        )
+        return []
+
+    if prob_thresholds is None:
+        prob_thresholds = [0.38, 0.40, 0.42, 0.45]
+    if gap_thresholds is None:
+        gap_thresholds = [0.03, 0.04, 0.05, 0.06]
+    if odds_thresholds is None:
+        odds_thresholds = [6, 7, 8, 9, 10, 12, 15]
+    if diff_thresholds is None:
+        diff_thresholds = [-0.5, 0.0, 0.5, 1.0]
+
+    # paid_places の計算（JRAルール）
+    def calculate_paid_places(field_size):
+        if field_size >= 8:
+            return 3
+        elif field_size >= 5:
+            return 2
+        else:
+            return 0
+
+    # 除外対象のレースを事前に特定
+    excluded_races = set()
+    if exclude_missing_payout:
+        for race_id, race_df in df.groupby("race_id"):
+            if race_df.empty:
+                continue
+
+            best_idx = race_df[y_pred_col].idxmax()
+            chosen = race_df.loc[best_idx]
+
+            payout = chosen.get(payout_col)
+
+            field_size = chosen.get("field_size", len(race_df))
+            paid_places = calculate_paid_places(field_size)
+            finish_order = chosen.get("finish_order", 999)
+
+            should_have_payout = (finish_order <= paid_places) and (paid_places > 0)
+
+            if should_have_payout and pd.isna(payout):
+                excluded_races.add(race_id)
+
+    # 各レースのTop1/Top2情報を事前計算
+    race_info = {}
+    for race_id, race_df in df.groupby("race_id"):
+        if race_df.empty or len(race_df) < 2:
+            continue
+
+        if race_id in excluded_races:
+            continue
+
+        race_sorted = race_df.sort_values(y_pred_col, ascending=False)
+        top1_row = race_sorted.iloc[0]
+        top2_row = race_sorted.iloc[1]
+
+        top1_prob = top1_row[y_pred_col]
+        top2_prob = top2_row[y_pred_col]
+        gap = top1_prob - top2_prob
+
+        odds_proxy = top1_row.get(odds_proxy_col)
+        popdiff = top1_row.get(popdiff_col)
+
+        if pd.isna(odds_proxy) or pd.isna(popdiff):
+            continue
+
+        race_info[race_id] = {
+            "top1_prob": top1_prob,
+            "gap": gap,
+            "odds_proxy": float(odds_proxy),
+            "popdiff": float(popdiff),
+            "top1_row": top1_row,
+        }
+
+    results = []
+
+    for prob_th in prob_thresholds:
+        for gap_th in gap_thresholds:
+            for odds_th in odds_thresholds:
+                for diff_th in diff_thresholds:
+                    n_bet_races = 0
+                    n_hits = 0
+                    total_return = 0.0
+                    pred_probs = []
+                    gaps = []
+                    odds_vals = []
+                    diff_vals = []
+
+                    for race_id, info in race_info.items():
+                        top1_prob = info["top1_prob"]
+                        gap = info["gap"]
+                        odds_proxy = info["odds_proxy"]
+                        popdiff = info["popdiff"]
+                        top1_row = info["top1_row"]
+
+                        # 4条件チェック
+                        if top1_prob < prob_th:
+                            continue
+                        if gap < gap_th:
+                            continue
+                        if odds_proxy < odds_th:
+                            continue
+                        if popdiff < diff_th:
+                            continue
+
+                        n_bet_races += 1
+                        pred_probs.append(top1_prob)
+                        gaps.append(gap)
+                        odds_vals.append(odds_proxy)
+                        diff_vals.append(popdiff)
+
+                        payout = top1_row.get(payout_col)
+                        if pd.notna(payout):
+                            total_return += float(payout)
+                            if int(top1_row[y_true_col]) == 1:
+                                n_hits += 1
+
+                    total_bet = n_bet_races * bet_amount
+                    hit_rate = n_hits / n_bet_races if n_bet_races > 0 else 0.0
+                    roi = (total_return / total_bet * 100) if total_bet > 0 else 0.0
+                    avg_pred = np.mean(pred_probs) if pred_probs else 0.0
+                    avg_gap = np.mean(gaps) if gaps else 0.0
+                    avg_odds = np.mean(odds_vals) if odds_vals else 0.0
+                    avg_diff = np.mean(diff_vals) if diff_vals else 0.0
+
+                    results.append({
+                        "prob_th": prob_th,
+                        "gap_th": gap_th,
+                        "odds_th": odds_th,
+                        "diff_th": diff_th,
+                        "n_bet_races": n_bet_races,
+                        "n_hits": n_hits,
+                        "hit_rate": hit_rate,
+                        "total_bet": total_bet,
+                        "total_return": total_return,
+                        "roi": roi,
+                        "avg_pred_prob": avg_pred,
+                        "avg_gap": avg_gap,
+                        "avg_odds": avg_odds,
+                        "avg_diff": avg_diff,
+                    })
+
+    logger.info("=" * 105)
+    logger.info("Strategy: Top1 with Prob+Gap+OddsProxy+PopDiff Thresholds (確率+ギャップ+オッズ+人気差戦略)")
+    logger.info("=" * 105)
+
+    if len(excluded_races) > 0:
+        logger.info(f"  Excluded races (should have payout but NULL, JRA rules): {len(excluded_races):,} races")
+
+    n_valid_races = len(race_info)
+    logger.info(f"  Valid races (with odds proxy & popdiff): {n_valid_races:,}")
+    logger.info("")
+
+    logger.info(
+        f"{'ProbTh':>7} {'GapTh':>7} {'OddsTh':>7} {'DiffTh':>7} {'Bets':>6} {'Hits':>6} "
+        f"{'Hit%':>7} {'ROI%':>8} {'AvgProb':>8} {'AvgGap':>8} {'AvgOdds':>8} {'AvgDiff':>8}"
+    )
+    logger.info("-" * 105)
+
+    for r in results:
+        logger.info(
+            f"{r['prob_th']:>7.2f} {r['gap_th']:>7.2f} {r['odds_th']:>7.0f} {r['diff_th']:>7.1f} "
+            f"{r['n_bet_races']:>6} {r['n_hits']:>6} "
+            f"{r['hit_rate']:>7.3f} {r['roi']:>8.1f} "
+            f"{r['avg_pred_prob']:>8.3f} {r['avg_gap']:>8.3f} {r['avg_odds']:>8.1f} {r['avg_diff']:>8.2f}"
+        )
+
+    # Best row by ROI
+    results_with_bets = [r for r in results if r["n_bet_races"] > 0]
+    logger.info("-" * 105)
+
+    # Best ROI (no constraint)
+    if results_with_bets:
+        best = max(results_with_bets, key=lambda x: x["roi"])
+        logger.info(
+            f"Best ROI (no constraint): ProbTh={best['prob_th']:.2f}, GapTh={best['gap_th']:.2f}, "
+            f"OddsTh={best['odds_th']:.0f}, DiffTh={best['diff_th']:.1f}, "
+            f"Bets={best['n_bet_races']}, ROI={best['roi']:.1f}%"
+        )
+    else:
+        logger.info("Best ROI (no constraint): none")
+
+    # Best ROI (Bets>=500)
+    results_500 = [r for r in results if r["n_bet_races"] >= 500]
+    if results_500:
+        best_500 = max(results_500, key=lambda x: x["roi"])
+        logger.info(
+            f"Best ROI (Bets>=500):     ProbTh={best_500['prob_th']:.2f}, GapTh={best_500['gap_th']:.2f}, "
+            f"OddsTh={best_500['odds_th']:.0f}, DiffTh={best_500['diff_th']:.1f}, "
+            f"Bets={best_500['n_bet_races']}, ROI={best_500['roi']:.1f}%"
+        )
+    else:
+        logger.info("Best ROI (Bets>=500):     none")
+
+    # Best ROI (Bets>=1000)
+    results_1000 = [r for r in results if r["n_bet_races"] >= 1000]
+    if results_1000:
+        best_1000 = max(results_1000, key=lambda x: x["roi"])
+        logger.info(
+            f"Best ROI (Bets>=1000):    ProbTh={best_1000['prob_th']:.2f}, GapTh={best_1000['gap_th']:.2f}, "
+            f"OddsTh={best_1000['odds_th']:.0f}, DiffTh={best_1000['diff_th']:.1f}, "
+            f"Bets={best_1000['n_bet_races']}, ROI={best_1000['roi']:.1f}%"
+        )
+    else:
+        logger.info("Best ROI (Bets>=1000):    none")
+
+    logger.info("")
+
+    return results
+
+
 def evaluate_calibration(
     df: pd.DataFrame,
     y_true_col: str = "target_in3",
@@ -1508,10 +1753,16 @@ def evaluate(
     except Exception as e:
         logger.warning(f"Gap+OddsProxy strategy evaluation failed (fail-soft): {e}")
 
-    # 7. キャリブレーション評価
+    # 7. Gap+OddsProxy+PopDiff戦略 (確率+ギャップ+オッズ+人気差)
+    try:
+        evaluate_strategy_top1_gap_odds_popdiff(df_test, exclude_missing_payout=exclude_missing_payout)
+    except Exception as e:
+        logger.warning(f"Gap+OddsProxy+PopDiff strategy evaluation failed (fail-soft): {e}")
+
+    # 8. キャリブレーション評価
     evaluate_calibration(df_test, n_bins=10)
 
-    # 8. デバッグ情報
+    # 9. デバッグ情報
     evaluate_debug(df_test)
 
 
