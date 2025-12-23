@@ -57,6 +57,23 @@ from .quality_report import (
     generate_quality_report,
 )
 
+from .feature_builder_v4 import (
+    FeatureBuilderV4,
+    build_feature_table_v4,
+    hash_pedigree_sire_dam,
+    hash_ancestor_frequency,
+)
+
+from .train_eval_v4 import (
+    TrainConfig,
+    EvalResult,
+    ROIResult,
+    train_model,
+    evaluate_model,
+    analyze_roi,
+    run_full_pipeline,
+)
+
 __all__ = [
     # DDL
     "CREATE_FEATURE_TABLE_V4",
@@ -79,4 +96,17 @@ __all__ = [
     "MasterQualityReporter",
     "QualityReport",
     "generate_quality_report",
+    # Feature Builder
+    "FeatureBuilderV4",
+    "build_feature_table_v4",
+    "hash_pedigree_sire_dam",
+    "hash_ancestor_frequency",
+    # Train/Eval
+    "TrainConfig",
+    "EvalResult",
+    "ROIResult",
+    "train_model",
+    "evaluate_model",
+    "analyze_roi",
+    "run_full_pipeline",
 ]
