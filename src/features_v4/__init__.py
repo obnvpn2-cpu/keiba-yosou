@@ -1,0 +1,82 @@
+# -*- coding: utf-8 -*-
+"""
+src/features_v4 - FeaturePack v1 (200+ features)
+
+Road 3: リーク防止を徹底した特徴量エンジニアリングモジュール
+
+【設計原則】
+1. 未来情報リーク防止: 全ての集計は as-of (race_date より前) で実施
+2. 同日オッズ・人気不使用: 当該レースの win_odds/popularity は使用禁止
+3. 高速処理: Python ループ禁止、SQL ベースのベクトル演算を活用
+4. 再現性: 同じデータに対して同じ結果を保証
+
+【特徴量グループ】
+- base_race: 基本レース情報 (~25 columns)
+- horse_form: 馬の過去成績・フォーム (~40 columns)
+- pace_position: ペース・位置取り (~20 columns)
+- class_prize: クラス・賞金 (~15 columns)
+- jockey_trainer: 騎手・調教師の as-of 成績 (~40 columns)
+- pedigree: 血統ハッシュ (512 + 128 = 640 columns)
+
+合計: 200+ 特徴量
+
+【使用禁止データ】
+- 当該レースの win_odds, popularity
+- 馬のキャリア通算成績 (masters テーブルの career_* フィールド)
+- race_date 以降の情報
+
+【使用可能データ】
+- race_date より前の race_results からの集計
+- horse_pedigree テーブル (血統は静的情報)
+- horses/jockeys/trainers の静的属性 (名前、所属など)
+"""
+
+from .feature_table_v4 import (
+    CREATE_FEATURE_TABLE_V4,
+    create_feature_table_v4,
+    get_feature_v4_columns,
+)
+
+from .asof_aggregator import (
+    AsOfAggregator,
+    compute_horse_asof_stats,
+    compute_jockey_asof_stats,
+    compute_trainer_asof_stats,
+    map_distance_to_cat,
+    map_class_to_id,
+    PLACE_MAP,
+    SURFACE_MAP,
+    TRACK_CONDITION_MAP,
+    GRADE_MAP,
+    SEX_MAP,
+)
+
+from .quality_report import (
+    MasterQualityReporter,
+    QualityReport,
+    generate_quality_report,
+)
+
+__all__ = [
+    # DDL
+    "CREATE_FEATURE_TABLE_V4",
+    "create_feature_table_v4",
+    "get_feature_v4_columns",
+    # Aggregators
+    "AsOfAggregator",
+    "compute_horse_asof_stats",
+    "compute_jockey_asof_stats",
+    "compute_trainer_asof_stats",
+    # Encodings
+    "map_distance_to_cat",
+    "map_class_to_id",
+    "PLACE_MAP",
+    "SURFACE_MAP",
+    "TRACK_CONDITION_MAP",
+    "GRADE_MAP",
+    "SEX_MAP",
+    # Quality Report
+    "MasterQualityReporter",
+    "QualityReport",
+    "generate_quality_report",
+]
