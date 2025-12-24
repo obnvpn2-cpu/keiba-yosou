@@ -100,6 +100,54 @@ class QualityReport:
     pedigree_coverage: Dict[str, Any]
     warnings: List[str]
 
+    def to_dict(self) -> Dict[str, Any]:
+        """JSONシリアライズ可能な辞書に変換"""
+        return {
+            "generated_at": self.generated_at,
+            "tables": {
+                name: {
+                    "table_name": stats.table_name,
+                    "row_count": stats.row_count,
+                    "column_count": stats.column_count,
+                    "null_columns": stats.null_rates,
+                }
+                for name, stats in self.table_stats.items()
+            },
+            "references": {
+                f"{ref.source_table}.{ref.source_column}_to_{ref.target_table}": {
+                    "source_table": ref.source_table,
+                    "source_column": ref.source_column,
+                    "target_table": ref.target_table,
+                    "target_column": ref.target_column,
+                    "matched": ref.match_count,
+                    "total": ref.total_count,
+                    "match_rate": ref.match_rate,
+                }
+                for ref in self.reference_integrity
+            },
+            "year_coverage": {
+                str(yc.year): {
+                    "races": yc.race_count,
+                    "entries": yc.entry_count,
+                    "horses": yc.horse_count,
+                    "jockeys": yc.jockey_count,
+                    "trainers": yc.trainer_count,
+                }
+                for yc in self.year_coverage
+            },
+            "pedigree_coverage": {
+                "total_horses": self.pedigree_coverage.get("total_horses", 0),
+                "horses_with_pedigree": self.pedigree_coverage.get("horses_with_pedigree", 0),
+                "coverage_rate": self.pedigree_coverage.get("coverage_rate", 0.0),
+                "ancestor_count": self.pedigree_coverage.get("ancestor_count", 0),
+                "generation_coverage": {
+                    gen: data.get("coverage", 0.0) if isinstance(data, dict) else data
+                    for gen, data in self.pedigree_coverage.get("generation_coverage", {}).items()
+                },
+            },
+            "warnings": self.warnings,
+        }
+
 
 # =============================================================================
 # Quality Reporter Class

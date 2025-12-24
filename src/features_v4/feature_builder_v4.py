@@ -21,13 +21,25 @@ feature_builder_v4.py - FeaturePack v1 特徴量生成エンジン
 【パフォーマンス】
 - race_results を一括ロードしてキャッシュ
 - バッチ処理でクエリ数を最小化
-- 進捗ログで状況を可視化
+- 進捗ログで状況を可視化 (処理レート、残件推定ETA)
+
+【血統ハッシュ仕様】
+ped_hash (512次元): 5代血統の全祖先 (最大62頭)
+    - token = "gen{generation}:{position}:{ancestor_id or ancestor_name}"
+    - 例: "gen1:s:2019101234" (父), "gen2:sd:母父名" (母父)
+    - 決定論的ハッシュ (sha256ベース、環境差なし)
+
+anc_hash (128次元): 直系祖先のみ (父/母/母父)
+    - token = "{role}:{ancestor_name}"
+    - 例: "sire:ディープインパクト"
+    - こちらも決定論的
 """
 
 import logging
 import sqlite3
 import hashlib
 from datetime import datetime
+from time import time
 from typing import Dict, List, Optional, Any, Tuple
 
 import pandas as pd
@@ -54,42 +66,116 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
-# Pedigree Hashing
+# Pedigree Hashing (決定論的・環境非依存)
 # =============================================================================
 
-def hash_pedigree_sire_dam(
-    sire_name: Optional[str],
-    dam_name: Optional[str],
-    broodmare_sire_name: Optional[str],
+def _stable_hash(key: str) -> int:
+    """
+    決定論的ハッシュ (SHA-256ベース)
+
+    md5ではなくsha256を使用し、環境差が発生しないことを保証。
+    """
+    h = hashlib.sha256(key.encode("utf-8")).hexdigest()
+    return int(h[:16], 16)  # 64bit整数として使用
+
+
+def hash_ancestor_5gen(
+    ancestors: List[Tuple[int, str, Optional[str], str]],
     n_dims: int = 512,
 ) -> np.ndarray:
     """
-    父×母×母父 の組み合わせを Feature Hashing で n_dims 次元に変換
+    5代血統の全祖先 (最大62頭) を Feature Hashing で n_dims 次元に変換
+
+    【メイン血統ハッシュ】
+    - 5代血統表の全祖先を対象
+    - token = "gen{generation}:{position}:{ancestor_id or ancestor_name}"
+    - generation による重み付け: 1/sqrt(generation) (近い祖先ほど重要)
+
+    Args:
+        ancestors: [(generation, position, ancestor_id, ancestor_name), ...]
+            generation: 1-5 (1=父母, 2=祖父母, ...)
+            position: "s", "d", "ss", "sd", "ds", "dd", ... (sire/dam path)
+            ancestor_id: 祖先の馬ID (あれば)
+            ancestor_name: 祖先の馬名
+        n_dims: 出力次元数 (default: 512)
+
+    Returns:
+        np.ndarray of shape (n_dims,)
+
+    Note:
+        決定論的ハッシュを使用。同じ入力に対して常に同じ出力を返す。
+    """
+    result = np.zeros(n_dims, dtype=np.float32)
+
+    if not ancestors:
+        return result
+
+    for generation, position, ancestor_id, ancestor_name in ancestors:
+        # identifier: ancestor_id があれば使用、なければ ancestor_name
+        identifier = ancestor_id if ancestor_id else ancestor_name
+        if identifier is None or pd.isna(identifier):
+            continue
+
+        # 決定論的token
+        token = f"gen{generation}:{position}:{identifier}"
+
+        # 世代による重み (1/sqrt(gen)): 近い祖先ほど重要
+        weight = 1.0 / (generation ** 0.5)
+
+        # ハッシュ計算
+        h = _stable_hash(token)
+        idx = h % n_dims
+        sign = 1 if (h // n_dims) % 2 == 0 else -1
+        result[idx] += sign * weight
+
+    # L2 正規化
+    norm = np.linalg.norm(result)
+    if norm > 0:
+        result /= norm
+
+    return result
+
+
+def hash_direct_ancestors(
+    sire_name: Optional[str],
+    dam_name: Optional[str],
+    broodmare_sire_name: Optional[str],
+    n_dims: int = 128,
+) -> np.ndarray:
+    """
+    直系祖先 (父/母/母父) を Feature Hashing で n_dims 次元に変換
+
+    【直系血統ハッシュ】
+    - 父×母×母父 の3頭のみ
+    - token = "{role}:{ancestor_name}"
 
     Args:
         sire_name: 父馬名
         dam_name: 母馬名
         broodmare_sire_name: 母父馬名
-        n_dims: 出力次元数
+        n_dims: 出力次元数 (default: 128)
 
     Returns:
         np.ndarray of shape (n_dims,)
+
+    Note:
+        決定論的ハッシュを使用。同じ入力に対して常に同じ出力を返す。
     """
     result = np.zeros(n_dims, dtype=np.float32)
 
-    # 各要素をハッシュ
-    names = [
+    # 各直系祖先をハッシュ
+    direct_ancestors = [
         ("sire", sire_name),
         ("dam", dam_name),
         ("bms", broodmare_sire_name),
     ]
 
-    for prefix, name in names:
+    for role, name in direct_ancestors:
         if name is None or pd.isna(name):
             continue
 
-        key = f"{prefix}:{name}"
-        h = int(hashlib.md5(key.encode("utf-8")).hexdigest(), 16)
+        token = f"{role}:{name}"
+        h = _stable_hash(token)
         idx = h % n_dims
         sign = 1 if (h // n_dims) % 2 == 0 else -1
         result[idx] += sign * 1.0
@@ -102,44 +188,39 @@ def hash_pedigree_sire_dam(
     return result
 
 
+# Legacy aliases for backward compatibility
+def hash_pedigree_sire_dam(
+    sire_name: Optional[str],
+    dam_name: Optional[str],
+    broodmare_sire_name: Optional[str],
+    n_dims: int = 512,
+) -> np.ndarray:
+    """
+    [DEPRECATED] hash_direct_ancestors を使用してください。
+
+    後方互換性のため残しています。
+    新しいコードでは hash_ancestor_5gen (主) と hash_direct_ancestors (副) を使用。
+    """
+    # 旧実装は直系のみだったので hash_direct_ancestors に委譲
+    return hash_direct_ancestors(sire_name, dam_name, broodmare_sire_name, n_dims)
+
+
 def hash_ancestor_frequency(
     ancestors: List[Tuple[str, int]],
     n_dims: int = 128,
 ) -> np.ndarray:
     """
-    5代血統の祖先頻度を Feature Hashing で n_dims 次元に変換
+    [DEPRECATED] hash_ancestor_5gen を使用してください。
 
-    Args:
-        ancestors: [(ancestor_name, generation), ...] のリスト
-        n_dims: 出力次元数
-
-    Returns:
-        np.ndarray of shape (n_dims,)
+    後方互換性のため残しています。
     """
-    result = np.zeros(n_dims, dtype=np.float32)
-
-    if not ancestors:
-        return result
-
+    # 旧フォーマットを新フォーマットに変換
+    new_ancestors = []
     for ancestor_name, generation in ancestors:
-        if ancestor_name is None or pd.isna(ancestor_name):
-            continue
-
-        # 世代が若いほど重み大
-        weight = 1.0 / (generation ** 0.5)
-
-        key = f"anc:{ancestor_name}"
-        h = int(hashlib.md5(key.encode("utf-8")).hexdigest(), 16)
-        idx = h % n_dims
-        sign = 1 if (h // n_dims) % 2 == 0 else -1
-        result[idx] += sign * weight
-
-    # L2 正規化
-    norm = np.linalg.norm(result)
-    if norm > 0:
-        result /= norm
-
-    return result
+        # 旧フォーマット: (name, generation)
+        # position は不明なので "unknown" とする
+        new_ancestors.append((generation, "unknown", None, ancestor_name))
+    return hash_ancestor_5gen(new_ancestors, n_dims)
 
 
 # =============================================================================
@@ -162,7 +243,8 @@ class FeatureBuilderV4:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
         self.asof = AsOfAggregator(conn)
-        self._pedigree_cache: Dict[str, List[Tuple[str, int]]] = {}
+        # Cache: horse_id -> [(generation, position, ancestor_id, ancestor_name), ...]
+        self._pedigree_cache: Dict[str, List[Tuple[int, str, Optional[str], str]]] = {}
 
     # =========================================================================
     # Pedigree Loading
@@ -177,8 +259,15 @@ class FeatureBuilderV4:
                 "sire_name": str,
                 "dam_name": str,
                 "broodmare_sire_name": str,
-                "ancestors": [(name, generation), ...]
+                "ancestors": [(generation, position, ancestor_id, ancestor_name), ...]
             }
+
+        Note:
+            ancestors の形式は hash_ancestor_5gen() に直接渡せる形式。
+            - generation: 1-5 (1=父母, 2=祖父母, ...)
+            - position: "s", "d", "ss", "sd", ... (sire/dam path)
+            - ancestor_id: 祖先の horse_id (リンクがあれば)
+            - ancestor_name: 祖先の名前
         """
         result = {
             "sire_name": None,
@@ -202,17 +291,22 @@ class FeatureBuilderV4:
         except Exception as e:
             logger.debug("Failed to load basic pedigree for %s: %s", horse_id, e)
 
-        # horse_pedigree テーブルから詳細血統
+        # horse_pedigree テーブルから詳細血統 (5代)
         if horse_id in self._pedigree_cache:
             result["ancestors"] = self._pedigree_cache[horse_id]
         else:
             try:
                 cursor = self.conn.execute("""
-                    SELECT ancestor_name, generation
+                    SELECT generation, position, ancestor_id, ancestor_name
                     FROM horse_pedigree
                     WHERE horse_id = ?
+                    ORDER BY generation, position
                 """, (horse_id,))
-                ancestors = [(row[0], row[1]) for row in cursor.fetchall()]
+                # New format: (generation, position, ancestor_id, ancestor_name)
+                ancestors = [
+                    (row[0], row[1], row[2], row[3])
+                    for row in cursor.fetchall()
+                ]
                 self._pedigree_cache[horse_id] = ancestors
                 result["ancestors"] = ancestors
             except Exception as e:
@@ -533,19 +627,21 @@ class FeatureBuilderV4:
             if include_pedigree:
                 ped_info = self.load_pedigree(horse_id)
 
-                # Sire-Dam Hash (512 dims)
-                ped_hash = hash_pedigree_sire_dam(
-                    ped_info["sire_name"],
-                    ped_info["dam_name"],
-                    ped_info["broodmare_sire_name"],
+                # ped_hash (512 dims): 5代血統の全祖先 (メイン)
+                # token = "gen{generation}:{position}:{ancestor_id or ancestor_name}"
+                ped_hash = hash_ancestor_5gen(
+                    ped_info["ancestors"],
                     n_dims=512,
                 )
                 for i in range(512):
                     features[f"ped_hash_{i:03d}"] = ped_hash[i]
 
-                # Ancestor Frequency Hash (128 dims)
-                anc_hash = hash_ancestor_frequency(
-                    ped_info["ancestors"],
+                # anc_hash (128 dims): 直系祖先のみ (父/母/母父) (サブ)
+                # token = "{role}:{ancestor_name}"
+                anc_hash = hash_direct_ancestors(
+                    ped_info["sire_name"],
+                    ped_info["dam_name"],
+                    ped_info["broodmare_sire_name"],
                     n_dims=128,
                 )
                 for i in range(128):

@@ -11,13 +11,15 @@ LightGBM モデルの学習・評価・ROI 分析パイプライン。
 4. ROI 分析 (バックテスト)
 5. 特徴量重要度
 
-【時系列分割ルール】
-- train: 2021-01 ~ 2023-06
-- val:   2023-07 ~ 2023-12
-- test:  2024-01 ~ 現在
+【時系列分割モード】
+1. year_based (デフォルト):
+   - train: 2021-01 ~ 2023-12
+   - val:   2023-10 ~ 2023-12 (train末尾を検証に流用)
+   - test:  2024-01 ~ 現在
 
-これにより、検証セットでパラメータチューニングし、
-テストセットで最終評価する。
+2. date_based:
+   - train_end, val_end を明示指定
+   - 例: train_end="2023-06-30", val_end="2023-12-31"
 
 【リーク防止】
 - 時系列分割を厳守 (未来データで学習しない)
@@ -163,8 +165,9 @@ def load_feature_data(
 
 def split_time_series(
     df: pd.DataFrame,
-    train_end: str = "2023-06-30",
+    train_end: str = "2023-12-31",
     val_end: str = "2023-12-31",
+    split_mode: str = "year_based",
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     時系列分割
@@ -173,18 +176,38 @@ def split_time_series(
         df: 全データ
         train_end: 学習データの終了日
         val_end: 検証データの終了日
+        split_mode: 分割モード
+            - "year_based": train=2021-2023, val=2023後半, test=2024
+            - "date_based": train_end, val_end を明示指定
 
     Returns:
         (train_df, val_df, test_df)
     """
-    train_df = df[df["race_date"] <= train_end].copy()
-    val_df = df[(df["race_date"] > train_end) & (df["race_date"] <= val_end)].copy()
-    test_df = df[df["race_date"] > val_end].copy()
+    if split_mode == "year_based":
+        # Year-based split: train=2021-2023, test=2024
+        # val は train の末尾 (2023-10-01~2023-12-31) を流用
+        train_end = "2023-12-31"
+        val_start = "2023-10-01"
+        test_start = "2024-01-01"
 
-    logger.info("Time series split:")
-    logger.info("  Train: %d rows (<= %s)", len(train_df), train_end)
-    logger.info("  Val:   %d rows (%s - %s)", len(val_df), train_end, val_end)
-    logger.info("  Test:  %d rows (> %s)", len(test_df), val_end)
+        train_df = df[df["race_date"] <= train_end].copy()
+        val_df = df[(df["race_date"] >= val_start) & (df["race_date"] <= train_end)].copy()
+        test_df = df[df["race_date"] >= test_start].copy()
+
+        logger.info("Time series split (year_based):")
+        logger.info("  Train: %d rows (~ %s)", len(train_df), train_end)
+        logger.info("  Val:   %d rows (%s ~ %s, subset of train)", len(val_df), val_start, train_end)
+        logger.info("  Test:  %d rows (%s ~)", len(test_df), test_start)
+    else:
+        # Date-based split (original behavior)
+        train_df = df[df["race_date"] <= train_end].copy()
+        val_df = df[(df["race_date"] > train_end) & (df["race_date"] <= val_end)].copy()
+        test_df = df[df["race_date"] > val_end].copy()
+
+        logger.info("Time series split (date_based):")
+        logger.info("  Train: %d rows (<= %s)", len(train_df), train_end)
+        logger.info("  Val:   %d rows (%s ~ %s)", len(val_df), train_end, val_end)
+        logger.info("  Test:  %d rows (> %s)", len(test_df), val_end)
 
     return train_df, val_df, test_df
 
@@ -543,8 +566,9 @@ def run_full_pipeline(
     conn: sqlite3.Connection,
     config: Optional[TrainConfig] = None,
     output_dir: str = "models",
-    train_end: str = "2023-06-30",
+    train_end: str = "2023-12-31",
     val_end: str = "2023-12-31",
+    split_mode: str = "year_based",
 ) -> Dict[str, Any]:
     """
     完全なパイプラインを実行
@@ -553,8 +577,9 @@ def run_full_pipeline(
         conn: SQLite 接続
         config: 学習設定
         output_dir: 出力ディレクトリ
-        train_end: 学習データ終了日
-        val_end: 検証データ終了日
+        train_end: 学習データ終了日 (date_based モード用)
+        val_end: 検証データ終了日 (date_based モード用)
+        split_mode: 分割モード ("year_based" or "date_based")
 
     Returns:
         結果の辞書
@@ -564,6 +589,7 @@ def run_full_pipeline(
 
     logger.info("=" * 80)
     logger.info("Running Full Train/Eval/ROI Pipeline")
+    logger.info("  Split mode: %s", split_mode)
     logger.info("=" * 80)
 
     # データロード
@@ -576,7 +602,7 @@ def run_full_pipeline(
     logger.info("Loaded %d rows", len(df))
 
     # 時系列分割
-    train_df, val_df, test_df = split_time_series(df, train_end, val_end)
+    train_df, val_df, test_df = split_time_series(df, train_end, val_end, split_mode)
 
     # 学習
     model, feature_cols = train_model(train_df, val_df, config, output_dir)
@@ -633,8 +659,14 @@ if __name__ == "__main__":
     parser.add_argument("--db", default="netkeiba.db", help="Database path")
     parser.add_argument("--output", "-o", default="models", help="Output directory")
     parser.add_argument("--target", default="target_win", help="Target column")
-    parser.add_argument("--train-end", default="2023-06-30", help="Train end date")
-    parser.add_argument("--val-end", default="2023-12-31", help="Validation end date")
+    parser.add_argument(
+        "--split-mode",
+        choices=["year_based", "date_based"],
+        default="year_based",
+        help="Split mode: year_based (train=2021-2023, test=2024) or date_based (use --train-end/--val-end)"
+    )
+    parser.add_argument("--train-end", default="2023-12-31", help="Train end date (for date_based mode)")
+    parser.add_argument("--val-end", default="2023-12-31", help="Validation end date (for date_based mode)")
     parser.add_argument("--no-pedigree", action="store_true", help="Exclude pedigree features")
     parser.add_argument("--include-market", action="store_true", help="Include market features")
     parser.add_argument("--lr", type=float, default=0.05, help="Learning rate")
@@ -662,6 +694,7 @@ if __name__ == "__main__":
             output_dir=args.output,
             train_end=args.train_end,
             val_end=args.val_end,
+            split_mode=args.split_mode,
         )
         print(json.dumps(results, indent=2))
     finally:
