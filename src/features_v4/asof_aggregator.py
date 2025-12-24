@@ -19,6 +19,30 @@ asof_aggregator.py - As-Of 統計計算モジュール
 
     # 調教師の as-of 統計を計算
     trainer_stats = agg.compute_trainer_stats_batch(target_races_df)
+
+【As-Of 安全性レベル】
+現在の実装: Level 1 (日付ベース)
+    - race_date < current_race_date で統計を計算
+    - 同日の他レース結果は含まれない (安全)
+    - ただし同日の朝イチ発走結果も除外される (やや保守的)
+
+将来の拡張案: Level 2 (発走時刻ベース)
+    - races.start_time を使用して同日でも発走時刻で比較
+    - 例: 15:40発走のレースなら、同日14:00発走のレース結果は使用可能
+    - 実装時の注意点:
+        * start_time のパース処理が必要
+        * NULL の場合のフォールバック (日付ベースに戻す)
+        * タイムゾーン考慮 (JST前提)
+
+TODO: Level 2 (発走時刻ベース) の実装
+    1. races.start_time カラムの存在確認
+    2. 時刻パース関数の追加 (_parse_start_time)
+    3. compute_*_asof_stats に use_start_time: bool オプション追加
+    4. WHERE句を race_date < ? OR (race_date = ? AND start_time < ?) に変更
+    5. 単体テスト追加 (同日の前後レースで結果が変わることを確認)
+
+注: 現時点ではJRAのレースは同日に同じ馬が複数回走ることは稀なため、
+    Level 1 で十分な安全性が確保されている。
 """
 
 import logging
