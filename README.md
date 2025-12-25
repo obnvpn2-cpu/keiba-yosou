@@ -55,15 +55,51 @@
 ## 2. セットアップ
 
 ### 2.1 Python 環境
-- Python 3.11+ 推奨
+- Python 3.12 推奨（3.11+ 対応）
 
 ```bash
+# 本番用
 pip install -r requirements.txt
-# 開発用（pytest/ruff/black 等）
+
+# 開発用（テスト・リンター含む）
 pip install -r requirements-dev.txt
 ```
 
-### 2.2 DB の位置（正）
+### 2.2 ローカル開発セットアップ
+
+```bash
+# 1. リポジトリクローン
+git clone https://github.com/obnvpn2-cpu/keiba-yosou.git
+cd keiba-yosou
+
+# 2. 仮想環境作成
+python -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+
+# 3. 開発用パッケージインストール
+pip install -r requirements-dev.txt
+
+# 4. テスト実行
+pytest tests/ -v
+
+# 5. リンター実行
+ruff check src/ scripts/ tests/
+ruff format --check src/ scripts/ tests/
+
+# 6. 型チェック（任意）
+mypy src/ --ignore-missing-imports
+```
+
+### 2.3 CI（継続的インテグレーション）
+
+GitHub Actions で PR/push 時に自動実行:
+- **Lint**: ruff check + format check
+- **Test**: pytest with coverage
+- **Type Check**: mypy (advisory)
+
+設定: `.github/workflows/ci.yml`
+
+### 2.4 DB の位置（正）
 - 正とする DB：リポジトリ直下
 
 ```text
