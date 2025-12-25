@@ -21,6 +21,69 @@ python scripts/train_eval_v4.py --db netkeiba.db
 python scripts/report_quality_v4.py --db netkeiba.db --output artifacts/
 ```
 
+## 実行順序と依存関係
+
+パイプラインは以下の順序で実行します:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ Step 0: Data Ingestion (前提)                                   │
+│   scripts/fetch_masters.py → horses/jockeys/trainers/pedigree   │
+│   src/ingestion/ → races/race_results/payouts                   │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ Step 1: Feature Table Build                                     │
+│   scripts/build_feature_table_v4.py                             │
+│   入力: races, race_results, horses, jockeys, trainers,         │
+│         horse_pedigree                                          │
+│   出力: feature_table_v4 (SQLite table)                         │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ Step 2: Train & Evaluate                                        │
+│   scripts/train_eval_v4.py                                      │
+│   入力: feature_table_v4                                        │
+│   出力: models/*.pkl, artifacts/eval_*.json                     │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ Step 3: Quality Report (任意)                                   │
+│   scripts/report_quality_v4.py                                  │
+│   入力: 全テーブル                                               │
+│   出力: artifacts/quality_report_*.json/csv                     │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 依存テーブル一覧
+
+| Step | 必須テーブル | オプショナル |
+|------|-------------|-------------|
+| 1    | races, race_results | horses, jockeys, trainers, horse_pedigree |
+| 2    | feature_table_v4 | - |
+| 3    | 全テーブル | - |
+
+## 出力ファイル
+
+### models/ (モデル成果物)
+```
+models/
+├── lgbm_win_v4.pkl          # 勝利予測モデル
+├── lgbm_in3_v4.pkl          # 3着内予測モデル
+├── feature_cols_v4.json     # 特徴量カラム名リスト
+└── model_meta_v4.json       # 学習パラメータ・評価指標
+```
+
+### artifacts/ (レポート・スナップショット)
+```
+artifacts/
+├── eval_metrics_v4.json     # 評価指標 (AUC, LogLoss等)
+├── roi_backtest_v4.json     # ROIバックテスト結果
+├── quality_report_*.json    # データ品質レポート
+├── quality_report_*.csv     # 品質サマリー
+└── fetch_progress_*.json    # fetch_masters進捗スナップショット
+```
+
 ## 特徴量グループ
 
 | グループ         | 特徴量数 | 説明                         |
@@ -89,6 +152,76 @@ pytest tests/test_features_v4.py -v
 
 # カバレッジ付き
 pytest tests/test_features_v4.py --cov=src/features_v4
+```
+
+## リーク防止 (As-Of ルール)
+
+### 基本原則
+
+**「予測時点で知り得ない情報は使わない」**
+
+すべての統計量は `race_date` より**厳密に前**のデータのみで計算します。
+
+### As-Of レベル
+
+| Level | 基準 | 安全性 | 現状 |
+|-------|------|-------|------|
+| Level 1 | race_date < 対象日 | ✅ 安全 | **実装済み** |
+| Level 2 | start_time < 対象時刻 | ✅ より安全 | TODO |
+
+Level 1 では同日の他レース結果は含まれません（安全側に倒した設計）。
+
+### リーク防止の実装例
+
+#### ✅ 正しい実装 (as-of)
+
+```sql
+-- 馬の過去勝率を計算 (対象レース日より前のみ)
+SELECT
+    horse_id,
+    COUNT(*) as n_starts,
+    SUM(CASE WHEN finish_order = 1 THEN 1 ELSE 0 END) * 1.0 / COUNT(*) as win_rate
+FROM race_results rr
+JOIN races r ON rr.race_id = r.race_id
+WHERE rr.horse_id = :target_horse_id
+  AND r.date < :target_race_date   -- ★ 厳密に「より前」
+GROUP BY horse_id
+```
+
+#### ❌ リークする実装 (危険)
+
+```sql
+-- 危険: <= を使うと同日レースの結果が含まれる
+WHERE r.date <= :target_race_date  -- ❌ 同日レース結果が混入
+
+-- 危険: 全データで統計を取る
+SELECT AVG(finish_order) FROM race_results  -- ❌ 未来データが混入
+WHERE horse_id = :horse_id
+```
+
+### リークしやすいパターン
+
+| パターン | リスク | 対策 |
+|----------|-------|------|
+| `<=` 演算子 | 同日レース混入 | `<` を使用 |
+| 全体統計 (AVG, COUNT等) | 未来データ混入 | WHERE date < target |
+| ランキング特徴量 | 未来成績で計算 | as-of スナップショット |
+| 血統ハッシュ | 子孫の成績混入 | 血統は静的なのでOK |
+
+### テストでの確認
+
+```python
+# テスト例: as-of制約の検証
+def test_no_future_leak():
+    """2023-06-01のレースで2023-06-01以降のデータを使っていないか確認"""
+    target_date = "2023-06-01"
+    features = build_features_for_race(race_id, target_date)
+
+    # 統計に使われたレース日を取得
+    used_dates = get_dates_used_for_stats(race_id)
+
+    # すべて対象日より前であることを確認
+    assert all(d < target_date for d in used_dates), "Future data leak detected!"
 ```
 
 ## 既知の制約
