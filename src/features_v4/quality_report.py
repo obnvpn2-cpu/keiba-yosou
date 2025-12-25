@@ -91,6 +91,15 @@ class YearCoverage:
 
 
 @dataclass
+class InvalidResultStats:
+    """無効レコード統計"""
+    total_entries: int
+    invalid_count: int
+    invalid_rate: float
+    breakdown: Dict[str, int]  # finish_status -> count
+
+
+@dataclass
 class QualityReport:
     """品質レポート全体"""
     generated_at: str
@@ -98,6 +107,7 @@ class QualityReport:
     reference_integrity: List[ReferenceIntegrity]
     year_coverage: List[YearCoverage]
     pedigree_coverage: Dict[str, Any]
+    invalid_results: Optional[InvalidResultStats]
     warnings: List[str]
 
     def to_dict(self) -> Dict[str, Any]:
@@ -145,6 +155,12 @@ class QualityReport:
                     for gen, data in self.pedigree_coverage.get("generation_coverage", {}).items()
                 },
             },
+            "invalid_results": {
+                "total_entries": self.invalid_results.total_entries,
+                "invalid_count": self.invalid_results.invalid_count,
+                "invalid_rate": self.invalid_results.invalid_rate,
+                "breakdown": self.invalid_results.breakdown,
+            } if self.invalid_results else None,
             "warnings": self.warnings,
         }
 
@@ -362,6 +378,109 @@ class MasterQualityReporter:
             return []
 
     # =========================================================================
+    # Invalid Result Stats (中/除/取/降格)
+    # =========================================================================
+
+    def get_invalid_result_stats(self) -> Optional[InvalidResultStats]:
+        """
+        無効レコード統計を取得
+
+        無効レコード:
+        - finish_order IS NULL
+        - finish_status IN ('中', '除', '取') または '%降%' を含む
+        """
+        if not self._table_exists("race_results"):
+            return None
+
+        try:
+            # 総エントリ数
+            cursor = self.conn.execute("SELECT COUNT(*) FROM race_results")
+            total_entries = cursor.fetchone()[0]
+
+            if total_entries == 0:
+                return InvalidResultStats(
+                    total_entries=0,
+                    invalid_count=0,
+                    invalid_rate=0.0,
+                    breakdown={},
+                )
+
+            # finish_order IS NULL の件数
+            cursor = self.conn.execute(
+                "SELECT COUNT(*) FROM race_results WHERE finish_order IS NULL"
+            )
+            null_finish_count = cursor.fetchone()[0]
+
+            # finish_status 別の内訳（無効なもののみ）
+            # finish_status がテーブルに存在するかチェック
+            columns = self._get_table_columns("race_results")
+            breakdown: Dict[str, int] = {}
+
+            if "finish_status" in columns:
+                cursor = self.conn.execute("""
+                    SELECT finish_status, COUNT(*) as cnt
+                    FROM race_results
+                    WHERE finish_status IN ('中', '除', '取')
+                       OR finish_status LIKE '%降%'
+                    GROUP BY finish_status
+                    ORDER BY cnt DESC
+                """)
+                for row in cursor.fetchall():
+                    status = row[0] or "NULL"
+                    breakdown[status] = row[1]
+
+                # finish_order IS NULL で finish_status も取得
+                cursor = self.conn.execute("""
+                    SELECT finish_status, COUNT(*) as cnt
+                    FROM race_results
+                    WHERE finish_order IS NULL
+                    GROUP BY finish_status
+                    ORDER BY cnt DESC
+                """)
+                null_breakdown = {}
+                for row in cursor.fetchall():
+                    status = row[0] or "(NULL status)"
+                    null_breakdown[status] = row[1]
+
+                # 既存の breakdown と null_breakdown をマージ（重複を避ける）
+                # breakdown にはすでに中/除/取が含まれているので、
+                # null_finish_count から既に含まれているものを除外
+                breakdown["(NULL finish_order)"] = null_finish_count
+
+            else:
+                # finish_status カラムがない場合
+                breakdown["(NULL finish_order)"] = null_finish_count
+
+            # 総無効件数（finish_order IS NULL or invalid finish_status）
+            # 重複を避けるため、SQL で正確にカウント
+            if "finish_status" in columns:
+                cursor = self.conn.execute("""
+                    SELECT COUNT(*) FROM race_results
+                    WHERE finish_order IS NULL
+                       OR finish_status IN ('中', '除', '取')
+                       OR finish_status LIKE '%降%'
+                """)
+            else:
+                cursor = self.conn.execute(
+                    "SELECT COUNT(*) FROM race_results WHERE finish_order IS NULL"
+                )
+            invalid_count = cursor.fetchone()[0]
+
+            invalid_rate = invalid_count / total_entries if total_entries > 0 else 0.0
+
+            return InvalidResultStats(
+                total_entries=total_entries,
+                invalid_count=invalid_count,
+                invalid_rate=invalid_rate,
+                breakdown=breakdown,
+            )
+
+        except Exception as e:
+            logger.error("Failed to get invalid result stats: %s", e)
+            self.warnings.append(f"Failed to get invalid result stats: {e}")
+            return None
+
+    # =========================================================================
     # Pedigree Coverage
     # =========================================================================
 
@@ -457,12 +576,16 @@ class MasterQualityReporter:
         # 血統カバレッジ
         pedigree_coverage = self.get_pedigree_coverage()
 
+        # 無効レコード統計
+        invalid_results = self.get_invalid_result_stats()
+
         return QualityReport(
             generated_at=datetime.now().isoformat(),
             table_stats=table_stats,
             reference_integrity=reference_integrity,
             year_coverage=year_coverage,
             pedigree_coverage=pedigree_coverage,
+            invalid_results=invalid_results,
             warnings=self.warnings,
         )
 
@@ -528,6 +651,20 @@ class MasterQualityReporter:
                 f"({gen_data['coverage']*100:.1f}%)"
             )
         lines.append("")
+
+        # Invalid Results (中/除/取/降格)
+        if report.invalid_results:
+            ir = report.invalid_results
+            lines.append("[Invalid Results (excluded from feature_table_v4)]")
+            lines.append(
+                f"  Total entries: {ir.total_entries:,}, "
+                f"Invalid: {ir.invalid_count:,} ({ir.invalid_rate*100:.2f}%)"
+            )
+            if ir.breakdown:
+                lines.append("  Breakdown by finish_status:")
+                for status, count in sorted(ir.breakdown.items(), key=lambda x: -x[1]):
+                    lines.append(f"    {status}: {count:,}")
+            lines.append("")
 
         # Warnings
         if report.warnings:

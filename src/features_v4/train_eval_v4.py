@@ -160,7 +160,35 @@ def load_feature_data(
     keep_cols.extend(feature_cols)
     keep_cols = [c for c in keep_cols if c in df.columns]
 
-    return df[keep_cols]
+    df = df[keep_cols]
+
+    # ========================================================================
+    # Guard: target カラムの NaN/異常値を除外（保険）
+    # feature_builder_v4 で既に除外しているはずだが、二重防御
+    # ========================================================================
+    target_cols = ["target_win", "target_in3", "target_quinella"]
+    for target_col in target_cols:
+        if target_col in df.columns:
+            # NaN を除外
+            n_nan = df[target_col].isna().sum()
+            if n_nan > 0:
+                logger.warning(
+                    "Found %d NaN values in %s, filtering out (this should not happen)",
+                    n_nan, target_col
+                )
+                df = df[df[target_col].notna()]
+
+            # 0/1 以外の値を除外
+            valid_mask = df[target_col].isin([0, 1, 0.0, 1.0])
+            n_invalid = (~valid_mask).sum()
+            if n_invalid > 0:
+                logger.warning(
+                    "Found %d non-binary values in %s, filtering out",
+                    n_invalid, target_col
+                )
+                df = df[valid_mask]
+
+    return df
 
 
 def split_time_series(
@@ -286,6 +314,25 @@ def train_model(
     X_val = val_df[feature_cols]
     y_val = val_df[target_col]
 
+    # ========================================================================
+    # Guard: y_train / y_val の NaN チェック（保険）
+    # ========================================================================
+    for name, y in [("y_train", y_train), ("y_val", y_val)]:
+        n_nan = y.isna().sum()
+        if n_nan > 0:
+            raise ValueError(
+                f"{name} contains {n_nan} NaN values in {target_col}. "
+                "This should have been filtered in load_feature_data(). "
+                "Check feature_table_v4 for invalid records."
+            )
+        # 0/1 のみであることを確認
+        unique_vals = set(y.unique())
+        if not unique_vals.issubset({0, 1, 0.0, 1.0}):
+            raise ValueError(
+                f"{name} contains non-binary values: {unique_vals}. "
+                f"Expected only 0 and 1 in {target_col}."
+            )
+
     # 欠損値を処理
     X_train = X_train.fillna(-999)
     X_val = X_val.fillna(-999)
@@ -395,8 +442,52 @@ def evaluate_model(
     Returns:
         EvalResult
     """
-    X = df[feature_cols].fillna(-999)
+    # ========================================================================
+    # Guard: target の NaN/異常値チェック（保険）
+    # ========================================================================
+    y_raw = df[target_col]
+
+    # NaN チェック
+    n_nan = y_raw.isna().sum()
+    if n_nan > 0:
+        logger.error(
+            "[%s] Found %d NaN values in %s - this should have been filtered earlier!",
+            dataset_name, n_nan, target_col
+        )
+        # NaN を除外して続行
+        valid_idx = y_raw.notna()
+        df = df[valid_idx].copy()
+        logger.warning("[%s] Filtered out %d NaN rows, continuing with %d rows",
+                      dataset_name, n_nan, len(df))
+
+    # 0/1 以外の値チェック
     y = df[target_col]
+    invalid_mask = ~y.isin([0, 1, 0.0, 1.0])
+    n_invalid = invalid_mask.sum()
+    if n_invalid > 0:
+        logger.error(
+            "[%s] Found %d non-binary values in %s: %s",
+            dataset_name, n_invalid, target_col, y[invalid_mask].unique()[:5]
+        )
+        # 無効な値を除外
+        df = df[~invalid_mask].copy()
+        y = df[target_col]
+
+    if len(df) == 0:
+        logger.error("[%s] No valid samples after filtering", dataset_name)
+        return EvalResult(
+            dataset=dataset_name,
+            auc=float("nan"),
+            logloss=float("nan"),
+            accuracy=0.0,
+            precision=0.0,
+            recall=0.0,
+            f1=0.0,
+            n_samples=0,
+            n_positive=0,
+        )
+
+    X = df[feature_cols].fillna(-999)
 
     y_pred_proba = model.predict(X, num_iteration=model.best_iteration)
     y_pred = (y_pred_proba >= 0.5).astype(int)

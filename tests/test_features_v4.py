@@ -40,6 +40,13 @@ from src.features_v4.quality_report import (
     generate_quality_report,
 )
 
+from src.features_v4.feature_builder_v4 import (
+    FeatureBuilderV4,
+    is_invalid_finish_status,
+    INVALID_FINISH_STATUS_EXACT,
+    INVALID_FINISH_STATUS_PATTERNS,
+)
+
 
 # =============================================================================
 # Fixtures
@@ -198,6 +205,95 @@ def populated_db(in_memory_db):
         ('HORSE_A', 2, 'ss', NULL, 'テスト父父'),
         ('HORSE_A', 2, 'sd', NULL, 'テスト父母')
     """)
+
+    conn.commit()
+    return conn
+
+
+@pytest.fixture
+def db_with_invalid_records(in_memory_db):
+    """Database with invalid records (中/除/取/降格) for testing exclusion"""
+    conn = in_memory_db
+
+    # Create races table
+    conn.execute("""
+        CREATE TABLE races (
+            race_id TEXT PRIMARY KEY,
+            date TEXT,
+            place TEXT,
+            course_type TEXT,
+            distance INTEGER,
+            track_condition TEXT,
+            race_class TEXT,
+            grade TEXT,
+            race_no INTEGER,
+            course_turn TEXT,
+            course_inout TEXT,
+            head_count INTEGER
+        )
+    """)
+
+    # Create race_results table with finish_status
+    conn.execute("""
+        CREATE TABLE race_results (
+            race_id TEXT NOT NULL,
+            horse_id TEXT NOT NULL,
+            finish_order INTEGER,
+            finish_status TEXT,
+            last_3f REAL,
+            body_weight INTEGER,
+            body_weight_diff INTEGER,
+            passing_order TEXT,
+            win_odds REAL,
+            popularity INTEGER,
+            prize_money REAL,
+            jockey_id TEXT,
+            trainer_id TEXT,
+            sex TEXT,
+            age INTEGER,
+            weight REAL,
+            frame_no INTEGER,
+            horse_no INTEGER,
+            PRIMARY KEY (race_id, horse_id)
+        )
+    """)
+
+    # Insert race
+    conn.execute("""
+        INSERT INTO races VALUES
+        ('202401010101', '2024-01-01', '中山', '芝', 2000, '良', '3勝', NULL, 11, '右', '内', 10)
+    """)
+
+    # Insert mix of valid and invalid race results
+    conn.executemany("""
+        INSERT INTO race_results
+        (race_id, horse_id, finish_order, finish_status, last_3f, body_weight,
+         body_weight_diff, passing_order, win_odds, popularity, prize_money,
+         jockey_id, trainer_id, sex, age, weight, frame_no, horse_no)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, [
+        # Valid: normal finish
+        ('202401010101', 'HORSE_1', 1, '正常', 34.5, 500, 2, '1-1-1-1', 2.5, 1, 5000, 'J1', 'T1', '牡', 4, 57.0, 1, 1),
+        ('202401010101', 'HORSE_2', 2, '正常', 34.8, 480, 0, '2-2-2-2', 5.0, 2, 2000, 'J2', 'T1', '牝', 4, 55.0, 2, 2),
+        ('202401010101', 'HORSE_3', 3, '正常', 35.0, 490, -2, '3-3-3-3', 8.0, 3, 1000, 'J3', 'T2', '牡', 5, 57.0, 3, 3),
+
+        # Invalid: 中 (競走中止)
+        ('202401010101', 'HORSE_4', None, '中', None, 485, 0, None, 10.0, 4, None, 'J4', 'T2', '牡', 4, 57.0, 4, 4),
+
+        # Invalid: 除 (除外)
+        ('202401010101', 'HORSE_5', None, '除', None, 500, 5, None, 15.0, 5, None, 'J5', 'T3', '牝', 3, 54.0, 5, 5),
+
+        # Invalid: 取 (取消)
+        ('202401010101', 'HORSE_6', None, '取', None, 495, -3, None, 20.0, 6, None, 'J1', 'T3', '牡', 5, 57.0, 6, 6),
+
+        # Invalid: 降格 (3(降))
+        ('202401010101', 'HORSE_7', 4, '3(降)', 35.5, 510, 2, '4-4-4-4', 12.0, 7, 500, 'J2', 'T1', '牡', 4, 57.0, 7, 7),
+
+        # Valid: finish_order is set, normal status
+        ('202401010101', 'HORSE_8', 4, '正常', 35.2, 505, 1, '5-5-5-5', 25.0, 8, 300, 'J3', 'T2', '牝', 4, 55.0, 8, 8),
+        ('202401010101', 'HORSE_9', 5, '正常', 35.8, 488, -1, '6-6-6-6', 30.0, 9, 200, 'J4', 'T3', '牡', 6, 58.0, 9, 9),
+        ('202401010101', 'HORSE_10', 6, '正常', 36.0, 492, 3, '7-7-7-7', 50.0, 10, 100, 'J5', 'T1', '牝', 3, 54.0, 10, 10),
+    ])
 
     conn.commit()
     return conn
@@ -516,6 +612,111 @@ class TestLeakDetection:
 
         assert "market_win_odds" in market_cols
         assert "market_popularity" in market_cols
+
+
+# =============================================================================
+# Invalid Record Exclusion Tests (A-3)
+# =============================================================================
+
+class TestInvalidRecordExclusion:
+    """無効レコード除外のテスト (中/除/取/降格)"""
+
+    def test_is_invalid_finish_status_exact_match(self):
+        """完全一致の無効ステータス判定"""
+        # 無効なステータス
+        assert is_invalid_finish_status("中") is True
+        assert is_invalid_finish_status("除") is True
+        assert is_invalid_finish_status("取") is True
+
+        # 正常なステータス
+        assert is_invalid_finish_status("正常") is False
+        assert is_invalid_finish_status(None) is False
+        assert is_invalid_finish_status("") is False
+
+    def test_is_invalid_finish_status_pattern_match(self):
+        """パターン一致の無効ステータス判定 (降格)"""
+        assert is_invalid_finish_status("3(降)") is True
+        assert is_invalid_finish_status("1(降)") is True
+        assert is_invalid_finish_status("降格") is True
+
+        # 類似だが無効でないもの
+        assert is_invalid_finish_status("降雨") is True  # 降を含むので True
+
+    def test_invalid_constants(self):
+        """無効ステータス定数の確認"""
+        assert "中" in INVALID_FINISH_STATUS_EXACT
+        assert "除" in INVALID_FINISH_STATUS_EXACT
+        assert "取" in INVALID_FINISH_STATUS_EXACT
+        assert "降" in INVALID_FINISH_STATUS_PATTERNS
+
+    def test_feature_builder_excludes_invalid_records(self, db_with_invalid_records):
+        """FeatureBuilderV4 が無効レコードを除外することを確認"""
+        builder = FeatureBuilderV4(db_with_invalid_records)
+
+        # レース 202401010101 の特徴量を構築
+        df = builder.build_features_for_race(
+            race_id="202401010101",
+            include_pedigree=False,
+        )
+
+        # 10頭中、有効なのは 6頭 (HORSE_1, 2, 3, 8, 9, 10)
+        # 無効: HORSE_4 (中), HORSE_5 (除), HORSE_6 (取), HORSE_7 (降格)
+        assert len(df) == 6, f"Expected 6 valid entries, got {len(df)}"
+
+        # 無効なレコードが含まれていないことを確認
+        horse_ids = set(df["horse_id"].tolist())
+        assert "HORSE_4" not in horse_ids, "中 record should be excluded"
+        assert "HORSE_5" not in horse_ids, "除 record should be excluded"
+        assert "HORSE_6" not in horse_ids, "取 record should be excluded"
+        assert "HORSE_7" not in horse_ids, "降格 record should be excluded"
+
+        # 有効なレコードが含まれていることを確認
+        assert "HORSE_1" in horse_ids
+        assert "HORSE_2" in horse_ids
+        assert "HORSE_3" in horse_ids
+        assert "HORSE_8" in horse_ids
+        assert "HORSE_9" in horse_ids
+        assert "HORSE_10" in horse_ids
+
+    def test_feature_builder_targets_are_valid(self, db_with_invalid_records):
+        """生成された特徴量の target が 0/1 のみであることを確認"""
+        builder = FeatureBuilderV4(db_with_invalid_records)
+
+        df = builder.build_features_for_race(
+            race_id="202401010101",
+            include_pedigree=False,
+        )
+
+        # target_win は 0 または 1 のみ
+        assert df["target_win"].isin([0, 1]).all(), "target_win should be 0 or 1"
+
+        # target_in3 は 0 または 1 のみ
+        assert df["target_in3"].isin([0, 1]).all(), "target_in3 should be 0 or 1"
+
+        # target_quinella は 0 または 1 のみ
+        assert df["target_quinella"].isin([0, 1]).all(), "target_quinella should be 0 or 1"
+
+        # NaN がないことを確認
+        assert df["target_win"].isna().sum() == 0, "target_win should have no NaN"
+        assert df["target_in3"].isna().sum() == 0, "target_in3 should have no NaN"
+        assert df["target_quinella"].isna().sum() == 0, "target_quinella should have no NaN"
+
+    def test_quality_report_invalid_results(self, db_with_invalid_records):
+        """品質レポートが無効レコード統計を含むことを確認"""
+        reporter = MasterQualityReporter(db_with_invalid_records)
+        report = reporter.generate_report()
+
+        # 無効レコード統計が存在する
+        assert report.invalid_results is not None
+
+        # 総件数 10, 無効件数 4 (中/除/取/降格)
+        assert report.invalid_results.total_entries == 10
+        assert report.invalid_results.invalid_count == 4
+        assert report.invalid_results.invalid_rate == pytest.approx(0.4)
+
+        # breakdown が正しい
+        breakdown = report.invalid_results.breakdown
+        assert "中" in breakdown or "(NULL finish_order)" in breakdown
 
 
 # =============================================================================
