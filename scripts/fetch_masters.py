@@ -13,8 +13,10 @@ Features:
 - Rate limiting (configurable sleep between requests)
 - Exponential backoff retry for errors
 - Safe stop after consecutive failures
-- Progress reporting
-- Coverage statistics
+- Graceful shutdown (SIGINT/Ctrl+C)
+- Progress snapshots to artifacts/
+- ETA estimation
+- Failure classification
 
 Usage:
     # Dry run - show what would be fetched
@@ -41,17 +43,49 @@ Usage:
     # Resume failed fetches
     python scripts/fetch_masters.py --db netkeiba.db --entity horse --retry-failed
 
+    # Active only (2021-2024 race participants)
+    python scripts/fetch_masters.py --db netkeiba.db --entity jockey --active-only
+
+    # Priority ordering
+    python scripts/fetch_masters.py --db netkeiba.db --entity horse --priority frequency
+
     # Verbose logging
     python scripts/fetch_masters.py --db netkeiba.db --entity horse -v
+
+Safe Stop Behavior:
+    The fetcher will automatically stop after MAX_CONSECUTIVE_FAILURES (10) consecutive
+    failures. This prevents runaway failure loops from hammering the server.
+
+    When safe stop triggers:
+    1. All successfully fetched data is already committed to DB
+    2. Failed entities are marked in fetch_status with error messages
+    3. Resume by running the same command again
+
+    To diagnose failures:
+    - Check the error log messages
+    - Use --report to see failure counts
+    - Use --retry-failed to retry only failed entities
+
+Graceful Shutdown:
+    Press Ctrl+C (SIGINT) to stop gracefully:
+    - Current request completes or is aborted
+    - All data committed to DB remains intact
+    - fetch_status is consistent (no partial states)
+    - Progress snapshot is saved to artifacts/
+    - Resume by running the same command again
 """
 
 import argparse
+import json
 import logging
+import os
+import signal
 import sqlite3
 import sys
 import time
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
@@ -82,6 +116,242 @@ MAX_CONSECUTIVE_FAILURES = 10
 
 # Default batch size for run-until-empty
 DEFAULT_BATCH_SIZE = 100
+
+# Snapshot interval (save progress every N fetches)
+SNAPSHOT_INTERVAL = 50
+
+# Failure categories for retry classification
+FAILURE_CATEGORIES = {
+    "timeout": {
+        "patterns": ["timeout", "timed out", "read timed out"],
+        "retry_immediately": False,
+        "description": "Network timeout - server may be slow or overloaded",
+    },
+    "http_4xx": {
+        "patterns": ["400", "401", "403", "429"],
+        "retry_immediately": False,
+        "description": "Client error - may need auth refresh or rate limit backoff",
+    },
+    "http_5xx": {
+        "patterns": ["500", "502", "503", "504"],
+        "retry_immediately": True,
+        "description": "Server error - usually temporary, retry recommended",
+    },
+    "parse": {
+        "patterns": ["parse", "attribute", "keyerror", "indexerror"],
+        "retry_immediately": False,
+        "description": "Parse error - page structure may have changed",
+    },
+    "network": {
+        "patterns": ["connection", "refused", "reset", "broken pipe"],
+        "retry_immediately": False,
+        "description": "Network error - check connectivity",
+    },
+}
+
+
+# ============================================================
+# Graceful Shutdown Handler
+# ============================================================
+
+class GracefulShutdown:
+    """
+    Handle SIGINT (Ctrl+C) for graceful shutdown.
+
+    Usage:
+        shutdown = GracefulShutdown()
+        while not shutdown.should_stop:
+            do_work()
+    """
+
+    def __init__(self):
+        self.should_stop = False
+        self._original_handler = None
+
+    def install(self):
+        """Install signal handler."""
+        self._original_handler = signal.signal(signal.SIGINT, self._handler)
+        logger.debug("Graceful shutdown handler installed (Ctrl+C to stop)")
+
+    def uninstall(self):
+        """Restore original signal handler."""
+        if self._original_handler:
+            signal.signal(signal.SIGINT, self._original_handler)
+
+    def _handler(self, signum, frame):
+        """Handle SIGINT."""
+        if self.should_stop:
+            # Second Ctrl+C - force exit
+            logger.warning("Force exit requested")
+            sys.exit(1)
+
+        logger.warning("\n[SIGINT] Graceful shutdown requested. Finishing current operation...")
+        logger.warning("         (Press Ctrl+C again to force exit)")
+        self.should_stop = True
+
+
+# ============================================================
+# Progress Snapshot
+# ============================================================
+
+@dataclass
+class ProgressSnapshot:
+    """Snapshot of fetch progress for resumability."""
+    timestamp: str
+    entity_type: str
+    total: int
+    success: int
+    failed: int
+    pending: int
+    skipped: int
+    rate_per_minute: float
+    eta_minutes: Optional[float]
+    consecutive_failures: int
+    last_entity_id: Optional[str]
+    failure_summary: Dict[str, int]
+
+
+def save_progress_snapshot(
+    snapshot: ProgressSnapshot,
+    output_dir: str = "artifacts",
+) -> str:
+    """
+    Save progress snapshot to JSON file.
+
+    Args:
+        snapshot: ProgressSnapshot to save
+        output_dir: Output directory
+
+    Returns:
+        Path to saved file
+    """
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"fetch_progress_{snapshot.entity_type}_{timestamp}.json"
+    filepath = output_path / filename
+
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(asdict(snapshot), f, ensure_ascii=False, indent=2)
+
+    logger.info(f"Progress snapshot saved: {filepath}")
+    return str(filepath)
+
+
+# ============================================================
+# ETA Estimator
+# ============================================================
+
+class ETAEstimator:
+    """Estimate time remaining based on processing rate."""
+
+    def __init__(self, window_size: int = 20):
+        self.window_size = window_size
+        self.timestamps: List[float] = []
+        self.start_time: Optional[float] = None
+
+    def start(self):
+        """Start tracking."""
+        self.start_time = time.time()
+        self.timestamps = []
+
+    def record_completion(self):
+        """Record a successful completion."""
+        self.timestamps.append(time.time())
+        if len(self.timestamps) > self.window_size:
+            self.timestamps.pop(0)
+
+    def get_rate_per_minute(self) -> float:
+        """Get current processing rate (items per minute)."""
+        if len(self.timestamps) < 2:
+            return 0.0
+        elapsed = self.timestamps[-1] - self.timestamps[0]
+        if elapsed <= 0:
+            return 0.0
+        return (len(self.timestamps) - 1) / elapsed * 60
+
+    def get_eta_minutes(self, remaining: int) -> Optional[float]:
+        """
+        Get estimated time to completion in minutes.
+
+        Args:
+            remaining: Number of items remaining
+
+        Returns:
+            Estimated minutes, or None if not enough data
+        """
+        rate = self.get_rate_per_minute()
+        if rate <= 0:
+            return None
+        return remaining / rate
+
+    def format_eta(self, remaining: int) -> str:
+        """Format ETA as human-readable string."""
+        eta = self.get_eta_minutes(remaining)
+        if eta is None:
+            return "calculating..."
+
+        if eta < 60:
+            return f"{eta:.0f} min"
+        elif eta < 1440:  # 24 hours
+            hours = int(eta / 60)
+            mins = int(eta % 60)
+            return f"{hours}h {mins}m"
+        else:
+            days = int(eta / 1440)
+            hours = int((eta % 1440) / 60)
+            return f"{days}d {hours}h"
+
+
+# ============================================================
+# Failure Classifier
+# ============================================================
+
+def classify_failure(error_message: str) -> str:
+    """
+    Classify failure by error message.
+
+    Args:
+        error_message: Error message string
+
+    Returns:
+        Failure category name
+    """
+    error_lower = error_message.lower()
+
+    for category, info in FAILURE_CATEGORIES.items():
+        for pattern in info["patterns"]:
+            if pattern.lower() in error_lower:
+                return category
+
+    return "unknown"
+
+
+def get_failure_summary(conn: sqlite3.Connection, entity_type: str) -> Dict[str, int]:
+    """
+    Get summary of failures by category.
+
+    Args:
+        conn: SQLite connection
+        entity_type: Entity type
+
+    Returns:
+        Dict of category -> count
+    """
+    cursor = conn.execute("""
+        SELECT error_message
+        FROM fetch_status
+        WHERE entity_type = ? AND status = 'failed'
+    """, (entity_type,))
+
+    summary: Dict[str, int] = {}
+    for (error_message,) in cursor.fetchall():
+        if error_message:
+            category = classify_failure(error_message)
+            summary[category] = summary.get(category, 0) + 1
+
+    return summary
 
 
 # ============================================================
@@ -147,6 +417,114 @@ def extract_entity_ids(
     result = sorted(all_ids)
     logger.info(f"Total unique {entity_type} IDs: {len(result)}")
     return result
+
+
+def get_active_entity_ids(
+    conn: sqlite3.Connection,
+    entity_type: str,
+    start_year: int = 2021,
+    end_year: int = 2024,
+) -> List[str]:
+    """
+    Get entity IDs that have race activity in the specified period.
+
+    For jockey/trainer, returns only those who have ridden/trained
+    in races during 2021-2024.
+
+    Args:
+        conn: SQLite connection
+        entity_type: 'jockey' or 'trainer'
+        start_year: Start year
+        end_year: End year
+
+    Returns:
+        List of active entity IDs
+    """
+    if entity_type not in ("jockey", "trainer"):
+        return extract_entity_ids(conn, entity_type, start_year, end_year)
+
+    column = f"{entity_type}_id"
+
+    query = f"""
+        SELECT DISTINCT {column}
+        FROM race_results
+        WHERE {column} IS NOT NULL
+        AND {column} != ''
+        AND race_id >= ? || '0000000000'
+        AND race_id < ? || '0000000000'
+    """
+
+    cursor = conn.execute(query, (str(start_year), str(end_year + 1)))
+    ids = [row[0] for row in cursor.fetchall()]
+    logger.info(f"Found {len(ids)} active {entity_type} IDs ({start_year}-{end_year})")
+    return ids
+
+
+def get_entity_frequency(
+    conn: sqlite3.Connection,
+    entity_type: str,
+    entity_ids: List[str],
+) -> Dict[str, int]:
+    """
+    Get frequency (race appearance count) for each entity.
+
+    Args:
+        conn: SQLite connection
+        entity_type: 'horse', 'jockey', or 'trainer'
+        entity_ids: List of entity IDs
+
+    Returns:
+        Dict of entity_id -> frequency
+    """
+    if entity_type == "horse_pedigree":
+        entity_type = "horse"
+
+    column = f"{entity_type}_id"
+
+    # Build query with placeholders
+    placeholders = ",".join(["?"] * len(entity_ids))
+    query = f"""
+        SELECT {column}, COUNT(*) as cnt
+        FROM race_results
+        WHERE {column} IN ({placeholders})
+        GROUP BY {column}
+    """
+
+    cursor = conn.execute(query, entity_ids)
+    return {row[0]: row[1] for row in cursor.fetchall()}
+
+
+def get_entity_last_race(
+    conn: sqlite3.Connection,
+    entity_type: str,
+    entity_ids: List[str],
+) -> Dict[str, str]:
+    """
+    Get last race date for each entity.
+
+    Args:
+        conn: SQLite connection
+        entity_type: 'horse', 'jockey', or 'trainer'
+        entity_ids: List of entity IDs
+
+    Returns:
+        Dict of entity_id -> last_race_id
+    """
+    if entity_type == "horse_pedigree":
+        entity_type = "horse"
+
+    column = f"{entity_type}_id"
+
+    placeholders = ",".join(["?"] * len(entity_ids))
+    query = f"""
+        SELECT {column}, MAX(race_id) as last_race
+        FROM race_results
+        WHERE {column} IN ({placeholders})
+        GROUP BY {column}
+    """
+
+    cursor = conn.execute(query, entity_ids)
+    return {row[0]: row[1] for row in cursor.fetchall()}
 
 
 def upsert_horse(conn: sqlite3.Connection, record: HorseExtendedRecord) -> None:
@@ -296,7 +674,9 @@ class MasterFetcher:
     - Automatic retry for failed fetches
     - Rate limiting (configurable)
     - Safe stop after consecutive failures
-    - Progress reporting
+    - Graceful shutdown (SIGINT)
+    - Progress snapshots
+    - ETA estimation
     """
 
     def __init__(
@@ -305,11 +685,13 @@ class MasterFetcher:
         client: Optional[NetkeibaClient] = None,
         dry_run: bool = False,
         max_consecutive_failures: int = MAX_CONSECUTIVE_FAILURES,
+        shutdown_handler: Optional[GracefulShutdown] = None,
     ):
         self.conn = conn
         self.client = client
         self.dry_run = dry_run
         self.max_consecutive_failures = max_consecutive_failures
+        self.shutdown = shutdown_handler
         self.status_manager = FetchStatusManager(conn)
         self.status_manager.ensure_table()
 
@@ -329,6 +711,10 @@ class MasterFetcher:
 
         # Safe stop tracking
         self.consecutive_failures = 0
+        self.last_entity_id: Optional[str] = None
+
+        # ETA estimation
+        self.eta = ETAEstimator()
 
     def init_pending(
         self,
@@ -346,6 +732,58 @@ class MasterFetcher:
             Number of new entities added
         """
         return self.status_manager.add_pending(entity_type, entity_ids)
+
+    def reorder_pending_by_priority(
+        self,
+        entity_type: str,
+        priority_mode: str,
+    ) -> None:
+        """
+        Reorder pending entities by priority.
+
+        Note: This updates the priority column in fetch_status.
+        The get_pending method will order by priority DESC.
+
+        Args:
+            entity_type: Entity type
+            priority_mode: 'frequency' or 'recent'
+        """
+        # Get pending IDs
+        cursor = self.conn.execute("""
+            SELECT entity_id FROM fetch_status
+            WHERE entity_type = ? AND status = 'pending'
+        """, (entity_type,))
+        pending_ids = [row[0] for row in cursor.fetchall()]
+
+        if not pending_ids:
+            return
+
+        logger.info(f"Reordering {len(pending_ids)} pending by {priority_mode}...")
+
+        if priority_mode == "frequency":
+            # Higher frequency = higher priority
+            freq_map = get_entity_frequency(self.conn, entity_type, pending_ids)
+            for entity_id, freq in freq_map.items():
+                self.conn.execute("""
+                    UPDATE fetch_status
+                    SET priority = ?
+                    WHERE entity_type = ? AND entity_id = ?
+                """, (freq, entity_type, entity_id))
+
+        elif priority_mode == "recent":
+            # More recent = higher priority (use race_id as proxy)
+            last_race_map = get_entity_last_race(self.conn, entity_type, pending_ids)
+            for entity_id, last_race in last_race_map.items():
+                # Convert race_id to priority (higher race_id = more recent)
+                priority = int(last_race[:8]) if last_race else 0
+                self.conn.execute("""
+                    UPDATE fetch_status
+                    SET priority = ?
+                    WHERE entity_type = ? AND entity_id = ?
+                """, (priority, entity_type, entity_id))
+
+        self.conn.commit()
+        logger.info(f"Reordered by {priority_mode}")
 
     def fetch_entities(
         self,
@@ -366,9 +804,18 @@ class MasterFetcher:
         """
         batch_size = limit if limit else DEFAULT_BATCH_SIZE
         total_fetched = 0
+        snapshot_counter = 0
+
+        # Start ETA tracking
+        self.eta.start()
 
         while True:
-            # Get next batch
+            # Check for graceful shutdown
+            if self.shutdown and self.shutdown.should_stop:
+                logger.info("Graceful shutdown - stopping fetch loop")
+                break
+
+            # Get next batch (ordered by priority DESC)
             pending = self.status_manager.get_pending(
                 entity_type, batch_size, max_retries
             )
@@ -378,16 +825,40 @@ class MasterFetcher:
                     logger.info(f"No pending {entity_type} entities to fetch")
                 break
 
+            # Get progress for ETA display
+            progress = self.status_manager.get_progress(entity_type)
+            remaining = progress["pending"]
+
             logger.info(f"Fetching batch of {len(pending)} {entity_type} entities")
+            logger.info(f"  Remaining: {remaining:,} | ETA: {self.eta.format_eta(remaining)}")
 
             for i, entity_id in enumerate(pending, 1):
+                # Check for graceful shutdown
+                if self.shutdown and self.shutdown.should_stop:
+                    logger.info("Graceful shutdown - stopping mid-batch")
+                    break
+
                 # Check for safe stop
                 if self.consecutive_failures >= self.max_consecutive_failures:
                     logger.error(
-                        f"Safe stop: {self.consecutive_failures} consecutive failures. "
-                        "Resume later with same command."
+                        f"\n{'='*60}\n"
+                        f"SAFE STOP: {self.consecutive_failures} consecutive failures\n"
+                        f"{'='*60}\n"
+                        f"This prevents runaway failure loops.\n"
+                        f"\n"
+                        f"To diagnose:\n"
+                        f"  1. Check error messages above\n"
+                        f"  2. Run with --report to see failure counts\n"
+                        f"  3. Check network/auth status\n"
+                        f"\n"
+                        f"To resume:\n"
+                        f"  Run the same command again\n"
+                        f"{'='*60}"
                     )
+                    self._save_snapshot(entity_type, progress)
                     return self.stats
+
+                self.last_entity_id = entity_id
 
                 logger.info(
                     f"[{total_fetched + i}/{total_fetched + len(pending)}] "
@@ -403,21 +874,34 @@ class MasterFetcher:
                     self._fetch_one(entity_type, entity_id)
                     self.stats["success"] += 1
                     self.consecutive_failures = 0  # Reset on success
+                    self.eta.record_completion()
                 except Exception as e:
-                    logger.error(f"  Failed: {e}")
-                    self.status_manager.mark_failed(entity_type, entity_id, str(e))
+                    error_msg = str(e)
+                    category = classify_failure(error_msg)
+                    logger.error(f"  Failed ({category}): {error_msg}")
+                    self.status_manager.mark_failed(entity_type, entity_id, error_msg)
                     self.stats["failed"] += 1
                     self.consecutive_failures += 1
 
                 self.stats["fetched"] += 1
+                snapshot_counter += 1
 
                 # Progress every 10 items
                 if (total_fetched + i) % 10 == 0:
                     progress = self.status_manager.get_progress(entity_type)
+                    remaining = progress["pending"]
+                    rate = self.eta.get_rate_per_minute()
                     logger.info(
-                        f"  Progress: {progress['success']}/{progress['total']} "
-                        f"({progress['progress_pct']:.1f}%)"
+                        f"  Progress: {progress['success']:,}/{progress['total']:,} "
+                        f"({progress['progress_pct']:.1f}%) | "
+                        f"Rate: {rate:.1f}/min | ETA: {self.eta.format_eta(remaining)}"
                     )
+
+                # Save snapshot periodically
+                if snapshot_counter >= SNAPSHOT_INTERVAL:
+                    progress = self.status_manager.get_progress(entity_type)
+                    self._save_snapshot(entity_type, progress)
+                    snapshot_counter = 0
 
             total_fetched += len(pending)
 
@@ -425,7 +909,40 @@ class MasterFetcher:
             if limit and total_fetched >= limit:
                 break
 
+        # Final snapshot
+        progress = self.status_manager.get_progress(entity_type)
+        self._save_snapshot(entity_type, progress)
+
         return self.stats
+
+    def _save_snapshot(
+        self,
+        entity_type: str,
+        progress: Dict[str, Any],
+    ) -> None:
+        """Save progress snapshot to artifacts/."""
+        failure_summary = get_failure_summary(self.conn, entity_type)
+        remaining = progress["pending"]
+
+        snapshot = ProgressSnapshot(
+            timestamp=datetime.now().isoformat(),
+            entity_type=entity_type,
+            total=progress["total"],
+            success=progress["success"],
+            failed=progress["failed"],
+            pending=progress["pending"],
+            skipped=progress["skipped"],
+            rate_per_minute=self.eta.get_rate_per_minute(),
+            eta_minutes=self.eta.get_eta_minutes(remaining),
+            consecutive_failures=self.consecutive_failures,
+            last_entity_id=self.last_entity_id,
+            failure_summary=failure_summary,
+        )
+
+        try:
+            save_progress_snapshot(snapshot)
+        except Exception as e:
+            logger.warning(f"Failed to save snapshot: {e}")
 
     def _fetch_one(self, entity_type: str, entity_id: str) -> None:
         """Fetch and parse one entity."""
@@ -512,6 +1029,15 @@ def print_coverage_report(conn: sqlite3.Connection) -> None:
         print(f"  Pending:        {progress['pending']:,}")
         print(f"  Skipped:        {progress['skipped']:,}")
 
+        # Failure breakdown
+        if progress['failed'] > 0:
+            failure_summary = get_failure_summary(conn, entity_type)
+            if failure_summary:
+                print(f"\n  Failure Breakdown:")
+                for category, count in sorted(failure_summary.items(), key=lambda x: -x[1]):
+                    info = FAILURE_CATEGORIES.get(category, {"description": "Unknown error"})
+                    print(f"    {category}: {count:,} - {info['description']}")
+
         # Count actual records in master tables
         table = table_map.get(entity_type)
         if table:
@@ -524,7 +1050,7 @@ def print_coverage_report(conn: sqlite3.Connection) -> None:
                 else:
                     cursor = conn.execute(f"SELECT COUNT(*) FROM {table}")
                 count = cursor.fetchone()[0]
-                print(f"  In {table} table: {count:,}")
+                print(f"\n  In {table} table: {count:,}")
             except sqlite3.OperationalError:
                 print(f"  Table {table} not found")
 
@@ -554,11 +1080,26 @@ Examples:
   # Show progress only
   %(prog)s --db netkeiba.db --report
 
+  # Fetch only active jockeys (2021-2024 participants)
+  %(prog)s --db netkeiba.db --entity jockey --active-only
+
+  # Prioritize by frequency (most frequent first)
+  %(prog)s --db netkeiba.db --entity horse --priority frequency
+
+  # Prioritize by recency (most recent first)
+  %(prog)s --db netkeiba.db --entity horse --priority recent
+
 Rate Limiting:
   - User-Agent is rotated randomly per request (12 different UAs)
   - Sleep between requests: --sleep-min to --sleep-max seconds
   - Exponential backoff on 400/429 errors
   - Safe stop after 10 consecutive failures (resume with same command)
+
+Safe Operation with --run-until-empty:
+  - Recommended sleep: --sleep-min 3.0 --sleep-max 5.0 (for long runs)
+  - Monitor with: tail -f logs or check artifacts/ for snapshots
+  - Graceful stop: Ctrl+C saves state and exits cleanly
+  - Resume: Run same command again
 """
     )
     parser.add_argument(
@@ -608,6 +1149,17 @@ Rate Limiting:
         help="Maximum sleep between requests in seconds (default: 3.5)"
     )
     parser.add_argument(
+        "--active-only",
+        action="store_true",
+        help="For jockey/trainer: only fetch those active in 2021-2024 races"
+    )
+    parser.add_argument(
+        "--priority",
+        choices=["frequency", "recent"],
+        default=None,
+        help="Priority ordering: 'frequency' (most common first) or 'recent' (newest first)"
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Show what would be fetched without actually fetching"
@@ -638,6 +1190,12 @@ Rate Limiting:
     # Handle limit logic
     if args.run_until_empty:
         limit = None  # Unlimited
+        # Recommend slower rate for long runs
+        if args.sleep_min < 3.0:
+            logger.warning(
+                "TIP: For --run-until-empty, consider using --sleep-min 3.0 --sleep-max 5.0 "
+                "to reduce server load"
+            )
     elif args.limit is not None:
         limit = args.limit
     else:
@@ -646,7 +1204,8 @@ Rate Limiting:
     # Setup logging
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
-        format="[%(levelname)s] %(message)s"
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
 
     # Check database
@@ -657,6 +1216,10 @@ Rate Limiting:
 
     logger.info(f"Opening database: {db_path}")
     conn = sqlite3.connect(db_path)
+
+    # Install graceful shutdown handler
+    shutdown = GracefulShutdown()
+    shutdown.install()
 
     try:
         # Run migrations
@@ -687,20 +1250,36 @@ Rate Limiting:
                 max_sleep=args.sleep_max,
             )
 
-        fetcher = MasterFetcher(conn, client, dry_run=args.dry_run)
+        fetcher = MasterFetcher(
+            conn, client,
+            dry_run=args.dry_run,
+            shutdown_handler=shutdown,
+        )
 
         try:
             for entity_type in entity_types:
+                # Check for graceful shutdown
+                if shutdown.should_stop:
+                    logger.info("Graceful shutdown - skipping remaining entity types")
+                    break
+
                 print(f"\n{'=' * 60}")
                 print(f"Processing {entity_type.upper()}")
                 print("=" * 60)
 
                 # Extract entity IDs from race_results
                 logger.info(f"Extracting {entity_type} IDs from race_results...")
-                entity_ids = extract_entity_ids(
-                    conn, entity_type,
-                    args.start_year, args.end_year
-                )
+
+                if args.active_only and entity_type in ("jockey", "trainer"):
+                    entity_ids = get_active_entity_ids(
+                        conn, entity_type,
+                        args.start_year, args.end_year
+                    )
+                else:
+                    entity_ids = extract_entity_ids(
+                        conn, entity_type,
+                        args.start_year, args.end_year
+                    )
 
                 if not entity_ids:
                     logger.warning(f"No {entity_type} IDs found")
@@ -710,8 +1289,22 @@ Rate Limiting:
                 added = fetcher.init_pending(entity_type, entity_ids)
                 logger.info(f"Added {added} new {entity_type} entities to fetch queue")
 
+                # Apply priority ordering if specified
+                if args.priority:
+                    fetcher.reorder_pending_by_priority(entity_type, args.priority)
+
                 if args.init_only:
                     continue
+
+                # Show ETA before starting
+                progress = fetcher.status_manager.get_progress(entity_type)
+                if progress["pending"] > 0:
+                    avg_sleep = (args.sleep_min + args.sleep_max) / 2
+                    est_minutes = progress["pending"] * avg_sleep / 60
+                    logger.info(
+                        f"Estimated time for {progress['pending']:,} pending: "
+                        f"~{est_minutes:.0f} min at current rate"
+                    )
 
                 # Fetch
                 stats = fetcher.fetch_entities(entity_type, limit)
@@ -733,6 +1326,7 @@ Rate Limiting:
         print_coverage_report(conn)
 
     finally:
+        shutdown.uninstall()
         conn.close()
 
     return 0
