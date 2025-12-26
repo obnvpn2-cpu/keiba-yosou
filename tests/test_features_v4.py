@@ -47,6 +47,11 @@ from src.features_v4.feature_builder_v4 import (
     INVALID_FINISH_STATUS_PATTERNS,
 )
 
+from src.features_v4.train_eval_v4 import (
+    evaluate_ranking,
+    RankingResult,
+)
+
 
 # =============================================================================
 # Fixtures
@@ -717,6 +722,203 @@ class TestInvalidRecordExclusion:
         # breakdown が正しい
         breakdown = report.invalid_results.breakdown
         assert "中" in breakdown or "(NULL finish_order)" in breakdown
+
+
+# =============================================================================
+# Ranking Evaluation Tests
+# =============================================================================
+
+class TestRankingEvaluation:
+    """ランキング評価 (per-race metrics) のテスト"""
+
+    @pytest.fixture
+    def mock_model(self):
+        """予測確率を返すモックモデル"""
+        import numpy as np
+
+        class MockModel:
+            def __init__(self, predictions):
+                self.predictions = predictions
+                self.best_iteration = 1
+
+            def predict(self, X, num_iteration=None):
+                return np.array(self.predictions[:len(X)])
+
+        return MockModel
+
+    @pytest.fixture
+    def ranking_test_df(self):
+        """ランキング評価用のテストデータ"""
+        import pandas as pd
+
+        # 2レース分のデータ
+        # Race 1: 4頭 (勝ち馬は HORSE_A)
+        # Race 2: 3頭 (勝ち馬は HORSE_E)
+        return pd.DataFrame({
+            "race_id": ["R1", "R1", "R1", "R1", "R2", "R2", "R2"],
+            "horse_id": ["A", "B", "C", "D", "E", "F", "G"],
+            "target_win": [1, 0, 0, 0, 1, 0, 0],
+            # 特徴量（ダミー）
+            "feat1": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
+            "feat2": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7],
+        })
+
+    def test_evaluate_ranking_top1_hit(self, mock_model, ranking_test_df):
+        """Top1 Hit Rate のテスト - 勝ち馬が予測1位の場合"""
+        import numpy as np
+
+        # 勝ち馬が両レースで予測1位になるよう設定
+        # Race 1: HORSE_A (勝ち) が最高確率
+        # Race 2: HORSE_E (勝ち) が最高確率
+        predictions = [0.9, 0.2, 0.1, 0.05, 0.8, 0.3, 0.1]
+        model = mock_model(predictions)
+
+        result = evaluate_ranking(
+            model=model,
+            df=ranking_test_df,
+            feature_cols=["feat1", "feat2"],
+            target_col="target_win",
+            dataset_name="test",
+        )
+
+        assert isinstance(result, RankingResult)
+        assert result.n_races == 2
+        assert result.n_entries == 7
+        assert result.top1_hit_rate == 1.0  # 2/2 = 100%
+        assert result.top3_hit_rate == 1.0  # 両方 Top3 以内
+        assert result.mrr == 1.0  # 両方1位なので 1/1 の平均 = 1.0
+
+    def test_evaluate_ranking_top3_hit(self, mock_model, ranking_test_df):
+        """Top3 Hit Rate のテスト - 勝ち馬が予測2位,3位の場合"""
+        import numpy as np
+
+        # Race 1: HORSE_A (勝ち) が2位
+        # Race 2: HORSE_E (勝ち) が3位
+        predictions = [0.4, 0.5, 0.1, 0.05, 0.2, 0.8, 0.3]
+        model = mock_model(predictions)
+
+        result = evaluate_ranking(
+            model=model,
+            df=ranking_test_df,
+            feature_cols=["feat1", "feat2"],
+            target_col="target_win",
+            dataset_name="test",
+        )
+
+        assert result.top1_hit_rate == 0.0  # 0/2
+        assert result.top3_hit_rate == 1.0  # 2/2 = 100%
+        # MRR: (1/2 + 1/3) / 2 ≈ 0.4167
+        assert 0.40 < result.mrr < 0.45
+
+    def test_evaluate_ranking_histogram(self, mock_model, ranking_test_df):
+        """勝ち馬順位ヒストグラムのテスト"""
+        import numpy as np
+
+        # Race 1: HORSE_A (勝ち) が1位
+        # Race 2: HORSE_E (勝ち) が2位
+        predictions = [0.9, 0.2, 0.1, 0.05, 0.4, 0.8, 0.1]
+        model = mock_model(predictions)
+
+        result = evaluate_ranking(
+            model=model,
+            df=ranking_test_df,
+            feature_cols=["feat1", "feat2"],
+            target_col="target_win",
+            dataset_name="test",
+        )
+
+        # ヒストグラム確認
+        assert result.winner_rank_histogram.get("1") == 1
+        assert result.winner_rank_histogram.get("2") == 1
+
+    def test_evaluate_ranking_empty_df(self, mock_model):
+        """空のDataFrameの場合"""
+        import pandas as pd
+
+        empty_df = pd.DataFrame({
+            "race_id": [],
+            "horse_id": [],
+            "target_win": [],
+            "feat1": [],
+            "feat2": [],
+        })
+
+        model = mock_model([])
+
+        result = evaluate_ranking(
+            model=model,
+            df=empty_df,
+            feature_cols=["feat1", "feat2"],
+            target_col="target_win",
+            dataset_name="test",
+        )
+
+        assert result.n_races == 0
+        assert result.n_entries == 0
+        assert result.top1_hit_rate == 0.0
+        assert result.mrr == 0.0
+
+    def test_evaluate_ranking_no_winners(self, mock_model):
+        """勝ち馬がいないレースの場合"""
+        import pandas as pd
+
+        no_winner_df = pd.DataFrame({
+            "race_id": ["R1", "R1", "R1"],
+            "horse_id": ["A", "B", "C"],
+            "target_win": [0, 0, 0],  # 勝ち馬なし
+            "feat1": [1.0, 2.0, 3.0],
+            "feat2": [0.1, 0.2, 0.3],
+        })
+
+        model = mock_model([0.5, 0.3, 0.2])
+
+        result = evaluate_ranking(
+            model=model,
+            df=no_winner_df,
+            feature_cols=["feat1", "feat2"],
+            target_col="target_win",
+            dataset_name="test",
+        )
+
+        assert result.n_races == 0  # 勝ち馬がいたレースは0
+        assert result.n_entries == 3
+
+    def test_evaluate_ranking_mrr_calculation(self, mock_model, ranking_test_df):
+        """MRR (Mean Reciprocal Rank) の計算テスト"""
+        import numpy as np
+
+        # Race 1: HORSE_A (勝ち) が4位（最下位）
+        # Race 2: HORSE_E (勝ち) が1位
+        predictions = [0.05, 0.3, 0.5, 0.9, 0.9, 0.2, 0.1]
+        model = mock_model(predictions)
+
+        result = evaluate_ranking(
+            model=model,
+            df=ranking_test_df,
+            feature_cols=["feat1", "feat2"],
+            target_col="target_win",
+            dataset_name="test",
+        )
+
+        # MRR: (1/4 + 1/1) / 2 = 0.625
+        expected_mrr = (1/4 + 1/1) / 2
+        assert abs(result.mrr - expected_mrr) < 0.001
+
+    def test_evaluate_ranking_avg_field_size(self, mock_model, ranking_test_df):
+        """平均フィールドサイズのテスト"""
+        predictions = [0.9, 0.2, 0.1, 0.05, 0.8, 0.3, 0.1]
+        model = mock_model(predictions)
+
+        result = evaluate_ranking(
+            model=model,
+            df=ranking_test_df,
+            feature_cols=["feat1", "feat2"],
+            target_col="target_win",
+            dataset_name="test",
+        )
+
+        # Race 1: 4頭, Race 2: 3頭 → 平均 3.5
+        assert result.avg_field_size == 3.5
 
 
 # =============================================================================
