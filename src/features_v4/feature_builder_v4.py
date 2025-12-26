@@ -66,6 +66,43 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
+# Invalid Result Filtering (中/除/取/降格 exclusion)
+# =============================================================================
+
+# 無効な finish_status: 競走中止/除外/取消/降格など
+# これらは「完全に力を出し切れてない/成立しない」レコード
+INVALID_FINISH_STATUS_EXACT = frozenset(["中", "除", "取"])
+INVALID_FINISH_STATUS_PATTERNS = ["降"]  # 部分一致（例: "3(降)"）
+
+
+def is_invalid_finish_status(status: str | None) -> bool:
+    """
+    finish_status が無効（除外対象）かどうかを判定
+
+    Args:
+        status: finish_status の値
+
+    Returns:
+        True if invalid (should be excluded)
+    """
+    if status is None:
+        return False
+
+    status_str = str(status).strip()
+
+    # 完全一致チェック
+    if status_str in INVALID_FINISH_STATUS_EXACT:
+        return True
+
+    # 部分一致チェック（降格など）
+    for pattern in INVALID_FINISH_STATUS_PATTERNS:
+        if pattern in status_str:
+            return True
+
+    return False
+
+
+# =============================================================================
 # Pedigree Hashing (決定論的・環境非依存)
 # =============================================================================
 
@@ -436,7 +473,7 @@ class FeatureBuilderV4:
             race_month = None
             race_day_of_week = None
 
-        # 出走馬を取得
+        # 出走馬を取得（finish_status も取得して無効レコードをフィルタ）
         cursor = self.conn.execute("""
             SELECT
                 horse_id,
@@ -454,17 +491,51 @@ class FeatureBuilderV4:
                 age,
                 weight,
                 frame_no,
-                horse_no
+                horse_no,
+                finish_status
             FROM race_results
             WHERE race_id = ?
         """, (race_id,))
-        entries = cursor.fetchall()
+        all_entries = cursor.fetchall()
 
-        if not entries:
+        if not all_entries:
             logger.warning("No entries found for race %s", race_id)
             return pd.DataFrame()
 
-        field_size = head_count or len(entries)
+        # 無効レコードをフィルタ: finish_order IS NULL または finish_status が無効
+        entries = []
+        excluded_null_finish = 0
+        excluded_invalid_status = 0
+
+        for entry in all_entries:
+            finish_order = entry[1]
+            finish_status = entry[16]  # finish_status は 17番目のカラム (index 16)
+
+            # finish_order が NULL なら除外
+            if finish_order is None:
+                excluded_null_finish += 1
+                continue
+
+            # finish_status が無効なら除外
+            if is_invalid_finish_status(finish_status):
+                excluded_invalid_status += 1
+                continue
+
+            entries.append(entry)
+
+        # 除外件数をログ
+        total_excluded = excluded_null_finish + excluded_invalid_status
+        if total_excluded > 0:
+            logger.debug(
+                "Race %s: excluded %d invalid entries (null_finish=%d, invalid_status=%d)",
+                race_id, total_excluded, excluded_null_finish, excluded_invalid_status
+            )
+
+        if not entries:
+            logger.debug("Race %s: all entries were invalid, skipping", race_id)
+            return pd.DataFrame()
+
+        field_size = head_count or len(all_entries)  # 元の出走頭数を使用
 
         features_list = []
 
@@ -704,6 +775,7 @@ class FeatureBuilderV4:
         logger.info("Found %d races to process", len(race_ids))
 
         total_rows = 0
+        total_excluded_invalid = 0
         batch_dfs = []
 
         for i, race_id in enumerate(race_ids, 1):
@@ -739,8 +811,23 @@ class FeatureBuilderV4:
             rows = self._insert_batch(batch_df)
             total_rows += rows
 
+        # 無効レコード除外のサマリーを取得（race_results からカウント）
+        try:
+            cursor = self.conn.execute("""
+                SELECT COUNT(*) FROM race_results
+                WHERE CAST(SUBSTR(race_id, 1, 4) AS INTEGER) BETWEEN ? AND ?
+                  AND (finish_order IS NULL
+                       OR finish_status IN ('中', '除', '取')
+                       OR finish_status LIKE '%降%')
+            """, (start_year, end_year))
+            total_excluded_invalid = cursor.fetchone()[0]
+        except Exception:
+            total_excluded_invalid = 0
+
         logger.info("=" * 80)
         logger.info("Completed: %d rows inserted into feature_table_v4", total_rows)
+        if total_excluded_invalid > 0:
+            logger.info("Excluded %d invalid results (中/除/取/降格/NULL finish)", total_excluded_invalid)
         logger.info("=" * 80)
 
         return total_rows
