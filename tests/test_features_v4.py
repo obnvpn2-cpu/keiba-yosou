@@ -50,6 +50,9 @@ from src.features_v4.feature_builder_v4 import (
 from src.features_v4.train_eval_v4 import (
     evaluate_ranking,
     RankingResult,
+    evaluate_roi_strategy,
+    ROIStrategyResult,
+    ROIEvalResult,
 )
 
 
@@ -919,6 +922,263 @@ class TestRankingEvaluation:
 
         # Race 1: 4頭, Race 2: 3頭 → 平均 3.5
         assert result.avg_field_size == 3.5
+
+
+# =============================================================================
+# ROI Evaluation Tests
+# =============================================================================
+
+class TestROIEvaluation:
+    """ROI評価 (単勝・複勝) のテスト"""
+
+    @pytest.fixture
+    def roi_payouts_df(self):
+        """払戻データ (payouts テーブル相当)"""
+        import pandas as pd
+
+        # 2レース分の払戻データ
+        # Race R1: 馬番1が1着 (単勝500円, 複勝120円), 馬番2が2着 (複勝150円), 馬番3が3着 (複勝180円)
+        # Race R2: 馬番5が1着 (単勝800円, 複勝200円), 馬番6が2着 (複勝130円), 馬番7が3着 (複勝110円)
+        return pd.DataFrame({
+            "race_id": ["R1", "R1", "R1", "R1", "R2", "R2", "R2", "R2"],
+            "bet_type": ["単勝", "複勝", "複勝", "複勝", "単勝", "複勝", "複勝", "複勝"],
+            "combination": ["1", "1", "2", "3", "5", "5", "6", "7"],
+            "payout": [500, 120, 150, 180, 800, 200, 130, 110],
+        })
+
+    @pytest.fixture
+    def roi_race_results_df(self):
+        """レース結果データ (race_results テーブル相当)"""
+        import pandas as pd
+
+        # 2レース分のデータ
+        # Race R1: 4頭 (A:1着, B:2着, C:3着, D:4着)
+        # Race R2: 4頭 (E:1着, F:2着, G:3着, H:4着)
+        return pd.DataFrame({
+            "race_id": ["R1", "R1", "R1", "R1", "R2", "R2", "R2", "R2"],
+            "horse_id": ["A", "B", "C", "D", "E", "F", "G", "H"],
+            "horse_no": [1, 2, 3, 4, 5, 6, 7, 8],
+            "horse_no_str": ["1", "2", "3", "4", "5", "6", "7", "8"],
+            "finish_order": [1, 2, 3, 4, 1, 2, 3, 4],
+            "popularity": [2, 1, 3, 4, 1, 3, 2, 4],
+        })
+
+    def test_evaluate_roi_strategy_tansho_win(self, roi_payouts_df, roi_race_results_df):
+        """単勝: 勝ち馬に賭けた場合のROI計算"""
+        import pandas as pd
+
+        # 1着馬に賭けるケース (Race R1: A, Race R2: E)
+        bets_df = pd.DataFrame({
+            "race_id": ["R1", "R2"],
+            "horse_id": ["A", "E"],
+        })
+
+        result = evaluate_roi_strategy(
+            bets_df=bets_df,
+            payouts_df=roi_payouts_df,
+            race_results_df=roi_race_results_df,
+            bet_type="単勝",
+            strategy_name="TestWinner",
+            bet_amount=100.0,
+        )
+
+        assert isinstance(result, ROIStrategyResult)
+        assert result.strategy == "TestWinner"
+        assert result.bet_type == "単勝"
+        assert result.n_races == 2
+        assert result.n_bets == 2
+        assert result.stake_total_yen == 200.0  # 100 * 2
+        # 払戻: R1=500円, R2=800円 → 1300円
+        assert result.return_total_yen == 1300.0
+        assert result.roi == pytest.approx(6.5)  # 1300 / 200 = 6.5
+        assert result.hit_rate == 1.0  # 2/2 = 100%
+        assert result.n_hits == 2
+        assert result.avg_payout == pytest.approx(650.0)  # (500+800)/2
+
+    def test_evaluate_roi_strategy_tansho_lose(self, roi_payouts_df, roi_race_results_df):
+        """単勝: 負け馬に賭けた場合のROI計算"""
+        import pandas as pd
+
+        # 2着馬に賭けるケース (Race R1: B, Race R2: F)
+        bets_df = pd.DataFrame({
+            "race_id": ["R1", "R2"],
+            "horse_id": ["B", "F"],
+        })
+
+        result = evaluate_roi_strategy(
+            bets_df=bets_df,
+            payouts_df=roi_payouts_df,
+            race_results_df=roi_race_results_df,
+            bet_type="単勝",
+            strategy_name="TestLoser",
+            bet_amount=100.0,
+        )
+
+        assert result.n_bets == 2
+        assert result.stake_total_yen == 200.0
+        assert result.return_total_yen == 0.0  # 2着なので単勝は外れ
+        assert result.roi == 0.0
+        assert result.hit_rate == 0.0
+        assert result.n_hits == 0
+
+    def test_evaluate_roi_strategy_fukusho_in3(self, roi_payouts_df, roi_race_results_df):
+        """複勝: 3着内馬に賭けた場合のROI計算"""
+        import pandas as pd
+
+        # 2着馬に賭けるケース (Race R1: B, Race R2: F)
+        bets_df = pd.DataFrame({
+            "race_id": ["R1", "R2"],
+            "horse_id": ["B", "F"],
+        })
+
+        result = evaluate_roi_strategy(
+            bets_df=bets_df,
+            payouts_df=roi_payouts_df,
+            race_results_df=roi_race_results_df,
+            bet_type="複勝",
+            strategy_name="TestPlace",
+            bet_amount=100.0,
+        )
+
+        assert result.bet_type == "複勝"
+        assert result.n_bets == 2
+        assert result.stake_total_yen == 200.0
+        # 払戻: R1馬番2=150円, R2馬番6=130円 → 280円
+        assert result.return_total_yen == pytest.approx(280.0)
+        assert result.roi == pytest.approx(1.4)  # 280 / 200 = 1.4
+        assert result.hit_rate == 1.0  # 2/2 = 100%
+        assert result.n_hits == 2
+        assert result.avg_payout == pytest.approx(140.0)  # (150+130)/2
+
+    def test_evaluate_roi_strategy_fukusho_out(self, roi_payouts_df, roi_race_results_df):
+        """複勝: 4着馬に賭けた場合 (外れ)"""
+        import pandas as pd
+
+        # 4着馬に賭けるケース (Race R1: D, Race R2: H)
+        bets_df = pd.DataFrame({
+            "race_id": ["R1", "R2"],
+            "horse_id": ["D", "H"],
+        })
+
+        result = evaluate_roi_strategy(
+            bets_df=bets_df,
+            payouts_df=roi_payouts_df,
+            race_results_df=roi_race_results_df,
+            bet_type="複勝",
+            strategy_name="TestOut",
+            bet_amount=100.0,
+        )
+
+        assert result.n_bets == 2
+        assert result.return_total_yen == 0.0  # 4着なので複勝も外れ
+        assert result.roi == 0.0
+        assert result.hit_rate == 0.0
+        assert result.n_hits == 0
+
+    def test_evaluate_roi_strategy_mixed(self, roi_payouts_df, roi_race_results_df):
+        """単勝: 勝ち1回、負け1回の場合"""
+        import pandas as pd
+
+        # R1: 勝ち馬A、R2: 2着馬F
+        bets_df = pd.DataFrame({
+            "race_id": ["R1", "R2"],
+            "horse_id": ["A", "F"],
+        })
+
+        result = evaluate_roi_strategy(
+            bets_df=bets_df,
+            payouts_df=roi_payouts_df,
+            race_results_df=roi_race_results_df,
+            bet_type="単勝",
+            strategy_name="TestMixed",
+            bet_amount=100.0,
+        )
+
+        assert result.n_bets == 2
+        assert result.stake_total_yen == 200.0
+        # 払戻: R1=500円 (勝ち), R2=0円 (2着なので外れ)
+        assert result.return_total_yen == 500.0
+        assert result.roi == pytest.approx(2.5)  # 500 / 200 = 2.5
+        assert result.hit_rate == pytest.approx(0.5)  # 1/2 = 50%
+        assert result.n_hits == 1
+        assert result.avg_payout == 500.0  # 1回だけ当たり
+
+    def test_evaluate_roi_strategy_empty_bets(self, roi_payouts_df, roi_race_results_df):
+        """空の賭けデータの場合"""
+        import pandas as pd
+
+        bets_df = pd.DataFrame(columns=["race_id", "horse_id"])
+
+        result = evaluate_roi_strategy(
+            bets_df=bets_df,
+            payouts_df=roi_payouts_df,
+            race_results_df=roi_race_results_df,
+            bet_type="単勝",
+            strategy_name="TestEmpty",
+            bet_amount=100.0,
+        )
+
+        assert result.n_races == 0
+        assert result.n_bets == 0
+        assert result.stake_total_yen == 0.0
+        assert result.return_total_yen == 0.0
+        assert result.roi == 0.0
+
+    def test_evaluate_roi_strategy_top3_bets(self, roi_payouts_df, roi_race_results_df):
+        """Top3戦略: 1レースに3頭賭けた場合"""
+        import pandas as pd
+
+        # R1のみ、上位3頭 (A, B, C) に賭ける
+        bets_df = pd.DataFrame({
+            "race_id": ["R1", "R1", "R1"],
+            "horse_id": ["A", "B", "C"],
+        })
+
+        result = evaluate_roi_strategy(
+            bets_df=bets_df,
+            payouts_df=roi_payouts_df,
+            race_results_df=roi_race_results_df,
+            bet_type="単勝",
+            strategy_name="TestTop3",
+            bet_amount=100.0,
+        )
+
+        assert result.n_races == 1
+        assert result.n_bets == 3  # 3頭に賭けた
+        assert result.stake_total_yen == 300.0  # 100 * 3
+        # A(1着)のみ当たり: 500円
+        assert result.return_total_yen == 500.0
+        assert result.roi == pytest.approx(500.0 / 300.0)
+        assert result.hit_rate == pytest.approx(1.0 / 3.0)  # 1/3
+        assert result.n_hits == 1
+
+    def test_evaluate_roi_strategy_fukusho_top3(self, roi_payouts_df, roi_race_results_df):
+        """複勝Top3戦略: 1レースに3頭賭けた場合"""
+        import pandas as pd
+
+        # R1のみ、上位3頭 (A, B, C) に賭ける
+        bets_df = pd.DataFrame({
+            "race_id": ["R1", "R1", "R1"],
+            "horse_id": ["A", "B", "C"],
+        })
+
+        result = evaluate_roi_strategy(
+            bets_df=bets_df,
+            payouts_df=roi_payouts_df,
+            race_results_df=roi_race_results_df,
+            bet_type="複勝",
+            strategy_name="TestTop3Fukusho",
+            bet_amount=100.0,
+        )
+
+        assert result.n_bets == 3
+        assert result.stake_total_yen == 300.0
+        # A(1着)=120円, B(2着)=150円, C(3着)=180円 → 450円
+        assert result.return_total_yen == pytest.approx(450.0)
+        assert result.roi == pytest.approx(1.5)  # 450 / 300 = 1.5
+        assert result.hit_rate == 1.0  # 3/3 = 100%
+        assert result.n_hits == 3
+        assert result.avg_payout == pytest.approx(150.0)  # (120+150+180)/3
 
 
 # =============================================================================
