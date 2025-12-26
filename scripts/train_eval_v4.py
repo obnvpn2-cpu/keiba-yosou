@@ -136,6 +136,26 @@ Examples:
         action="store_true",
         help="Enable verbose logging",
     )
+
+    # ROI Sweep options
+    parser.add_argument(
+        "--roi-sweep",
+        action="store_true",
+        help="Run ROI sweep with selective betting strategies (prob/gap thresholds)",
+    )
+    parser.add_argument(
+        "--roi-sweep-prob",
+        type=str,
+        default=None,
+        help="Comma-separated probability thresholds for sweep (default: 0.06,0.07,0.08,0.09,0.10,0.12,0.15,0.18,0.20)",
+    )
+    parser.add_argument(
+        "--roi-sweep-gap",
+        type=str,
+        default=None,
+        help="Comma-separated gap thresholds for sweep (default: 0.005,0.01,0.015,0.02,0.03,0.05,0.08)",
+    )
+
     args = parser.parse_args()
 
     # Setup logging
@@ -158,6 +178,7 @@ Examples:
     logger.info(f"Split mode: {args.split_mode}")
     logger.info(f"Include pedigree: {not args.no_pedigree}")
     logger.info(f"Include market: {args.include_market}")
+    logger.info(f"ROI sweep: {args.roi_sweep}")
 
     # Create output directory
     output_dir = os.path.abspath(args.output)
@@ -174,6 +195,14 @@ Examples:
         num_boost_round=args.num_boost_round,
     )
 
+    # Parse ROI sweep thresholds
+    roi_sweep_prob = None
+    roi_sweep_gap = None
+    if args.roi_sweep_prob:
+        roi_sweep_prob = [float(x.strip()) for x in args.roi_sweep_prob.split(",")]
+    if args.roi_sweep_gap:
+        roi_sweep_gap = [float(x.strip()) for x in args.roi_sweep_gap.split(",")]
+
     conn = sqlite3.connect(db_path)
     try:
         results = run_full_pipeline(
@@ -183,6 +212,9 @@ Examples:
             train_end=args.train_end,
             val_end=args.val_end,
             split_mode=args.split_mode,
+            roi_sweep=args.roi_sweep,
+            roi_sweep_prob=roi_sweep_prob,
+            roi_sweep_gap=roi_sweep_gap,
         )
 
         # Print results summary
