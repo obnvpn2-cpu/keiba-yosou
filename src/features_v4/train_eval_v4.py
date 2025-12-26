@@ -107,6 +107,33 @@ class ROIResult:
     max_odds: float
 
 
+@dataclass
+class RankingResult:
+    """
+    レース単位のランキング評価結果
+
+    競馬予測では accuracy は参考にならない（全頭「負け」予測で高accuracyになる）。
+    代わりに「各レースで勝ち馬を上位に予測できているか」を評価する。
+    """
+    dataset: str  # "val" or "test"
+    n_races: int  # 評価対象レース数
+    n_entries: int  # 評価対象出走数
+
+    # Top-K Hit Rate
+    top1_hit_rate: float  # 予測1位が勝ち馬 の割合
+    top3_hit_rate: float  # 勝ち馬が予測3位以内 の割合
+    top5_hit_rate: float  # 勝ち馬が予測5位以内 の割合
+
+    # MRR (Mean Reciprocal Rank)
+    mrr: float  # 1/rank の平均（勝ち馬の予測順位の逆数平均）
+
+    # 勝ち馬の予測順位分布
+    winner_rank_histogram: Dict[str, int]  # "1": N, "2": M, ..., "10+": K
+
+    # 平均フィールドサイズ
+    avg_field_size: float
+
+
 # =============================================================================
 # Data Loading
 # =============================================================================
@@ -533,6 +560,161 @@ def evaluate_model(
 
 
 # =============================================================================
+# Ranking Evaluation (Per-Race Metrics)
+# =============================================================================
+
+def evaluate_ranking(
+    model: Any,
+    df: pd.DataFrame,
+    feature_cols: List[str],
+    target_col: str = "target_win",
+    dataset_name: str = "test",
+) -> RankingResult:
+    """
+    レース単位のランキング評価
+
+    競馬予測では accuracy は参考にならない（全頭「負け」予測で高accuracyになる）。
+    代わりに「各レースで勝ち馬を上位に予測できているか」を評価する。
+
+    Args:
+        model: 学習済みモデル
+        df: 評価データ (race_id, target_col が必要)
+        feature_cols: 特徴量カラム
+        target_col: ターゲットカラム (通常 "target_win")
+        dataset_name: データセット名 ("val" or "test")
+
+    Returns:
+        RankingResult
+    """
+    if len(df) == 0:
+        logger.warning("[%s] No data for ranking evaluation", dataset_name)
+        return RankingResult(
+            dataset=dataset_name,
+            n_races=0,
+            n_entries=0,
+            top1_hit_rate=0.0,
+            top3_hit_rate=0.0,
+            top5_hit_rate=0.0,
+            mrr=0.0,
+            winner_rank_histogram={},
+            avg_field_size=0.0,
+        )
+
+    # 予測確率を計算
+    X = df[feature_cols].fillna(-999)
+    y_pred_proba = model.predict(X, num_iteration=model.best_iteration)
+
+    # 作業用 DataFrame
+    result_df = df[["race_id", "horse_id", target_col]].copy()
+    result_df["pred_proba"] = y_pred_proba
+
+    # レースごとに評価
+    top1_hits = 0
+    top3_hits = 0
+    top5_hits = 0
+    reciprocal_ranks = []
+    winner_ranks = []  # 勝ち馬の予測順位
+    field_sizes = []
+
+    for race_id in result_df["race_id"].unique():
+        race_df = result_df[result_df["race_id"] == race_id].copy()
+        n_horses = len(race_df)
+        field_sizes.append(n_horses)
+
+        # 勝ち馬がいるか確認
+        winners = race_df[race_df[target_col] == 1]
+        if len(winners) == 0:
+            # 勝ち馬がいないレースはスキップ（全馬失格など）
+            continue
+
+        # 予測確率で降順ランク (1 = 最高予測)
+        race_df = race_df.sort_values("pred_proba", ascending=False)
+        race_df["pred_rank"] = range(1, n_horses + 1)
+
+        # 勝ち馬の予測順位
+        winner_row = race_df[race_df[target_col] == 1].iloc[0]
+        winner_rank = winner_row["pred_rank"]
+        winner_ranks.append(int(winner_rank))
+
+        # Top-K Hit
+        if winner_rank == 1:
+            top1_hits += 1
+        if winner_rank <= 3:
+            top3_hits += 1
+        if winner_rank <= 5:
+            top5_hits += 1
+
+        # MRR
+        reciprocal_ranks.append(1.0 / winner_rank)
+
+    n_races = len(reciprocal_ranks)  # 勝ち馬がいたレース数
+
+    if n_races == 0:
+        logger.warning("[%s] No races with winners found", dataset_name)
+        return RankingResult(
+            dataset=dataset_name,
+            n_races=0,
+            n_entries=len(df),
+            top1_hit_rate=0.0,
+            top3_hit_rate=0.0,
+            top5_hit_rate=0.0,
+            mrr=0.0,
+            winner_rank_histogram={},
+            avg_field_size=np.mean(field_sizes) if field_sizes else 0.0,
+        )
+
+    # メトリクス計算
+    top1_hit_rate = top1_hits / n_races
+    top3_hit_rate = top3_hits / n_races
+    top5_hit_rate = top5_hits / n_races
+    mrr = np.mean(reciprocal_ranks)
+
+    # 勝ち馬順位のヒストグラム
+    # 1..9 は個別、10以上は "10+" にまとめる
+    histogram: Dict[str, int] = {}
+    for rank in winner_ranks:
+        if rank <= 9:
+            key = str(rank)
+        else:
+            key = "10+"
+        histogram[key] = histogram.get(key, 0) + 1
+
+    # ソートして見やすく
+    sorted_histogram = {}
+    for key in ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10+"]:
+        if key in histogram:
+            sorted_histogram[key] = histogram[key]
+
+    result = RankingResult(
+        dataset=dataset_name,
+        n_races=n_races,
+        n_entries=len(df),
+        top1_hit_rate=top1_hit_rate,
+        top3_hit_rate=top3_hit_rate,
+        top5_hit_rate=top5_hit_rate,
+        mrr=mrr,
+        winner_rank_histogram=sorted_histogram,
+        avg_field_size=np.mean(field_sizes) if field_sizes else 0.0,
+    )
+
+    logger.info("[%s] Ranking Evaluation Results:", dataset_name.upper())
+    logger.info("  Races:         %d", result.n_races)
+    logger.info("  Entries:       %d", result.n_entries)
+    logger.info("  Top1 Hit Rate: %.2f%% (%d/%d)", result.top1_hit_rate * 100, top1_hits, n_races)
+    logger.info("  Top3 Hit Rate: %.2f%% (%d/%d)", result.top3_hit_rate * 100, top3_hits, n_races)
+    logger.info("  Top5 Hit Rate: %.2f%% (%d/%d)", result.top5_hit_rate * 100, top5_hits, n_races)
+    logger.info("  MRR:           %.4f", result.mrr)
+    logger.info("  Avg Field:     %.1f horses", result.avg_field_size)
+    logger.info("  Winner Rank Distribution:")
+    for rank_key, count in sorted_histogram.items():
+        pct = count / n_races * 100
+        bar = "█" * int(pct / 5)  # 5%ごとに1ブロック
+        logger.info("    Rank %3s: %4d (%5.1f%%) %s", rank_key, count, pct, bar)
+
+    return result
+
+
+# =============================================================================
 # ROI Analysis (Backtest)
 # =============================================================================
 
@@ -702,6 +884,13 @@ def run_full_pipeline(
     val_result = evaluate_model(model, val_df, feature_cols, config.target_col, "val")
     test_result = evaluate_model(model, test_df, feature_cols, config.target_col, "test")
 
+    # ランキング評価 (per-race metrics)
+    logger.info("-" * 40)
+    logger.info("Ranking Evaluation (per-race metrics)")
+    logger.info("-" * 40)
+    val_ranking = evaluate_ranking(model, val_df, feature_cols, config.target_col, "val")
+    test_ranking = evaluate_ranking(model, test_df, feature_cols, config.target_col, "test")
+
     # ROI 分析 (market_win_odds があれば)
     roi_result = None
     if config.include_market and "market_win_odds" in test_df.columns:
@@ -712,6 +901,8 @@ def run_full_pipeline(
         "config": asdict(config),
         "val_result": asdict(val_result),
         "test_result": asdict(test_result),
+        "val_ranking": asdict(val_ranking),
+        "test_ranking": asdict(test_ranking),
         "roi_result": asdict(roi_result) if roi_result else None,
         "n_features": len(feature_cols),
         "train_size": len(train_df),
@@ -725,6 +916,21 @@ def run_full_pipeline(
         with open(results_path, "w", encoding="utf-8") as f:
             json.dump(results, f, ensure_ascii=False, indent=2)
         logger.info("Saved results to %s", results_path)
+
+    # ランキング結果を artifacts/ に保存
+    artifacts_dir = Path("artifacts")
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ranking_path = artifacts_dir / f"ranking_{config.target_col}_{timestamp}.json"
+    ranking_data = {
+        "timestamp": timestamp,
+        "target_col": config.target_col,
+        "val_ranking": asdict(val_ranking),
+        "test_ranking": asdict(test_ranking),
+    }
+    with open(ranking_path, "w", encoding="utf-8") as f:
+        json.dump(ranking_data, f, ensure_ascii=False, indent=2)
+    logger.info("Saved ranking results to %s", ranking_path)
 
     logger.info("=" * 80)
     logger.info("Pipeline completed")
