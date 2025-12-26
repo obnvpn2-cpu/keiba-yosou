@@ -134,6 +134,36 @@ class RankingResult:
     avg_field_size: float
 
 
+@dataclass
+class ROIStrategyResult:
+    """
+    単一戦略のROI評価結果
+
+    単勝 or 複勝 × 戦略ごとの結果を格納。
+    """
+    strategy: str  # "ModelTop1", "ModelTop3Equal", "PopularityTop1", "RandomTop1"
+    bet_type: str  # "単勝" or "複勝"
+    n_races: int  # 評価対象レース数
+    n_bets: int  # 賭けた回数（Top3なら n_races * 3）
+    stake_total_yen: float  # 総賭け金（円）
+    return_total_yen: float  # 総払戻（円）
+    roi: float  # return / stake
+    hit_rate: float  # 的中率（単勝なら勝利率、複勝なら3着内率）
+    n_hits: int  # 的中回数
+    avg_payout: float  # 的中時の平均払戻（円、100円当たり）
+
+
+@dataclass
+class ROIEvalResult:
+    """
+    ROI評価の全体結果
+
+    val/test ごとに、複数戦略 × 単勝/複勝 の結果をまとめる。
+    """
+    dataset: str  # "val" or "test"
+    strategies: List[ROIStrategyResult]
+
+
 # =============================================================================
 # Data Loading
 # =============================================================================
@@ -832,6 +862,423 @@ def analyze_roi(
 
 
 # =============================================================================
+# Payout-based ROI Evaluation (単勝・複勝)
+# =============================================================================
+
+def load_payouts_for_races(
+    conn: sqlite3.Connection,
+    race_ids: List[str],
+    bet_types: List[str] = None,
+) -> pd.DataFrame:
+    """
+    payouts テーブルから指定レースの払戻データをロード
+
+    Args:
+        conn: SQLite 接続
+        race_ids: レースID リスト
+        bet_types: 賭け種別 リスト (デフォルト: ["単勝", "複勝"])
+
+    Returns:
+        DataFrame (race_id, bet_type, combination, payout)
+    """
+    if bet_types is None:
+        bet_types = ["単勝", "複勝"]
+
+    if not race_ids:
+        return pd.DataFrame(columns=["race_id", "bet_type", "combination", "payout"])
+
+    placeholders = ",".join(["?" for _ in race_ids])
+    bet_placeholders = ",".join(["?" for _ in bet_types])
+
+    sql = f"""
+        SELECT race_id, bet_type, combination, payout
+        FROM payouts
+        WHERE race_id IN ({placeholders})
+          AND bet_type IN ({bet_placeholders})
+    """
+
+    try:
+        df = pd.read_sql_query(sql, conn, params=list(race_ids) + bet_types)
+        # combination を文字列に統一
+        df["combination"] = df["combination"].astype(str).str.strip()
+        return df
+    except Exception as e:
+        logger.warning("Failed to load payouts: %s", e)
+        return pd.DataFrame(columns=["race_id", "bet_type", "combination", "payout"])
+
+
+def load_race_results_for_roi(
+    conn: sqlite3.Connection,
+    race_ids: List[str],
+) -> pd.DataFrame:
+    """
+    race_results から ROI 評価に必要なデータをロード
+
+    Args:
+        conn: SQLite 接続
+        race_ids: レースID リスト
+
+    Returns:
+        DataFrame (race_id, horse_id, horse_no, finish_order, popularity)
+    """
+    if not race_ids:
+        return pd.DataFrame(columns=["race_id", "horse_id", "horse_no", "finish_order", "popularity"])
+
+    placeholders = ",".join(["?" for _ in race_ids])
+
+    sql = f"""
+        SELECT race_id, horse_id, horse_no, finish_order, popularity
+        FROM race_results
+        WHERE race_id IN ({placeholders})
+          AND finish_order IS NOT NULL
+          AND horse_no IS NOT NULL
+    """
+
+    try:
+        df = pd.read_sql_query(sql, conn, params=list(race_ids))
+        df["horse_no"] = df["horse_no"].astype(int)
+        df["horse_no_str"] = df["horse_no"].astype(str)
+        return df
+    except Exception as e:
+        logger.warning("Failed to load race_results for ROI: %s", e)
+        return pd.DataFrame(columns=["race_id", "horse_id", "horse_no", "finish_order", "popularity"])
+
+
+def evaluate_roi_strategy(
+    bets_df: pd.DataFrame,
+    payouts_df: pd.DataFrame,
+    race_results_df: pd.DataFrame,
+    bet_type: str,
+    strategy_name: str,
+    bet_amount: float = 100.0,
+) -> ROIStrategyResult:
+    """
+    単一戦略のROI評価
+
+    Args:
+        bets_df: 賭けデータ (race_id, horse_id が必要)
+        payouts_df: 払戻データ
+        race_results_df: レース結果データ
+        bet_type: "単勝" or "複勝"
+        strategy_name: 戦略名
+        bet_amount: 1賭け当たりの金額（円）
+
+    Returns:
+        ROIStrategyResult
+    """
+    if len(bets_df) == 0:
+        return ROIStrategyResult(
+            strategy=strategy_name,
+            bet_type=bet_type,
+            n_races=0,
+            n_bets=0,
+            stake_total_yen=0.0,
+            return_total_yen=0.0,
+            roi=0.0,
+            hit_rate=0.0,
+            n_hits=0,
+            avg_payout=0.0,
+        )
+
+    # bets_df に horse_no を追加
+    bets_with_info = bets_df.merge(
+        race_results_df[["race_id", "horse_id", "horse_no_str", "finish_order"]],
+        on=["race_id", "horse_id"],
+        how="left",
+    )
+
+    # 該当する払戻をマージ
+    payouts_bet_type = payouts_df[payouts_df["bet_type"] == bet_type].copy()
+    bets_with_payout = bets_with_info.merge(
+        payouts_bet_type,
+        left_on=["race_id", "horse_no_str"],
+        right_on=["race_id", "combination"],
+        how="left",
+    )
+
+    n_races = bets_df["race_id"].nunique()
+    n_bets = len(bets_with_payout)
+    stake_total = n_bets * bet_amount
+
+    # 的中判定
+    if bet_type == "単勝":
+        # 単勝: finish_order == 1 かつ payout が存在
+        bets_with_payout["is_hit"] = (
+            (bets_with_payout["finish_order"] == 1) &
+            (bets_with_payout["payout"].notna())
+        )
+    else:  # 複勝
+        # 複勝: finish_order <= 3 かつ payout が存在
+        bets_with_payout["is_hit"] = (
+            (bets_with_payout["finish_order"] <= 3) &
+            (bets_with_payout["payout"].notna())
+        )
+
+    hits_df = bets_with_payout[bets_with_payout["is_hit"]]
+    n_hits = len(hits_df)
+    hit_rate = n_hits / n_bets if n_bets > 0 else 0.0
+
+    # 払戻計算
+    if n_hits > 0:
+        return_total = (hits_df["payout"] / 100 * bet_amount).sum()
+        avg_payout = hits_df["payout"].mean()
+    else:
+        return_total = 0.0
+        avg_payout = 0.0
+
+    roi = return_total / stake_total if stake_total > 0 else 0.0
+
+    return ROIStrategyResult(
+        strategy=strategy_name,
+        bet_type=bet_type,
+        n_races=n_races,
+        n_bets=n_bets,
+        stake_total_yen=stake_total,
+        return_total_yen=return_total,
+        roi=roi,
+        hit_rate=hit_rate,
+        n_hits=n_hits,
+        avg_payout=avg_payout,
+    )
+
+
+def generate_model_top1_bets(
+    df: pd.DataFrame,
+    model: Any,
+    feature_cols: List[str],
+) -> pd.DataFrame:
+    """
+    ModelTop1 戦略: 各レースで予測確率最大の1頭を選択
+
+    Args:
+        df: 予測対象データ (race_id, horse_id, features)
+        model: 学習済みモデル
+        feature_cols: 特徴量カラム
+
+    Returns:
+        賭け対象 DataFrame (race_id, horse_id)
+    """
+    if len(df) == 0:
+        return pd.DataFrame(columns=["race_id", "horse_id"])
+
+    X = df[feature_cols].fillna(-999)
+    pred_proba = model.predict(X, num_iteration=model.best_iteration)
+
+    work_df = df[["race_id", "horse_id"]].copy()
+    work_df["pred_proba"] = pred_proba
+
+    # 各レースで pred_proba 最大の馬を選択
+    idx = work_df.groupby("race_id")["pred_proba"].idxmax()
+    bets_df = work_df.loc[idx, ["race_id", "horse_id"]].reset_index(drop=True)
+
+    return bets_df
+
+
+def generate_model_top3_bets(
+    df: pd.DataFrame,
+    model: Any,
+    feature_cols: List[str],
+) -> pd.DataFrame:
+    """
+    ModelTop3Equal 戦略: 各レースで予測確率上位3頭を選択
+
+    Args:
+        df: 予測対象データ
+        model: 学習済みモデル
+        feature_cols: 特徴量カラム
+
+    Returns:
+        賭け対象 DataFrame (race_id, horse_id)
+    """
+    if len(df) == 0:
+        return pd.DataFrame(columns=["race_id", "horse_id"])
+
+    X = df[feature_cols].fillna(-999)
+    pred_proba = model.predict(X, num_iteration=model.best_iteration)
+
+    work_df = df[["race_id", "horse_id"]].copy()
+    work_df["pred_proba"] = pred_proba
+
+    # 各レースで上位3頭を選択
+    bets_list = []
+    for race_id in work_df["race_id"].unique():
+        race_df = work_df[work_df["race_id"] == race_id]
+        top3 = race_df.nlargest(min(3, len(race_df)), "pred_proba")
+        bets_list.append(top3[["race_id", "horse_id"]])
+
+    if bets_list:
+        bets_df = pd.concat(bets_list, ignore_index=True)
+    else:
+        bets_df = pd.DataFrame(columns=["race_id", "horse_id"])
+
+    return bets_df
+
+
+def generate_popularity_top1_bets(
+    race_results_df: pd.DataFrame,
+    race_ids: List[str],
+) -> pd.DataFrame:
+    """
+    PopularityTop1 戦略: 各レースで人気1位（popularity=1）を選択
+
+    Args:
+        race_results_df: レース結果データ
+        race_ids: 対象レースID リスト
+
+    Returns:
+        賭け対象 DataFrame (race_id, horse_id)
+    """
+    if len(race_results_df) == 0:
+        return pd.DataFrame(columns=["race_id", "horse_id"])
+
+    # 対象レースのみ
+    df = race_results_df[race_results_df["race_id"].isin(race_ids)].copy()
+
+    if len(df) == 0:
+        return pd.DataFrame(columns=["race_id", "horse_id"])
+
+    # popularity が最小（1位）の馬を選択
+    idx = df.groupby("race_id")["popularity"].idxmin()
+    bets_df = df.loc[idx, ["race_id", "horse_id"]].reset_index(drop=True)
+
+    return bets_df
+
+
+def generate_random_top1_bets(
+    df: pd.DataFrame,
+    race_ids: List[str],
+    seed: int = 42,
+) -> pd.DataFrame:
+    """
+    RandomTop1 戦略: 各レースでランダムに1頭を選択
+
+    Args:
+        df: データ (race_id, horse_id)
+        race_ids: 対象レースID リスト
+        seed: 乱数シード
+
+    Returns:
+        賭け対象 DataFrame (race_id, horse_id)
+    """
+    if len(df) == 0:
+        return pd.DataFrame(columns=["race_id", "horse_id"])
+
+    np.random.seed(seed)
+
+    work_df = df[df["race_id"].isin(race_ids)][["race_id", "horse_id"]].copy()
+
+    bets_list = []
+    for race_id in work_df["race_id"].unique():
+        race_df = work_df[work_df["race_id"] == race_id]
+        if len(race_df) > 0:
+            chosen = race_df.sample(n=1, random_state=seed)
+            bets_list.append(chosen)
+
+    if bets_list:
+        bets_df = pd.concat(bets_list, ignore_index=True)
+    else:
+        bets_df = pd.DataFrame(columns=["race_id", "horse_id"])
+
+    return bets_df
+
+
+def evaluate_roi_all_strategies(
+    conn: sqlite3.Connection,
+    df: pd.DataFrame,
+    model: Any,
+    feature_cols: List[str],
+    dataset_name: str = "test",
+    bet_amount: float = 100.0,
+) -> ROIEvalResult:
+    """
+    全戦略のROI評価を実行
+
+    Args:
+        conn: SQLite 接続
+        df: 評価対象データ (race_id, horse_id, features)
+        model: 学習済みモデル
+        feature_cols: 特徴量カラム
+        dataset_name: データセット名 ("val" or "test")
+        bet_amount: 1賭け当たりの金額（円）
+
+    Returns:
+        ROIEvalResult
+    """
+    race_ids = df["race_id"].unique().tolist()
+
+    if len(race_ids) == 0:
+        logger.warning("[%s] No races for ROI evaluation", dataset_name)
+        return ROIEvalResult(dataset=dataset_name, strategies=[])
+
+    # 払戻データと結果データをロード
+    payouts_df = load_payouts_for_races(conn, race_ids)
+    race_results_df = load_race_results_for_roi(conn, race_ids)
+
+    if len(payouts_df) == 0:
+        logger.warning("[%s] No payout data found for %d races", dataset_name, len(race_ids))
+        return ROIEvalResult(dataset=dataset_name, strategies=[])
+
+    logger.info("[%s] ROI Evaluation: %d races, %d payout records",
+                dataset_name.upper(), len(race_ids), len(payouts_df))
+
+    strategies_results = []
+
+    # 戦略ごとに賭け対象を生成
+    bets_model_top1 = generate_model_top1_bets(df, model, feature_cols)
+    bets_model_top3 = generate_model_top3_bets(df, model, feature_cols)
+    bets_pop_top1 = generate_popularity_top1_bets(race_results_df, race_ids)
+    bets_random = generate_random_top1_bets(df, race_ids)
+
+    bet_types = ["単勝", "複勝"]
+
+    for bet_type in bet_types:
+        # ModelTop1
+        result = evaluate_roi_strategy(
+            bets_model_top1, payouts_df, race_results_df,
+            bet_type, "ModelTop1", bet_amount
+        )
+        strategies_results.append(result)
+
+        # ModelTop3Equal
+        result = evaluate_roi_strategy(
+            bets_model_top3, payouts_df, race_results_df,
+            bet_type, "ModelTop3Equal", bet_amount
+        )
+        strategies_results.append(result)
+
+        # PopularityTop1
+        result = evaluate_roi_strategy(
+            bets_pop_top1, payouts_df, race_results_df,
+            bet_type, "PopularityTop1", bet_amount
+        )
+        strategies_results.append(result)
+
+        # RandomTop1
+        result = evaluate_roi_strategy(
+            bets_random, payouts_df, race_results_df,
+            bet_type, "RandomTop1", bet_amount
+        )
+        strategies_results.append(result)
+
+    # ログ出力
+    logger.info("[%s] ROI Evaluation Results:", dataset_name.upper())
+    logger.info("-" * 70)
+    logger.info("%-15s %-6s %7s %10s %10s %7s %7s %8s",
+                "Strategy", "Type", "Races", "Stake", "Return", "ROI", "Hit%", "AvgPay")
+    logger.info("-" * 70)
+
+    for r in strategies_results:
+        logger.info("%-15s %-6s %7d %10.0f %10.0f %6.1f%% %6.1f%% %8.1f",
+                    r.strategy, r.bet_type, r.n_races,
+                    r.stake_total_yen, r.return_total_yen,
+                    r.roi * 100, r.hit_rate * 100, r.avg_payout)
+
+    logger.info("-" * 70)
+
+    return ROIEvalResult(dataset=dataset_name, strategies=strategies_results)
+
+
+# =============================================================================
 # Full Pipeline
 # =============================================================================
 
@@ -891,10 +1338,12 @@ def run_full_pipeline(
     val_ranking = evaluate_ranking(model, val_df, feature_cols, config.target_col, "val")
     test_ranking = evaluate_ranking(model, test_df, feature_cols, config.target_col, "test")
 
-    # ROI 分析 (market_win_odds があれば)
-    roi_result = None
-    if config.include_market and "market_win_odds" in test_df.columns:
-        roi_result = analyze_roi(model, test_df, feature_cols, config.target_col)
+    # ROI 評価 (payouts テーブルベース、単勝・複勝)
+    logger.info("-" * 40)
+    logger.info("ROI Evaluation (payout-based, 単勝/複勝)")
+    logger.info("-" * 40)
+    val_roi = evaluate_roi_all_strategies(conn, val_df, model, feature_cols, "val")
+    test_roi = evaluate_roi_all_strategies(conn, test_df, model, feature_cols, "test")
 
     # 結果をまとめる
     results = {
@@ -903,7 +1352,8 @@ def run_full_pipeline(
         "test_result": asdict(test_result),
         "val_ranking": asdict(val_ranking),
         "test_ranking": asdict(test_ranking),
-        "roi_result": asdict(roi_result) if roi_result else None,
+        "val_roi": asdict(val_roi),
+        "test_roi": asdict(test_roi),
         "n_features": len(feature_cols),
         "train_size": len(train_df),
         "val_size": len(val_df),
@@ -917,10 +1367,12 @@ def run_full_pipeline(
             json.dump(results, f, ensure_ascii=False, indent=2)
         logger.info("Saved results to %s", results_path)
 
-    # ランキング結果を artifacts/ に保存
+    # artifacts/ に保存
     artifacts_dir = Path("artifacts")
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # ランキング結果を保存
     ranking_path = artifacts_dir / f"ranking_{config.target_col}_{timestamp}.json"
     ranking_data = {
         "timestamp": timestamp,
@@ -931,6 +1383,18 @@ def run_full_pipeline(
     with open(ranking_path, "w", encoding="utf-8") as f:
         json.dump(ranking_data, f, ensure_ascii=False, indent=2)
     logger.info("Saved ranking results to %s", ranking_path)
+
+    # ROI 結果を保存
+    roi_path = artifacts_dir / f"roi_{config.target_col}_{timestamp}.json"
+    roi_data = {
+        "timestamp": timestamp,
+        "target_col": config.target_col,
+        "val_roi": asdict(val_roi),
+        "test_roi": asdict(test_roi),
+    }
+    with open(roi_path, "w", encoding="utf-8") as f:
+        json.dump(roi_data, f, ensure_ascii=False, indent=2)
+    logger.info("Saved ROI results to %s", roi_path)
 
     logger.info("=" * 80)
     logger.info("Pipeline completed")
