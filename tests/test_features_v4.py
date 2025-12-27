@@ -1906,6 +1906,272 @@ class TestRoiSweepFlatArtifacts:
 
 
 # =============================================================================
+# Snapshot-based Feature Building Tests
+# =============================================================================
+
+
+class TestSnapshotFeatureBuilding:
+    """FeatureBuilderV4 のスナップショットベース市場特徴量テスト"""
+
+    @pytest.fixture
+    def db_for_feature_builder(self):
+        """特徴量ビルダー用のテストデータベース"""
+        conn = sqlite3.connect(":memory:")
+
+        # races テーブル
+        conn.execute("""
+            CREATE TABLE races (
+                race_id TEXT PRIMARY KEY,
+                date TEXT,
+                place TEXT,
+                course_type TEXT,
+                distance INTEGER,
+                track_condition TEXT,
+                race_class TEXT,
+                grade TEXT,
+                race_no INTEGER,
+                course_turn TEXT,
+                course_inout TEXT,
+                head_count INTEGER
+            )
+        """)
+
+        # race_results テーブル
+        conn.execute("""
+            CREATE TABLE race_results (
+                race_id TEXT NOT NULL,
+                horse_id TEXT NOT NULL,
+                finish_order INTEGER,
+                last_3f REAL,
+                body_weight INTEGER,
+                body_weight_diff INTEGER,
+                passing_order TEXT,
+                win_odds REAL,
+                popularity INTEGER,
+                prize_money INTEGER,
+                jockey_id TEXT,
+                trainer_id TEXT,
+                sex TEXT,
+                age INTEGER,
+                weight REAL,
+                frame_no INTEGER,
+                horse_no INTEGER,
+                finish_status TEXT,
+                PRIMARY KEY (race_id, horse_id)
+            )
+        """)
+
+        # odds_snapshots テーブル
+        conn.execute("""
+            CREATE TABLE odds_snapshots (
+                race_id TEXT NOT NULL,
+                horse_no INTEGER NOT NULL,
+                observed_at TEXT NOT NULL,
+                win_odds REAL,
+                popularity INTEGER,
+                source TEXT,
+                PRIMARY KEY (race_id, horse_no, observed_at)
+            )
+        """)
+
+        # テストデータ: レース
+        conn.execute("""
+            INSERT INTO races
+            (race_id, date, place, course_type, distance, track_condition,
+             race_class, grade, race_no, course_turn, course_inout, head_count)
+            VALUES
+            ('202412280101', '2024-12-28', '東京', 'turf', 1600, '良',
+             '3勝クラス', NULL, 1, 'left', 'inner', 3)
+        """)
+
+        # テストデータ: 出走馬 (race_resultsの win_odds/popularity は最終値)
+        conn.executemany("""
+            INSERT INTO race_results
+            (race_id, horse_id, finish_order, win_odds, popularity, horse_no, frame_no,
+             sex, age, weight, finish_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, [
+            ("202412280101", "H1", 1, 2.5, 1, 1, 1, "牡", 4, 55.0, None),   # 最終オッズ 2.5
+            ("202412280101", "H2", 2, 5.0, 2, 2, 1, "牝", 3, 54.0, None),   # 最終オッズ 5.0
+            ("202412280101", "H3", 3, 8.0, 3, 3, 2, "牡", 5, 56.0, None),   # 最終オッズ 8.0
+        ])
+
+        # テストデータ: スナップショット (前日21時点 - 最終値とは異なる)
+        conn.executemany("""
+            INSERT INTO odds_snapshots (race_id, horse_no, observed_at, win_odds, popularity)
+            VALUES (?, ?, ?, ?, ?)
+        """, [
+            ("202412280101", 1, "2024-12-27T21:00:00", 3.0, 2),   # スナップショットは 3.0, 2番人気
+            ("202412280101", 2, "2024-12-27T21:00:00", 4.5, 1),   # スナップショットは 4.5, 1番人気
+            ("202412280101", 3, "2024-12-27T21:00:00", 7.5, 3),   # スナップショットは 7.5, 3番人気
+        ])
+
+        conn.commit()
+        yield conn
+        conn.close()
+
+    def test_build_features_without_snapshots(self, db_for_feature_builder):
+        """スナップショット無しの場合は race_results の値を使用"""
+        builder = FeatureBuilderV4(db_for_feature_builder)
+        df = builder.build_features_for_race(
+            "202412280101",
+            include_pedigree=False,
+            include_market=True,
+            include_snapshots=False,
+        )
+
+        assert len(df) == 3
+
+        # race_results の値 (最終オッズ) が使用される
+        h1 = df[df["horse_id"] == "H1"].iloc[0]
+        assert h1["market_win_odds"] == 2.5  # 最終オッズ
+        assert h1["market_popularity"] == 1  # 最終人気
+
+        h2 = df[df["horse_id"] == "H2"].iloc[0]
+        assert h2["market_win_odds"] == 5.0
+        assert h2["market_popularity"] == 2
+
+    def test_build_features_with_snapshots(self, db_for_feature_builder):
+        """スナップショット有りの場合は odds_snapshots の値を使用"""
+        builder = FeatureBuilderV4(db_for_feature_builder)
+        df = builder.build_features_for_race(
+            "202412280101",
+            include_pedigree=False,
+            include_market=True,
+            include_snapshots=True,
+        )
+
+        assert len(df) == 3
+
+        # スナップショットの値 (前日21時点) が使用される
+        h1 = df[df["horse_id"] == "H1"].iloc[0]
+        assert h1["market_win_odds"] == 3.0  # スナップショット
+        assert h1["market_popularity"] == 2  # スナップショット (race_results とは異なる!)
+
+        h2 = df[df["horse_id"] == "H2"].iloc[0]
+        assert h2["market_win_odds"] == 4.5
+        assert h2["market_popularity"] == 1  # スナップショットでは1番人気
+
+    def test_build_features_with_cutoff(self, db_for_feature_builder):
+        """decision_cutoff でフィルタリングされること"""
+        conn = db_for_feature_builder
+
+        # 追加のスナップショット (20:00 時点)
+        conn.executemany("""
+            INSERT INTO odds_snapshots (race_id, horse_no, observed_at, win_odds, popularity)
+            VALUES (?, ?, ?, ?, ?)
+        """, [
+            ("202412280101", 1, "2024-12-27T20:00:00", 3.5, 3),  # 20:00 時点
+            ("202412280101", 2, "2024-12-27T20:00:00", 4.0, 2),
+            ("202412280101", 3, "2024-12-27T20:00:00", 8.0, 1),
+        ])
+        conn.commit()
+
+        builder = FeatureBuilderV4(conn)
+
+        # cutoff=20:30 の場合、20:00 のスナップショットが使用される
+        df = builder.build_features_for_race(
+            "202412280101",
+            include_pedigree=False,
+            include_market=True,
+            include_snapshots=True,
+            decision_cutoff="2024-12-27T20:30:00",
+        )
+
+        h1 = df[df["horse_id"] == "H1"].iloc[0]
+        assert h1["market_win_odds"] == 3.5  # 20:00 のスナップショット
+        assert h1["market_popularity"] == 3
+
+        # cutoff=21:30 の場合、21:00 のスナップショットが使用される (最新)
+        df2 = builder.build_features_for_race(
+            "202412280101",
+            include_pedigree=False,
+            include_market=True,
+            include_snapshots=True,
+            decision_cutoff="2024-12-27T21:30:00",
+        )
+
+        h1_2 = df2[df2["horse_id"] == "H1"].iloc[0]
+        assert h1_2["market_win_odds"] == 3.0  # 21:00 のスナップショット
+        assert h1_2["market_popularity"] == 2
+
+    def test_build_features_snapshot_missing_horse(self, db_for_feature_builder):
+        """スナップショットにない馬は NULL になること"""
+        import pandas as pd
+
+        conn = db_for_feature_builder
+
+        # horse_no=3 のスナップショットを削除
+        conn.execute("""
+            DELETE FROM odds_snapshots WHERE horse_no = 3
+        """)
+        conn.commit()
+
+        builder = FeatureBuilderV4(conn)
+        df = builder.build_features_for_race(
+            "202412280101",
+            include_pedigree=False,
+            include_market=True,
+            include_snapshots=True,
+        )
+
+        # H3 の市場情報は NULL/NaN になる
+        h3 = df[df["horse_id"] == "H3"].iloc[0]
+        assert pd.isna(h3["market_win_odds"])
+        assert pd.isna(h3["market_popularity"])
+
+        # H1, H2 は正常
+        h1 = df[df["horse_id"] == "H1"].iloc[0]
+        assert h1["market_win_odds"] == 3.0
+
+    def test_build_features_no_snapshot_table(self, in_memory_db):
+        """odds_snapshots テーブルがない場合も動作すること"""
+        conn = in_memory_db
+
+        # 最小限のテーブル
+        conn.execute("""
+            CREATE TABLE races (
+                race_id TEXT PRIMARY KEY, date TEXT, place TEXT, course_type TEXT,
+                distance INTEGER, track_condition TEXT, race_class TEXT, grade TEXT,
+                race_no INTEGER, course_turn TEXT, course_inout TEXT, head_count INTEGER
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE race_results (
+                race_id TEXT, horse_id TEXT, finish_order INTEGER, last_3f REAL,
+                body_weight INTEGER, body_weight_diff INTEGER, passing_order TEXT,
+                win_odds REAL, popularity INTEGER, prize_money INTEGER, jockey_id TEXT,
+                trainer_id TEXT, sex TEXT, age INTEGER, weight REAL, frame_no INTEGER,
+                horse_no INTEGER, finish_status TEXT, PRIMARY KEY (race_id, horse_id)
+            )
+        """)
+        conn.execute("""
+            INSERT INTO races VALUES
+            ('R1', '2024-12-28', '東京', 'turf', 1600, '良', NULL, NULL, 1, NULL, NULL, 1)
+        """)
+        conn.execute("""
+            INSERT INTO race_results
+            (race_id, horse_id, finish_order, win_odds, popularity, horse_no, frame_no,
+             sex, age, weight, finish_status)
+            VALUES ('R1', 'H1', 1, 2.5, 1, 1, 1, '牡', 4, 55.0, NULL)
+        """)
+        conn.commit()
+
+        builder = FeatureBuilderV4(conn)
+        # スナップショットモードでもテーブルがなければ NULL になる
+        df = builder.build_features_for_race(
+            "R1",
+            include_pedigree=False,
+            include_market=True,
+            include_snapshots=True,
+        )
+
+        import pandas as pd
+        h1 = df[df["horse_id"] == "H1"].iloc[0]
+        assert pd.isna(h1["market_win_odds"])  # テーブルがないので NULL/NaN
+
+
+# =============================================================================
 # Run Tests
 # =============================================================================
 

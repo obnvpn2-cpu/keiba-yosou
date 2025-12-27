@@ -385,6 +385,84 @@ class FeatureBuilderV4:
             return (None, None, None, None)
 
     # =========================================================================
+    # Odds Snapshot Loading
+    # =========================================================================
+
+    def _load_race_snapshots(
+        self,
+        race_id: str,
+        decision_cutoff: Optional[str] = None,
+    ) -> Optional[pd.DataFrame]:
+        """
+        1レース分のオッズスナップショットをロード
+
+        Args:
+            race_id: レースID
+            decision_cutoff: 締め切り時刻 (ISO format)
+                             この時刻以前で最新のスナップショットを使用
+                             None の場合は最新を使用
+
+        Returns:
+            DataFrame (horse_no, win_odds, popularity) or None
+        """
+        # テーブル存在チェック
+        try:
+            cursor = self.conn.execute(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='odds_snapshots'"
+            )
+            if cursor.fetchone()[0] == 0:
+                return None
+        except:
+            return None
+
+        if decision_cutoff:
+            sql = """
+                WITH ranked AS (
+                    SELECT
+                        horse_no,
+                        win_odds,
+                        popularity,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY horse_no
+                            ORDER BY observed_at DESC
+                        ) as rn
+                    FROM odds_snapshots
+                    WHERE race_id = ?
+                      AND observed_at <= ?
+                )
+                SELECT horse_no, win_odds, popularity
+                FROM ranked
+                WHERE rn = 1
+            """
+            params = [race_id, decision_cutoff]
+        else:
+            sql = """
+                WITH ranked AS (
+                    SELECT
+                        horse_no,
+                        win_odds,
+                        popularity,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY horse_no
+                            ORDER BY observed_at DESC
+                        ) as rn
+                    FROM odds_snapshots
+                    WHERE race_id = ?
+                )
+                SELECT horse_no, win_odds, popularity
+                FROM ranked
+                WHERE rn = 1
+            """
+            params = [race_id]
+
+        try:
+            df = pd.read_sql_query(sql, self.conn, params=params)
+            return df if len(df) > 0 else None
+        except Exception as e:
+            logger.debug("Failed to load snapshots for race %s: %s", race_id, e)
+            return None
+
+    # =========================================================================
     # Build Features for One Race
     # =========================================================================
 
@@ -393,6 +471,8 @@ class FeatureBuilderV4:
         race_id: str,
         include_pedigree: bool = True,
         include_market: bool = False,
+        include_snapshots: bool = False,
+        decision_cutoff: Optional[str] = None,
     ) -> pd.DataFrame:
         """
         1レース分の特徴量を構築
@@ -401,9 +481,18 @@ class FeatureBuilderV4:
             race_id: レースID
             include_pedigree: 血統ハッシュを含めるか
             include_market: 市場情報を含めるか
+            include_snapshots: オッズスナップショットから市場情報を取得するか
+                               True の場合、odds_snapshots テーブルから取得
+            decision_cutoff: スナップショット締め切り時刻 (ISO format)
+                             この時刻以前で最新のスナップショットを使用
 
         Returns:
             DataFrame with one row per horse
+
+        Note:
+            include_snapshots=True の場合、odds_snapshots テーブルからオッズ/人気を取得。
+            スナップショットがない馬は market_win_odds/market_popularity が NULL になる。
+            これはリーク防止のため：backtest時は決め打ちの cutoff を使う。
         """
         # レース情報を取得
         cursor = self.conn.execute("""
@@ -536,6 +625,25 @@ class FeatureBuilderV4:
             return pd.DataFrame()
 
         field_size = head_count or len(all_entries)  # 元の出走頭数を使用
+
+        # スナップショットからの市場情報をロード (オプション)
+        snapshot_odds_map: Dict[int, float] = {}  # horse_no -> win_odds
+        snapshot_pop_map: Dict[int, int] = {}  # horse_no -> popularity
+
+        if include_snapshots and include_market:
+            snapshot_df = self._load_race_snapshots(race_id, decision_cutoff)
+            if snapshot_df is not None:
+                for _, row in snapshot_df.iterrows():
+                    hn = row["horse_no"]
+                    if row["win_odds"] is not None:
+                        snapshot_odds_map[hn] = row["win_odds"]
+                    if row["popularity"] is not None:
+                        snapshot_pop_map[hn] = row["popularity"]
+                logger.debug(
+                    "Race %s: loaded %d snapshot odds, %d snapshot popularity (cutoff=%s)",
+                    race_id, len(snapshot_odds_map), len(snapshot_pop_map),
+                    decision_cutoff or "latest"
+                )
 
         features_list = []
 
@@ -720,8 +828,15 @@ class FeatureBuilderV4:
 
             # 市場情報 (オプション)
             if include_market:
-                features["market_win_odds"] = win_odds
-                features["market_popularity"] = popularity
+                if include_snapshots:
+                    # スナップショットからの値を優先（リーク防止）
+                    # スナップショットがない場合は NULL
+                    features["market_win_odds"] = snapshot_odds_map.get(horse_no)
+                    features["market_popularity"] = snapshot_pop_map.get(horse_no)
+                else:
+                    # 従来動作: race_results からの値
+                    features["market_win_odds"] = win_odds
+                    features["market_popularity"] = popularity
                 features["market_odds_rank"] = None  # フィールド内順位は別途計算
 
             features_list.append(features)
@@ -738,6 +853,8 @@ class FeatureBuilderV4:
         end_year: int = 2024,
         include_pedigree: bool = True,
         include_market: bool = False,
+        include_snapshots: bool = False,
+        decision_cutoff: Optional[str] = None,
         batch_size: int = 100,
     ) -> int:
         """
@@ -748,6 +865,8 @@ class FeatureBuilderV4:
             end_year: 終了年
             include_pedigree: 血統ハッシュを含めるか
             include_market: 市場情報を含めるか
+            include_snapshots: オッズスナップショットから市場情報を取得するか
+            decision_cutoff: スナップショット締め切り時刻 (ISO format)
             batch_size: バッチサイズ
 
         Returns:
@@ -758,6 +877,8 @@ class FeatureBuilderV4:
         logger.info("  Years: %d - %d", start_year, end_year)
         logger.info("  Include pedigree: %s", include_pedigree)
         logger.info("  Include market: %s", include_market)
+        if include_market and include_snapshots:
+            logger.info("  Include snapshots: %s (cutoff: %s)", include_snapshots, decision_cutoff or "latest")
         logger.info("=" * 80)
 
         # テーブル作成
@@ -784,6 +905,8 @@ class FeatureBuilderV4:
                     race_id=race_id,
                     include_pedigree=include_pedigree,
                     include_market=include_market,
+                    include_snapshots=include_snapshots,
+                    decision_cutoff=decision_cutoff,
                 )
 
                 if len(df) > 0:
@@ -882,6 +1005,8 @@ def build_feature_table_v4(
     end_year: int = 2024,
     include_pedigree: bool = True,
     include_market: bool = False,
+    include_snapshots: bool = False,
+    decision_cutoff: Optional[str] = None,
 ) -> int:
     """
     feature_table_v4 を構築するコンビニエンス関数
@@ -892,9 +1017,16 @@ def build_feature_table_v4(
         end_year: 終了年
         include_pedigree: 血統ハッシュを含めるか
         include_market: 市場情報を含めるか
+        include_snapshots: オッズスナップショットから市場情報を取得するか
+        decision_cutoff: スナップショット締め切り時刻 (ISO format)
 
     Returns:
         挿入した行数
+
+    Note:
+        include_snapshots=True の場合、odds_snapshots テーブルから
+        decision_cutoff 以前の最新オッズ/人気を取得。
+        これはバックテスト時のリーク防止に重要。
     """
     builder = FeatureBuilderV4(conn)
     return builder.build_all(
@@ -902,6 +1034,8 @@ def build_feature_table_v4(
         end_year=end_year,
         include_pedigree=include_pedigree,
         include_market=include_market,
+        include_snapshots=include_snapshots,
+        decision_cutoff=decision_cutoff,
     )
 
 
@@ -919,14 +1053,55 @@ if __name__ == "__main__":
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     )
 
-    parser = argparse.ArgumentParser(description="Build feature_table_v4")
+    parser = argparse.ArgumentParser(
+        description="Build feature_table_v4",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Basic build (without market features)
+  python -m src.features_v4.feature_builder_v4 --db netkeiba.db
+
+  # Include market features from race_results (WARNING: may contain leakage)
+  python -m src.features_v4.feature_builder_v4 --db netkeiba.db --include-market
+
+  # Include market features from odds_snapshots (leak-safe for backtest)
+  python -m src.features_v4.feature_builder_v4 --db netkeiba.db --include-market --include-snapshots
+
+  # With decision cutoff (pre-race snapshot only)
+  python -m src.features_v4.feature_builder_v4 --db netkeiba.db --include-market \\
+      --include-snapshots --decision-cutoff "21:00:00"
+
+Leakage Prevention Notes:
+  - --include-market without --include-snapshots uses race_results values
+    which may contain post-race adjustments (NOT recommended for backtest)
+  - --include-snapshots uses odds_snapshots table with pre-race values
+  - --decision-cutoff filters snapshots to only include those observed
+    before the specified time on the race date
+""",
+    )
     parser.add_argument("--db", default="netkeiba.db", help="Database path")
     parser.add_argument("--start-year", type=int, default=2021, help="Start year")
     parser.add_argument("--end-year", type=int, default=2024, help="End year")
     parser.add_argument("--no-pedigree", action="store_true", help="Exclude pedigree hash")
     parser.add_argument("--include-market", action="store_true", help="Include market features")
+    parser.add_argument(
+        "--include-snapshots",
+        action="store_true",
+        help="Use odds_snapshots table for market features (leak-safe)",
+    )
+    parser.add_argument(
+        "--decision-cutoff",
+        type=str,
+        default=None,
+        help="Cutoff time for snapshots (e.g., '21:00:00' or ISO datetime)",
+    )
 
     args = parser.parse_args()
+
+    # Validate: --include-snapshots requires --include-market
+    if args.include_snapshots and not args.include_market:
+        logger.warning("--include-snapshots requires --include-market, enabling --include-market")
+        args.include_market = True
 
     if not Path(args.db).exists():
         logger.error("Database not found: %s", args.db)
@@ -940,6 +1115,8 @@ if __name__ == "__main__":
             end_year=args.end_year,
             include_pedigree=not args.no_pedigree,
             include_market=args.include_market,
+            include_snapshots=args.include_snapshots,
+            decision_cutoff=args.decision_cutoff,
         )
         logger.info("Inserted %d rows", rows)
     finally:
