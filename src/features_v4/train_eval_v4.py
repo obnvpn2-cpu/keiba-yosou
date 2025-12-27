@@ -916,6 +916,101 @@ def analyze_roi(
 # Payout-based ROI Evaluation (単勝・複勝)
 # =============================================================================
 
+def load_odds_snapshots_for_races(
+    conn: sqlite3.Connection,
+    race_ids: List[str],
+    decision_cutoff: Optional[str] = None,
+) -> Optional[pd.DataFrame]:
+    """
+    odds_snapshots テーブルから指定レースのオッズスナップショットをロード
+
+    decision_cutoff が指定された場合、その時刻以前で最新のスナップショットを使用。
+    テーブルが存在しない場合や、データがない場合は None を返す。
+
+    Args:
+        conn: SQLite 接続
+        race_ids: レースID リスト
+        decision_cutoff: 締め切り時刻 (ISO format, 例: "2024-12-27T21:00:00")
+                         None の場合は最新のスナップショットを使用
+
+    Returns:
+        DataFrame (race_id, horse_no, win_odds, popularity, observed_at) or None
+    """
+    if not race_ids:
+        return None
+
+    # テーブル存在チェック
+    try:
+        cursor = conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='odds_snapshots'"
+        )
+        if cursor.fetchone()[0] == 0:
+            logger.debug("odds_snapshots table does not exist")
+            return None
+    except Exception as e:
+        logger.debug("Failed to check odds_snapshots table: %s", e)
+        return None
+
+    placeholders = ",".join(["?" for _ in race_ids])
+
+    if decision_cutoff:
+        # 締め切り時刻以前で最新のスナップショットを取得
+        sql = f"""
+            WITH ranked AS (
+                SELECT
+                    race_id,
+                    horse_no,
+                    win_odds,
+                    popularity,
+                    observed_at,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY race_id, horse_no
+                        ORDER BY observed_at DESC
+                    ) as rn
+                FROM odds_snapshots
+                WHERE race_id IN ({placeholders})
+                  AND observed_at <= ?
+            )
+            SELECT race_id, horse_no, win_odds, popularity, observed_at
+            FROM ranked
+            WHERE rn = 1
+        """
+        params = list(race_ids) + [decision_cutoff]
+    else:
+        # 最新のスナップショットを取得
+        sql = f"""
+            WITH ranked AS (
+                SELECT
+                    race_id,
+                    horse_no,
+                    win_odds,
+                    popularity,
+                    observed_at,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY race_id, horse_no
+                        ORDER BY observed_at DESC
+                    ) as rn
+                FROM odds_snapshots
+                WHERE race_id IN ({placeholders})
+            )
+            SELECT race_id, horse_no, win_odds, popularity, observed_at
+            FROM ranked
+            WHERE rn = 1
+        """
+        params = list(race_ids)
+
+    try:
+        df = pd.read_sql_query(sql, conn, params=params)
+        if len(df) == 0:
+            logger.debug("No odds snapshots found for specified races")
+            return None
+        df["horse_no_str"] = df["horse_no"].astype(str)
+        return df
+    except Exception as e:
+        logger.warning("Failed to load odds_snapshots: %s", e)
+        return None
+
+
 def load_payouts_for_races(
     conn: sqlite3.Connection,
     race_ids: List[str],
@@ -961,19 +1056,26 @@ def load_payouts_for_races(
 def load_race_results_for_roi(
     conn: sqlite3.Connection,
     race_ids: List[str],
+    decision_cutoff: Optional[str] = None,
+    use_snapshots: bool = True,
 ) -> pd.DataFrame:
     """
     race_results から ROI 評価に必要なデータをロード
 
+    use_snapshots=True かつ odds_snapshots テーブルにデータがある場合、
+    スナップショットの popularity を使用する（前日締め運用対応）。
+
     Args:
         conn: SQLite 接続
         race_ids: レースID リスト
+        decision_cutoff: 締め切り時刻 (ISO format)
+        use_snapshots: スナップショットを使用するか
 
     Returns:
-        DataFrame (race_id, horse_id, horse_no, finish_order, popularity)
+        DataFrame (race_id, horse_id, horse_no, finish_order, popularity, popularity_source)
     """
     if not race_ids:
-        return pd.DataFrame(columns=["race_id", "horse_id", "horse_no", "finish_order", "popularity"])
+        return pd.DataFrame(columns=["race_id", "horse_id", "horse_no", "finish_order", "popularity", "popularity_source"])
 
     placeholders = ",".join(["?" for _ in race_ids])
 
@@ -987,12 +1089,45 @@ def load_race_results_for_roi(
 
     try:
         df = pd.read_sql_query(sql, conn, params=list(race_ids))
+        if len(df) == 0:
+            return pd.DataFrame(columns=["race_id", "horse_id", "horse_no", "finish_order", "popularity", "popularity_source"])
+
         df["horse_no"] = df["horse_no"].astype(int)
         df["horse_no_str"] = df["horse_no"].astype(str)
+        df["popularity_source"] = "race_results"
+
+        # スナップショットからの popularity を試行
+        if use_snapshots:
+            snapshots_df = load_odds_snapshots_for_races(conn, race_ids, decision_cutoff)
+            if snapshots_df is not None and len(snapshots_df) > 0:
+                # スナップショットの popularity を使用
+                # race_id, horse_no でマージ
+                df = df.merge(
+                    snapshots_df[["race_id", "horse_no", "popularity"]].rename(
+                        columns={"popularity": "snapshot_popularity"}
+                    ),
+                    on=["race_id", "horse_no"],
+                    how="left",
+                )
+
+                # スナップショットがある場合はそちらを優先
+                has_snapshot = df["snapshot_popularity"].notna()
+                n_snapshot = has_snapshot.sum()
+
+                if n_snapshot > 0:
+                    df.loc[has_snapshot, "popularity"] = df.loc[has_snapshot, "snapshot_popularity"]
+                    df.loc[has_snapshot, "popularity_source"] = "odds_snapshot"
+                    logger.info(
+                        "Using snapshot popularity for %d/%d entries (cutoff=%s)",
+                        n_snapshot, len(df), decision_cutoff or "latest"
+                    )
+
+                df = df.drop(columns=["snapshot_popularity"])
+
         return df
     except Exception as e:
         logger.warning("Failed to load race_results for ROI: %s", e)
-        return pd.DataFrame(columns=["race_id", "horse_id", "horse_no", "finish_order", "popularity"])
+        return pd.DataFrame(columns=["race_id", "horse_id", "horse_no", "finish_order", "popularity", "popularity_source"])
 
 
 def evaluate_roi_strategy(
@@ -1366,6 +1501,8 @@ def evaluate_roi_all_strategies(
     feature_cols: List[str],
     dataset_name: str = "test",
     bet_amount: float = 100.0,
+    decision_cutoff: Optional[str] = None,
+    use_snapshots: bool = True,
 ) -> ROIEvalResult:
     """
     全戦略のROI評価を実行
@@ -1377,6 +1514,8 @@ def evaluate_roi_all_strategies(
         feature_cols: 特徴量カラム
         dataset_name: データセット名 ("val" or "test")
         bet_amount: 1賭け当たりの金額（円）
+        decision_cutoff: 締め切り時刻 (ISO format、前日締め運用用)
+        use_snapshots: オッズスナップショットを使用するか
 
     Returns:
         ROIEvalResult
@@ -1389,7 +1528,7 @@ def evaluate_roi_all_strategies(
 
     # 払戻データと結果データをロード
     payouts_df = load_payouts_for_races(conn, race_ids)
-    race_results_df = load_race_results_for_roi(conn, race_ids)
+    race_results_df = load_race_results_for_roi(conn, race_ids, decision_cutoff, use_snapshots)
 
     if len(payouts_df) == 0:
         logger.warning("[%s] No payout data found for %d races", dataset_name, len(race_ids))
@@ -1574,6 +1713,8 @@ def run_roi_sweep(
     prob_thresholds: Optional[List[float]] = None,
     gap_thresholds: Optional[List[float]] = None,
     bet_amount: float = 100.0,
+    decision_cutoff: Optional[str] = None,
+    use_snapshots: bool = True,
 ) -> Dict[str, List[ROISweepResult]]:
     """
     ROI スイープ実行
@@ -1589,6 +1730,8 @@ def run_roi_sweep(
         prob_thresholds: 確率閾値リスト (None = デフォルト)
         gap_thresholds: ギャップ閾値リスト (None = デフォルト)
         bet_amount: 1賭け当たりの金額
+        decision_cutoff: 締め切り時刻 (ISO format、前日締め運用用)
+        use_snapshots: オッズスナップショットを使用するか
 
     Returns:
         Dict with keys "prob" and "gap", each containing list of ROISweepResult for each bet_type
@@ -1607,7 +1750,7 @@ def run_roi_sweep(
 
     # 払戻データと結果データをロード
     payouts_df = load_payouts_for_races(conn, race_ids)
-    race_results_df = load_race_results_for_roi(conn, race_ids)
+    race_results_df = load_race_results_for_roi(conn, race_ids, decision_cutoff, use_snapshots)
 
     if len(payouts_df) == 0:
         logger.warning("[%s] No payout data for ROI sweep", dataset_name)
@@ -1768,6 +1911,8 @@ def run_full_pipeline(
     roi_sweep: bool = False,
     roi_sweep_prob: Optional[List[float]] = None,
     roi_sweep_gap: Optional[List[float]] = None,
+    decision_cutoff: Optional[str] = None,
+    use_snapshots: bool = True,
 ) -> Dict[str, Any]:
     """
     完全なパイプラインを実行
@@ -1782,6 +1927,8 @@ def run_full_pipeline(
         roi_sweep: ROI スイープを実行するか
         roi_sweep_prob: 確率閾値リスト (None = デフォルト)
         roi_sweep_gap: ギャップ閾値リスト (None = デフォルト)
+        decision_cutoff: 締め切り時刻 (ISO format、前日締め運用用)
+        use_snapshots: オッズスナップショットを使用するか
 
     Returns:
         結果の辞書
@@ -1823,9 +1970,17 @@ def run_full_pipeline(
     # ROI 評価 (payouts テーブルベース、単勝・複勝)
     logger.info("-" * 40)
     logger.info("ROI Evaluation (payout-based, 単勝/複勝)")
+    if decision_cutoff:
+        logger.info("  Decision cutoff: %s", decision_cutoff)
     logger.info("-" * 40)
-    val_roi = evaluate_roi_all_strategies(conn, val_df, model, feature_cols, "val")
-    test_roi = evaluate_roi_all_strategies(conn, test_df, model, feature_cols, "test")
+    val_roi = evaluate_roi_all_strategies(
+        conn, val_df, model, feature_cols, "val",
+        decision_cutoff=decision_cutoff, use_snapshots=use_snapshots
+    )
+    test_roi = evaluate_roi_all_strategies(
+        conn, test_df, model, feature_cols, "test",
+        decision_cutoff=decision_cutoff, use_snapshots=use_snapshots
+    )
 
     # 結果をまとめる
     results = {
@@ -1888,11 +2043,15 @@ def run_full_pipeline(
             conn, val_df, model, feature_cols, "val",
             prob_thresholds=roi_sweep_prob,
             gap_thresholds=roi_sweep_gap,
+            decision_cutoff=decision_cutoff,
+            use_snapshots=use_snapshots,
         )
         test_sweep = run_roi_sweep(
             conn, test_df, model, feature_cols, "test",
             prob_thresholds=roi_sweep_prob,
             gap_thresholds=roi_sweep_gap,
+            decision_cutoff=decision_cutoff,
+            use_snapshots=use_snapshots,
         )
 
         # スイープ結果を保存

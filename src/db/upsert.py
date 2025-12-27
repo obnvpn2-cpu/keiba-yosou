@@ -117,6 +117,13 @@ TABLE_CONFIGS = {
         has_updated_at=True,
         has_created_at=True,
     ),
+    "odds_snapshots": TableConfig(
+        table_name="odds_snapshots",
+        primary_key=["race_id", "horse_no", "observed_at"],
+        exclude_from_update=["created_at"],
+        has_updated_at=True,
+        has_created_at=True,
+    ),
 }
 
 
@@ -374,6 +381,10 @@ class UpsertHelper:
         """UPSERT short comment data."""
         return self.upsert_rows("short_comments", comments)
 
+    def upsert_odds_snapshots(self, snapshots: List[Dict[str, Any]]) -> int:
+        """UPSERT odds snapshot data."""
+        return self.upsert_rows("odds_snapshots", snapshots)
+
 
 # ============================================================
 # DataFrame UPSERT Functions
@@ -489,6 +500,19 @@ def upsert_feature_table_v3(
     return upsert_dataframe(
         conn, df, "feature_table_v3",
         key_columns=["race_id", "horse_id"],
+        batch_size=batch_size,
+    )
+
+
+def upsert_odds_snapshots_df(
+    conn: sqlite3.Connection,
+    df: pd.DataFrame,
+    batch_size: int = 1000,
+) -> int:
+    """UPSERT DataFrame into odds_snapshots."""
+    return upsert_dataframe(
+        conn, df, "odds_snapshots",
+        key_columns=["race_id", "horse_no", "observed_at"],
         batch_size=batch_size,
     )
 
