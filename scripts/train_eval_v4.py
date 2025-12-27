@@ -38,6 +38,20 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.features_v4 import TrainConfig, run_full_pipeline
+from src.features_v4.train_eval_v4 import (
+    load_feature_data,
+    split_time_series,
+    get_train_feature_columns,
+    train_model,
+)
+from src.features_v4.diagnostics import run_diagnostics, save_diagnostics
+
+try:
+    import lightgbm as lgb
+    HAS_LIGHTGBM = True
+except ImportError:
+    HAS_LIGHTGBM = False
+    lgb = None
 
 
 logger = logging.getLogger(__name__)
@@ -63,6 +77,15 @@ Examples:
 
   # Include market features (for ROI analysis)
   python scripts/train_eval_v4.py --db netkeiba.db --include-market
+
+  # Train with feature diagnostics
+  python scripts/train_eval_v4.py --db netkeiba.db --feature-diagnostics
+
+  # Run diagnostics on existing model (skip training)
+  python scripts/train_eval_v4.py --db netkeiba.db --diagnostics-only
+
+  # Fast diagnostics (skip permutation importance)
+  python scripts/train_eval_v4.py --db netkeiba.db --diagnostics-only --no-permutation
 """
     )
     parser.add_argument(
@@ -169,6 +192,41 @@ Examples:
         help="Disable using odds_snapshots for popularity (use race_results instead)",
     )
 
+    # Feature Diagnostics options
+    parser.add_argument(
+        "--feature-diagnostics",
+        action="store_true",
+        help="Run feature diagnostics (LightGBM importance, permutation importance, segment performance)",
+    )
+    parser.add_argument(
+        "--perm-top-n",
+        type=int,
+        default=50,
+        help="Number of top features to evaluate for permutation importance (default: 50)",
+    )
+    parser.add_argument(
+        "--perm-n-repeats",
+        type=int,
+        default=3,
+        help="Number of repeats for permutation importance (default: 3)",
+    )
+    parser.add_argument(
+        "--no-permutation",
+        action="store_true",
+        help="Skip permutation importance (faster, only LightGBM importance)",
+    )
+    parser.add_argument(
+        "--diagnostics-only",
+        action="store_true",
+        help="Only run diagnostics on existing model (skip training)",
+    )
+    parser.add_argument(
+        "--model-path",
+        type=str,
+        default=None,
+        help="Path to existing model file for --diagnostics-only mode",
+    )
+
     args = parser.parse_args()
 
     # Setup logging
@@ -194,6 +252,14 @@ Examples:
     logger.info(f"ROI sweep: {args.roi_sweep}")
     logger.info(f"Decision cutoff: {args.decision_cutoff}")
     logger.info(f"Use snapshots: {not args.no_snapshots}")
+    logger.info(f"Feature diagnostics: {args.feature_diagnostics}")
+    if args.feature_diagnostics:
+        logger.info(f"  Permutation: {not args.no_permutation}")
+        logger.info(f"  Perm top-n: {args.perm_top_n}")
+        logger.info(f"  Perm repeats: {args.perm_n_repeats}")
+    if args.diagnostics_only:
+        logger.info(f"Diagnostics only mode: {args.diagnostics_only}")
+        logger.info(f"Model path: {args.model_path}")
 
     # Create output directory
     output_dir = os.path.abspath(args.output)
@@ -220,6 +286,60 @@ Examples:
 
     conn = sqlite3.connect(db_path)
     try:
+        # Check for diagnostics-only mode
+        if args.diagnostics_only:
+            if not HAS_LIGHTGBM:
+                logger.error("lightgbm is not installed, cannot run diagnostics")
+                sys.exit(1)
+
+            if not args.model_path:
+                # Try default path
+                default_model_path = os.path.join(output_dir, f"lgbm_{args.target}_v4.txt")
+                if os.path.exists(default_model_path):
+                    args.model_path = default_model_path
+                else:
+                    logger.error("--model-path required for --diagnostics-only mode")
+                    sys.exit(1)
+
+            logger.info("Loading existing model: %s", args.model_path)
+            model = lgb.Booster(model_file=args.model_path)
+
+            # Load feature columns
+            cols_path = os.path.join(output_dir, f"feature_columns_{args.target}_v4.json")
+            with open(cols_path, "r") as f:
+                feature_cols = json.load(f)
+
+            # Load data
+            logger.info("Loading feature data...")
+            df = load_feature_data(
+                conn,
+                include_pedigree=not args.no_pedigree,
+                include_market=args.include_market,
+            )
+
+            # Split data
+            train_df, val_df, test_df = split_time_series(
+                df, args.train_end, args.val_end, args.split_mode
+            )
+
+            # Run diagnostics
+            logger.info("")
+            logger.info("Running Feature Diagnostics (diagnostics-only mode)...")
+            diag_report = run_diagnostics(
+                model=model,
+                df=test_df,
+                feature_cols=feature_cols,
+                target_col=args.target,
+                dataset_name="test",
+                compute_perm=not args.no_permutation,
+                perm_top_n=args.perm_top_n,
+                perm_n_repeats=args.perm_n_repeats,
+            )
+            save_diagnostics(diag_report, output_dir, args.target)
+            logger.info("Diagnostics complete!")
+            return
+
+        # Normal training flow
         results = run_full_pipeline(
             conn=conn,
             config=config,
@@ -257,6 +377,53 @@ Examples:
 
         logger.info("=" * 70)
         print(json.dumps(results, indent=2, ensure_ascii=False))
+
+        # Run Feature Diagnostics if requested
+        if args.feature_diagnostics:
+            if not HAS_LIGHTGBM:
+                logger.error("lightgbm is not installed, cannot run diagnostics")
+            else:
+                logger.info("")
+                logger.info("=" * 70)
+                logger.info("Running Feature Diagnostics...")
+                logger.info("=" * 70)
+
+                # Load model from saved file
+                model_path = os.path.join(output_dir, f"lgbm_{args.target}_v4.txt")
+                if os.path.exists(model_path):
+                    model = lgb.Booster(model_file=model_path)
+
+                    # Load feature columns
+                    cols_path = os.path.join(output_dir, f"feature_columns_{args.target}_v4.json")
+                    with open(cols_path, "r") as f:
+                        feature_cols = json.load(f)
+
+                    # Load data
+                    df = load_feature_data(
+                        conn,
+                        include_pedigree=not args.no_pedigree,
+                        include_market=args.include_market,
+                    )
+
+                    # Split data
+                    train_df, val_df, test_df = split_time_series(
+                        df, args.train_end, args.val_end, args.split_mode
+                    )
+
+                    # Run diagnostics on test data
+                    diag_report = run_diagnostics(
+                        model=model,
+                        df=test_df,
+                        feature_cols=feature_cols,
+                        target_col=args.target,
+                        dataset_name="test",
+                        compute_perm=not args.no_permutation,
+                        perm_top_n=args.perm_top_n,
+                        perm_n_repeats=args.perm_n_repeats,
+                    )
+                    save_diagnostics(diag_report, output_dir, args.target)
+                else:
+                    logger.error("Model file not found: %s", model_path)
 
     finally:
         conn.close()

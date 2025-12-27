@@ -190,15 +190,55 @@ python scripts/train_eval_v4.py --db netkeiba.db
   - test  = 2024
 - `--split-mode year_based|date_based` に対応（実装側の引数名に追従）
 
-### 3.8 前日締め運用（Pre-day Cutoff Operation）
+### 3.8 Feature Diagnostics（特徴量診断）
+
+特徴量が「効いているか/効いていないか」を診断するための機能です。
+
+```bash
+# 学習後に診断を実行
+python scripts/train_eval_v4.py --db netkeiba.db --feature-diagnostics
+
+# 既存モデルに対して診断のみ実行（学習をスキップ）
+python scripts/train_eval_v4.py --db netkeiba.db --diagnostics-only
+
+# 高速モード（Permutation Importance をスキップ）
+python scripts/train_eval_v4.py --db netkeiba.db --diagnostics-only --no-permutation
+```
+
+#### 出力内容
+
+1. **LightGBM 標準重要度**（gain / split）
+   - `feature_importance_target_win_test_v4.csv`
+
+2. **Permutation Importance**（複数メトリクス）
+   - AUC, LogLoss, Top1/3/5 Hit Rate, MRR
+   - `permutation_importance_target_win_test_v4.csv`
+
+3. **Feature Group Importance**（グループ別集計）
+   - horse_form, jockey_trainer, pedigree, base_race 等
+   - `group_importance_target_win_test_v4.csv`
+
+4. **Segment Performance**（セグメント別パフォーマンス）
+   - surface_id（芝/ダート）、distance_cat（距離カテゴリ）、track_condition_id（馬場状態）別
+   - `segment_performance_target_win_test_v4.csv`
+
+5. **診断レポート**（テキスト & JSON）
+   - `diagnostics_report_target_win_test_v4.txt`
+   - `diagnostics_summary_target_win_test_v4.json`
+
+---
+
+### 3.9 前日締め運用（Pre-day Cutoff Operation）【実験的】
 
 実運用では、レース前日の時点でオッズ・人気を取得して予測を確定させたい場合があります。
 この「前日締め運用」をサポートするため、`odds_snapshots` テーブルとスナップショットベースの評価機能を実装しています。
 
+> **注**: この機能は実験的です。まずは Feature Diagnostics でベースモデルの特徴量選抜を優先してください。
+
 #### オッズスナップショットの取得
 
 ```bash
-# 単一レースのオッズ取得
+# 単一レースのオッズ取得（netkeiba API 経由）
 python scripts/fetch_odds_snapshots.py --race-id 202406050811
 
 # 日付指定で全レースのオッズ取得
@@ -305,29 +345,33 @@ python scripts/fetch_masters.py --db netkeiba.db --report
 - ✅ Road 1：DB安全化（idempotent migrations + UPSERT）
 - ✅ Road 2 / 2.5：マスタ（horses/jockeys/trainers）+ 5代血統
 - ✅ Road 3：FeaturePack v1（feature_table_v4）+ 学習/評価/ROI + 品質レポート
+- ✅ Road 3.5：Feature Diagnostics（特徴量診断機能）
+  - LightGBM gain/split 重要度
+  - Permutation Importance（AUC, LogLoss, Top1/3/5, MRR）
+  - Feature Group Importance
+  - Segment Performance（芝/ダート、距離、馬場等）
+- 🔄 現在の優先事項：
+  - Feature Diagnostics を使った特徴量選抜・改善
+  - ベースモデルの精度向上（market特徴量は使わない方針）
 - ⏭ 次：
-  - ROI 改善ループ（特徴量選抜 / calibration / 閾値戦略 / 予測の説明可能性）
-  - UI/シナリオ補正の精度改善（人間の “想定” をより再現可能に）
+  - ROI 改善ループ（calibration / 閾値戦略 / 予測の説明可能性）
+  - UI/シナリオ補正の精度改善（人間の "想定" をより再現可能に）
+  - 前日締め運用の本格化（odds_snapshots の活用）
 
 ## Chat Handoff（新チャット貼り付け用の現在地）
 
-- 今日の日付：2025-12-24（JST）
-- 前提：Road1〜Road3（feature_table_v4 / v4パイプライン / 品質レポート）までpull済み
+- 今日の日付：2025-12-27（JST）
+- 前提：Road1〜Road3.5（Feature Diagnostics）までpull済み
 - 環境：
   - sqlite3 コマンドは未導入（Pythonスクリプトで運用）
   - dev依存は導入済み：`pip install -r requirements-dev.txt`
 - DB：`netkeiba.db` をそのまま使用（DBコピーはしない方針）
-- スクレイピング進捗：
-  - horse_pedigree：100% 完了（26,128/26,128）
-  - jockey / trainer：全件取得を進行中（`--run-until-empty`）
-  - horses：全件取得を進行中（`--run-until-empty`）
-- いま回している/直近で回すコマンド：
-  - 進捗確認：`python scripts/fetch_masters.py --db netkeiba.db --report`
-  - jockey：`python scripts/fetch_masters.py --db netkeiba.db --entity jockey --run-until-empty --sleep-min 3.0 --sleep-max 5.0`
-  - trainer：`python scripts/fetch_masters.py --db netkeiba.db --entity trainer --run-until-empty --sleep-min 3.0 --sleep-max 5.0`
-  - horse：`python scripts/fetch_masters.py --db netkeiba.db --entity horse --run-until-empty --sleep-min 3.0 --sleep-max 5.0`
-- 次にやること（最短）：
-  1) masters を取り切る（reportで Pending=0 を目指す）
-  2) 品質レポート：`python scripts/report_quality_v4.py --db netkeiba.db`
-  3) v4特徴量生成：`python scripts/build_feature_table_v4.py --db netkeiba.db`
-  4) 学習/評価/ROI：`python scripts/train_eval_v4.py --db netkeiba.db`
+- 最新の実装：
+  - Feature Diagnostics：`--feature-diagnostics` / `--diagnostics-only` フラグ
+  - odds_snapshots：netkeiba API 経由でオッズ取得（8馬制限バグ修正済み）
+  - Snapshot-based market features：`--include-snapshots` / `--decision-cutoff` オプション
+- 次にやること（推奨順）：
+  1) Feature Diagnostics 実行：`python scripts/train_eval_v4.py --db netkeiba.db --diagnostics-only`
+  2) 診断結果を確認して、不要な特徴量を特定
+  3) 特徴量選抜後に再学習・評価
+  4) 閾値戦略の最適化（`--roi-sweep`）

@@ -90,6 +90,23 @@ from .train_eval_v4 import (
     DEFAULT_GAP_THRESHOLDS,
 )
 
+from .diagnostics import (
+    DiagnosticsReport,
+    FeatureImportanceResult,
+    PermutationImportanceResult,
+    FeatureGroupImportanceResult,
+    SegmentPerformanceResult,
+    compute_lgbm_importance,
+    compute_permutation_importance,
+    compute_group_importance,
+    compute_segment_performance,
+    run_diagnostics,
+    save_diagnostics,
+    get_feature_group,
+    FEATURE_GROUP_PREFIXES,
+    SEGMENT_DEFINITIONS,
+)
+
 __all__ = [
     # DDL
     "CREATE_FEATURE_TABLE_V4",
@@ -141,4 +158,19 @@ __all__ = [
     "save_roi_sweep_flat_artifacts",
     "DEFAULT_PROB_THRESHOLDS",
     "DEFAULT_GAP_THRESHOLDS",
+    # Diagnostics
+    "DiagnosticsReport",
+    "FeatureImportanceResult",
+    "PermutationImportanceResult",
+    "FeatureGroupImportanceResult",
+    "SegmentPerformanceResult",
+    "compute_lgbm_importance",
+    "compute_permutation_importance",
+    "compute_group_importance",
+    "compute_segment_performance",
+    "run_diagnostics",
+    "save_diagnostics",
+    "get_feature_group",
+    "FEATURE_GROUP_PREFIXES",
+    "SEGMENT_DEFINITIONS",
 ]
