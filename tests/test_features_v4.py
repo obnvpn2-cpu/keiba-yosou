@@ -1182,6 +1182,355 @@ class TestROIEvaluation:
 
 
 # =============================================================================
+# Selective Betting Tests
+# =============================================================================
+
+class TestSelectiveBetting:
+    """選択的ベッティング戦略のテスト (Prob/Gap Threshold)"""
+
+    @pytest.fixture
+    def selective_test_df(self):
+        """選択的ベッティング用テストデータ"""
+        import pandas as pd
+
+        # 4レース分のデータ
+        # Race R1: 4頭 (A, B, C, D) - Top1確率: 0.25, gap: 0.10
+        # Race R2: 4頭 (E, F, G, H) - Top1確率: 0.40, gap: 0.25
+        # Race R3: 4頭 (I, J, K, L) - Top1確率: 0.15, gap: 0.02
+        # Race R4: 4頭 (M, N, O, P) - Top1確率: 0.30, gap: 0.05
+        return pd.DataFrame({
+            "race_id": ["R1"] * 4 + ["R2"] * 4 + ["R3"] * 4 + ["R4"] * 4,
+            "horse_id": list("ABCDEFGHIJKLMNOP"),
+            "feat1": [1, 2, 3, 4] * 4,  # dummy features
+            "feat2": [0.5, 0.3, 0.2, 0.1] * 4,
+        })
+
+    @pytest.fixture
+    def selective_mock_model(self):
+        """確率が閾値テスト用になるモックモデル"""
+        class MockModel:
+            def __init__(self, predictions):
+                self.predictions = predictions
+                self.best_iteration = 100
+
+            def predict(self, X, num_iteration=None):
+                return self.predictions[:len(X)]
+
+        # R1: Top1=0.25, Top2=0.15, Gap=0.10
+        # R2: Top1=0.40, Top2=0.15, Gap=0.25
+        # R3: Top1=0.15, Top2=0.13, Gap=0.02
+        # R4: Top1=0.30, Top2=0.25, Gap=0.05
+        predictions = [
+            0.25, 0.15, 0.05, 0.02,  # R1
+            0.40, 0.15, 0.10, 0.05,  # R2
+            0.15, 0.13, 0.08, 0.04,  # R3
+            0.30, 0.25, 0.12, 0.08,  # R4
+        ]
+        return MockModel(predictions)
+
+    @pytest.fixture
+    def selective_payouts_df(self):
+        """選択的ベッティング用払戻データ"""
+        import pandas as pd
+
+        return pd.DataFrame({
+            "race_id": ["R1", "R1", "R2", "R2", "R3", "R3", "R4", "R4"],
+            "bet_type": ["単勝", "複勝", "単勝", "複勝", "単勝", "複勝", "単勝", "複勝"],
+            "combination": ["1", "1", "5", "5", "9", "9", "13", "13"],
+            "payout": [500, 120, 300, 110, 800, 200, 400, 130],
+        })
+
+    @pytest.fixture
+    def selective_race_results_df(self):
+        """選択的ベッティング用レース結果データ"""
+        import pandas as pd
+
+        # R2: E wins (finish_order=1), but F is popularity=1
+        # This tests the case where model wins but pop loses
+        return pd.DataFrame({
+            "race_id": ["R1"] * 4 + ["R2"] * 4 + ["R3"] * 4 + ["R4"] * 4,
+            "horse_id": list("ABCDEFGHIJKLMNOP"),
+            "horse_no": list(range(1, 17)),
+            "horse_no_str": [str(i) for i in range(1, 17)],
+            "finish_order": [1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4],
+            # R1: pop=1 is B (2nd place)
+            # R2: pop=1 is F (2nd place) - Model predicts E (1st), Pop picks F (2nd)
+            # R3: pop=1 is J (2nd place)
+            # R4: pop=1 is N (2nd place)
+            "popularity": [2, 1, 3, 4, 2, 1, 3, 4, 3, 1, 2, 4, 2, 1, 3, 4],
+        })
+
+    def test_prob_threshold_bets_filters_correctly(self, selective_test_df, selective_mock_model):
+        """確率閾値でレースがフィルタされることをテスト"""
+        from src.features_v4.train_eval_v4 import generate_model_top1_prob_threshold_bets
+
+        # 閾値 0.20: R1(0.25), R2(0.40), R4(0.30) が対象 (R3は0.15で除外)
+        bets_df, pred_df = generate_model_top1_prob_threshold_bets(
+            selective_test_df,
+            selective_mock_model,
+            ["feat1", "feat2"],
+            prob_threshold=0.20,
+        )
+
+        assert len(bets_df) == 3  # R1, R2, R4
+        assert set(bets_df["race_id"]) == {"R1", "R2", "R4"}
+        assert "R3" not in set(bets_df["race_id"])
+
+    def test_prob_threshold_high_value_filters_more(self, selective_test_df, selective_mock_model):
+        """高い確率閾値でより多くのレースがフィルタされる"""
+        from src.features_v4.train_eval_v4 import generate_model_top1_prob_threshold_bets
+
+        # 閾値 0.35: R2(0.40) のみ対象
+        bets_df, _ = generate_model_top1_prob_threshold_bets(
+            selective_test_df,
+            selective_mock_model,
+            ["feat1", "feat2"],
+            prob_threshold=0.35,
+        )
+
+        assert len(bets_df) == 1
+        assert set(bets_df["race_id"]) == {"R2"}
+
+    def test_gap_threshold_bets_filters_correctly(self, selective_test_df, selective_mock_model):
+        """ギャップ閾値でレースがフィルタされることをテスト"""
+        from src.features_v4.train_eval_v4 import generate_model_top1_gap_threshold_bets
+
+        # 閾値 0.04: R1(0.10), R2(0.25), R4(0.05) が対象 (R3は0.02で除外)
+        # Note: R4 gap = 0.05, which is >= 0.04
+        bets_df, pred_df = generate_model_top1_gap_threshold_bets(
+            selective_test_df,
+            selective_mock_model,
+            ["feat1", "feat2"],
+            gap_threshold=0.04,
+        )
+
+        assert len(bets_df) == 3  # R1, R2, R4
+        assert set(bets_df["race_id"]) == {"R1", "R2", "R4"}
+        assert "R3" not in set(bets_df["race_id"])
+
+    def test_gap_threshold_high_value_filters_more(self, selective_test_df, selective_mock_model):
+        """高いギャップ閾値でより多くのレースがフィルタされる"""
+        from src.features_v4.train_eval_v4 import generate_model_top1_gap_threshold_bets
+
+        # 閾値 0.15: R2(0.25) のみ対象
+        bets_df, _ = generate_model_top1_gap_threshold_bets(
+            selective_test_df,
+            selective_mock_model,
+            ["feat1", "feat2"],
+            gap_threshold=0.15,
+        )
+
+        assert len(bets_df) == 1
+        assert set(bets_df["race_id"]) == {"R2"}
+
+    def test_selective_bet_result_coverage(
+        self,
+        selective_test_df,
+        selective_mock_model,
+        selective_payouts_df,
+        selective_race_results_df,
+    ):
+        """SelectiveBetResult の coverage 計算が正しいことをテスト"""
+        from src.features_v4.train_eval_v4 import (
+            generate_model_top1_prob_threshold_bets,
+            evaluate_selective_bet,
+        )
+
+        # 閾値 0.20: 3レース/4レース = 75%
+        bets_df, _ = generate_model_top1_prob_threshold_bets(
+            selective_test_df,
+            selective_mock_model,
+            ["feat1", "feat2"],
+            prob_threshold=0.20,
+        )
+        race_ids_subset = bets_df["race_id"].unique().tolist()
+
+        result = evaluate_selective_bet(
+            bets_df,
+            race_ids_subset,
+            selective_payouts_df,
+            selective_race_results_df,
+            bet_type="単勝",
+            threshold_type="prob",
+            threshold_value=0.20,
+            n_total_races=4,
+            bet_amount=100.0,
+        )
+
+        assert result.n_total_races == 4
+        assert result.n_races_bet == 3
+        assert result.coverage == pytest.approx(0.75)
+
+    def test_selective_bet_result_subset_comparison(
+        self,
+        selective_test_df,
+        selective_mock_model,
+        selective_payouts_df,
+        selective_race_results_df,
+    ):
+        """subset comparison で同じレース集合を使っていることをテスト"""
+        from src.features_v4.train_eval_v4 import (
+            generate_model_top1_prob_threshold_bets,
+            evaluate_selective_bet,
+        )
+
+        # 閾値 0.35: R2 のみ
+        bets_df, _ = generate_model_top1_prob_threshold_bets(
+            selective_test_df,
+            selective_mock_model,
+            ["feat1", "feat2"],
+            prob_threshold=0.35,
+        )
+        race_ids_subset = bets_df["race_id"].unique().tolist()
+
+        result = evaluate_selective_bet(
+            bets_df,
+            race_ids_subset,
+            selective_payouts_df,
+            selective_race_results_df,
+            bet_type="単勝",
+            threshold_type="prob",
+            threshold_value=0.35,
+            n_total_races=4,
+            bet_amount=100.0,
+        )
+
+        # R2 のみ賭ける
+        assert result.n_races_bet == 1
+        assert result.coverage == pytest.approx(0.25)
+
+        # Model: R2 で A (horse_id E) に賭ける (finish_order=1なので当たり、払戻300円)
+        # Model の予測1位 = horse E (pred_proba=0.40)
+        # finish_order=1 なので当たり
+        assert result.model_stake_total == 100.0
+        assert result.model_return_total == 300.0  # 300 / 100 * 100 = 300
+        assert result.model_roi == pytest.approx(3.0)  # 300 / 100 = 3.0
+        assert result.model_hit_rate == 1.0
+        assert result.model_n_hits == 1
+
+        # Pop: R2 の popularity=1 は F (horse_id F) だが、finish_order=2 なので外れ
+        # (race_results_df で R2 の popularity=1 は horse_id F = finish_order=2)
+        assert result.pop_stake_total == 100.0
+        assert result.pop_return_total == 0.0
+        assert result.pop_roi == 0.0
+        assert result.pop_hit_rate == 0.0
+        assert result.pop_n_hits == 0
+
+        # 差分
+        assert result.roi_diff == pytest.approx(3.0)  # 3.0 - 0.0
+
+    def test_selective_bet_empty_result(
+        self,
+        selective_test_df,
+        selective_mock_model,
+        selective_payouts_df,
+        selective_race_results_df,
+    ):
+        """閾値が高すぎて0レースになった場合"""
+        from src.features_v4.train_eval_v4 import (
+            generate_model_top1_prob_threshold_bets,
+            evaluate_selective_bet,
+        )
+
+        # 閾値 0.90: 該当レースなし
+        bets_df, _ = generate_model_top1_prob_threshold_bets(
+            selective_test_df,
+            selective_mock_model,
+            ["feat1", "feat2"],
+            prob_threshold=0.90,
+        )
+        race_ids_subset = bets_df["race_id"].unique().tolist()
+
+        result = evaluate_selective_bet(
+            bets_df,
+            race_ids_subset,
+            selective_payouts_df,
+            selective_race_results_df,
+            bet_type="単勝",
+            threshold_type="prob",
+            threshold_value=0.90,
+            n_total_races=4,
+            bet_amount=100.0,
+        )
+
+        assert result.n_races_bet == 0
+        assert result.coverage == 0.0
+        assert result.model_roi == 0.0
+        assert result.pop_roi == 0.0
+
+    def test_pred_df_contains_gap_info(self, selective_test_df, selective_mock_model):
+        """pred_df にギャップ情報が含まれていることをテスト"""
+        from src.features_v4.train_eval_v4 import generate_model_top1_prob_threshold_bets
+
+        _, pred_df = generate_model_top1_prob_threshold_bets(
+            selective_test_df,
+            selective_mock_model,
+            ["feat1", "feat2"],
+            prob_threshold=0.0,  # すべてのレース
+        )
+
+        # 必要なカラムが含まれている
+        assert "pred_proba" in pred_df.columns
+        assert "pred_rank" in pred_df.columns
+        assert "top1_proba" in pred_df.columns
+        assert "top2_proba" in pred_df.columns
+        assert "gap" in pred_df.columns
+
+        # R1 のギャップを確認 (0.25 - 0.15 = 0.10)
+        r1_top1 = pred_df[(pred_df["race_id"] == "R1") & (pred_df["pred_rank"] == 1)].iloc[0]
+        assert r1_top1["top1_proba"] == pytest.approx(0.25)
+        assert r1_top1["top2_proba"] == pytest.approx(0.15)
+        assert r1_top1["gap"] == pytest.approx(0.10)
+
+
+class TestROISweepResult:
+    """ROISweepResult のテスト"""
+
+    def test_roi_sweep_result_structure(self):
+        """ROISweepResult の構造テスト"""
+        from src.features_v4.train_eval_v4 import ROISweepResult, SelectiveBetResult
+
+        # SelectiveBetResult を作成
+        sbr = SelectiveBetResult(
+            threshold_type="prob",
+            threshold_value=0.10,
+            bet_type="単勝",
+            n_total_races=100,
+            n_races_bet=50,
+            coverage=0.5,
+            model_stake_total=5000.0,
+            model_return_total=6000.0,
+            model_roi=1.2,
+            model_hit_rate=0.3,
+            model_n_hits=15,
+            model_avg_payout=400.0,
+            pop_stake_total=5000.0,
+            pop_return_total=4000.0,
+            pop_roi=0.8,
+            pop_hit_rate=0.25,
+            pop_n_hits=12,
+            pop_avg_payout=333.0,
+            roi_diff=0.4,
+            hit_diff=0.05,
+        )
+
+        # ROISweepResult を作成
+        rsr = ROISweepResult(
+            dataset="test",
+            sweep_type="prob",
+            bet_type="単勝",
+            results=[sbr],
+        )
+
+        assert rsr.dataset == "test"
+        assert rsr.sweep_type == "prob"
+        assert rsr.bet_type == "単勝"
+        assert len(rsr.results) == 1
+        assert rsr.results[0].coverage == 0.5
+        assert rsr.results[0].roi_diff == 0.4
+
+
+# =============================================================================
 # Run Tests
 # =============================================================================
 

@@ -164,6 +164,57 @@ class ROIEvalResult:
     strategies: List[ROIStrategyResult]
 
 
+@dataclass
+class SelectiveBetResult:
+    """
+    選択的ベッティング戦略の結果
+
+    閾値（確率 or ギャップ）でレースをフィルタリングした後の評価結果。
+    同じレース集合での Model vs Popularity 比較を含む。
+    """
+    threshold_type: str  # "prob" or "gap"
+    threshold_value: float  # 閾値の値
+    bet_type: str  # "単勝" or "複勝"
+
+    # 基本統計
+    n_total_races: int  # 全レース数
+    n_races_bet: int  # 閾値を満たしたレース数 (= 賭けたレース数)
+    coverage: float  # n_races_bet / n_total_races
+
+    # Model 戦略結果
+    model_stake_total: float
+    model_return_total: float
+    model_roi: float
+    model_hit_rate: float
+    model_n_hits: int
+    model_avg_payout: float
+
+    # 同一レース集合での Popularity 戦略結果 (重要: subset comparison)
+    pop_stake_total: float
+    pop_return_total: float
+    pop_roi: float
+    pop_hit_rate: float
+    pop_n_hits: int
+    pop_avg_payout: float
+
+    # Model vs Popularity の差分
+    roi_diff: float  # model_roi - pop_roi
+    hit_diff: float  # model_hit_rate - pop_hit_rate
+
+
+@dataclass
+class ROISweepResult:
+    """
+    ROI スイープの全体結果
+
+    複数の閾値での選択的ベッティング結果をまとめる。
+    """
+    dataset: str  # "val" or "test"
+    sweep_type: str  # "prob" or "gap"
+    bet_type: str  # "単勝" or "複勝"
+    results: List[SelectiveBetResult]
+
+
 # =============================================================================
 # Data Loading
 # =============================================================================
@@ -1182,6 +1233,132 @@ def generate_random_top1_bets(
     return bets_df
 
 
+def generate_model_top1_prob_threshold_bets(
+    df: pd.DataFrame,
+    model: Any,
+    feature_cols: List[str],
+    prob_threshold: float,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    ModelTop1_ProbThreshold 戦略: 予測確率が閾値以上のレースのみ賭ける
+
+    各レースで予測1位の馬の確率が prob_threshold 以上の場合のみ賭ける。
+    これにより「自信のあるレース」のみに絞り込む。
+
+    Args:
+        df: 予測対象データ (race_id, horse_id, features)
+        model: 学習済みモデル
+        feature_cols: 特徴量カラム
+        prob_threshold: 確率閾値 (例: 0.10 = 10%以上)
+
+    Returns:
+        (bets_df, pred_df)
+        - bets_df: 賭け対象 DataFrame (race_id, horse_id)
+        - pred_df: 予測詳細 DataFrame (race_id, horse_id, pred_proba, pred_rank, top1_proba, top2_proba, gap)
+    """
+    if len(df) == 0:
+        empty_bets = pd.DataFrame(columns=["race_id", "horse_id"])
+        empty_pred = pd.DataFrame(columns=["race_id", "horse_id", "pred_proba", "pred_rank",
+                                           "top1_proba", "top2_proba", "gap"])
+        return empty_bets, empty_pred
+
+    X = df[feature_cols].fillna(-999)
+    pred_proba = model.predict(X, num_iteration=model.best_iteration)
+
+    work_df = df[["race_id", "horse_id"]].copy()
+    work_df["pred_proba"] = pred_proba
+
+    # レースごとにランク付けと Top1/Top2 確率計算
+    pred_rows = []
+    for race_id in work_df["race_id"].unique():
+        race_df = work_df[work_df["race_id"] == race_id].copy()
+        race_df = race_df.sort_values("pred_proba", ascending=False)
+        race_df["pred_rank"] = range(1, len(race_df) + 1)
+
+        top1_proba = race_df["pred_proba"].iloc[0] if len(race_df) >= 1 else 0.0
+        top2_proba = race_df["pred_proba"].iloc[1] if len(race_df) >= 2 else 0.0
+        gap = top1_proba - top2_proba
+
+        race_df["top1_proba"] = top1_proba
+        race_df["top2_proba"] = top2_proba
+        race_df["gap"] = gap
+        pred_rows.append(race_df)
+
+    pred_df = pd.concat(pred_rows, ignore_index=True)
+
+    # 各レースのTop1馬を抽出
+    top1_df = pred_df[pred_df["pred_rank"] == 1].copy()
+
+    # 確率閾値でフィルタ
+    filtered_df = top1_df[top1_df["top1_proba"] >= prob_threshold]
+    bets_df = filtered_df[["race_id", "horse_id"]].reset_index(drop=True)
+
+    return bets_df, pred_df
+
+
+def generate_model_top1_gap_threshold_bets(
+    df: pd.DataFrame,
+    model: Any,
+    feature_cols: List[str],
+    gap_threshold: float,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    ModelTop1_GapThreshold 戦略: Top1とTop2の確率差が閾値以上のレースのみ賭ける
+
+    各レースで (p1 - p2) >= gap_threshold の場合のみ賭ける。
+    これにより「明確に1位が優位なレース」のみに絞り込む。
+
+    Args:
+        df: 予測対象データ (race_id, horse_id, features)
+        model: 学習済みモデル
+        feature_cols: 特徴量カラム
+        gap_threshold: ギャップ閾値 (例: 0.02 = 2%差以上)
+
+    Returns:
+        (bets_df, pred_df)
+        - bets_df: 賭け対象 DataFrame (race_id, horse_id)
+        - pred_df: 予測詳細 DataFrame (フィルタ前の全予測)
+    """
+    if len(df) == 0:
+        empty_bets = pd.DataFrame(columns=["race_id", "horse_id"])
+        empty_pred = pd.DataFrame(columns=["race_id", "horse_id", "pred_proba", "pred_rank",
+                                           "top1_proba", "top2_proba", "gap"])
+        return empty_bets, empty_pred
+
+    X = df[feature_cols].fillna(-999)
+    pred_proba = model.predict(X, num_iteration=model.best_iteration)
+
+    work_df = df[["race_id", "horse_id"]].copy()
+    work_df["pred_proba"] = pred_proba
+
+    # レースごとにランク付けと Top1/Top2 確率計算
+    pred_rows = []
+    for race_id in work_df["race_id"].unique():
+        race_df = work_df[work_df["race_id"] == race_id].copy()
+        race_df = race_df.sort_values("pred_proba", ascending=False)
+        race_df["pred_rank"] = range(1, len(race_df) + 1)
+
+        top1_proba = race_df["pred_proba"].iloc[0] if len(race_df) >= 1 else 0.0
+        top2_proba = race_df["pred_proba"].iloc[1] if len(race_df) >= 2 else 0.0
+        gap = top1_proba - top2_proba
+
+        race_df["top1_proba"] = top1_proba
+        race_df["top2_proba"] = top2_proba
+        race_df["gap"] = gap
+        pred_rows.append(race_df)
+
+    pred_df = pd.concat(pred_rows, ignore_index=True)
+
+    # 各レースのTop1馬を抽出
+    top1_df = pred_df[pred_df["pred_rank"] == 1].copy()
+
+    # ギャップ閾値でフィルタ
+    filtered_df = top1_df[top1_df["gap"] >= gap_threshold]
+    bets_df = filtered_df[["race_id", "horse_id"]].reset_index(drop=True)
+
+    return bets_df, pred_df
+
+
 def evaluate_roi_all_strategies(
     conn: sqlite3.Connection,
     df: pd.DataFrame,
@@ -1279,6 +1456,305 @@ def evaluate_roi_all_strategies(
 
 
 # =============================================================================
+# Selective Betting ROI Sweep
+# =============================================================================
+
+# Default thresholds for sweeping
+DEFAULT_PROB_THRESHOLDS = [0.06, 0.07, 0.08, 0.09, 0.10, 0.12, 0.15, 0.18, 0.20]
+DEFAULT_GAP_THRESHOLDS = [0.005, 0.01, 0.015, 0.02, 0.03, 0.05, 0.08]
+
+
+def evaluate_selective_bet(
+    model_bets_df: pd.DataFrame,
+    race_ids_subset: List[str],
+    payouts_df: pd.DataFrame,
+    race_results_df: pd.DataFrame,
+    bet_type: str,
+    threshold_type: str,
+    threshold_value: float,
+    n_total_races: int,
+    bet_amount: float = 100.0,
+) -> SelectiveBetResult:
+    """
+    選択的ベッティングの評価（単一閾値）
+
+    モデルの賭け対象レース集合 (race_ids_subset) に対して:
+    1. Model戦略のROIを計算
+    2. 同じレース集合でPopularityTop1のROIを計算
+    3. 両者を比較
+
+    Args:
+        model_bets_df: モデルの賭け対象 (race_id, horse_id) - 閾値フィルタ済み
+        race_ids_subset: 賭け対象レースID集合
+        payouts_df: 払戻データ
+        race_results_df: レース結果データ
+        bet_type: "単勝" or "複勝"
+        threshold_type: "prob" or "gap"
+        threshold_value: 閾値の値
+        n_total_races: 全レース数 (coverage計算用)
+        bet_amount: 1賭け当たりの金額
+
+    Returns:
+        SelectiveBetResult
+    """
+    n_races_bet = len(race_ids_subset)
+    coverage = n_races_bet / n_total_races if n_total_races > 0 else 0.0
+
+    # 空の場合
+    if n_races_bet == 0:
+        return SelectiveBetResult(
+            threshold_type=threshold_type,
+            threshold_value=threshold_value,
+            bet_type=bet_type,
+            n_total_races=n_total_races,
+            n_races_bet=0,
+            coverage=0.0,
+            model_stake_total=0.0,
+            model_return_total=0.0,
+            model_roi=0.0,
+            model_hit_rate=0.0,
+            model_n_hits=0,
+            model_avg_payout=0.0,
+            pop_stake_total=0.0,
+            pop_return_total=0.0,
+            pop_roi=0.0,
+            pop_hit_rate=0.0,
+            pop_n_hits=0,
+            pop_avg_payout=0.0,
+            roi_diff=0.0,
+            hit_diff=0.0,
+        )
+
+    # Model 戦略の評価
+    model_result = evaluate_roi_strategy(
+        model_bets_df, payouts_df, race_results_df,
+        bet_type, "ModelTop1_Selective", bet_amount
+    )
+
+    # 同じレース集合で PopularityTop1 を評価 (重要: subset comparison)
+    pop_bets_df = generate_popularity_top1_bets(race_results_df, race_ids_subset)
+    pop_result = evaluate_roi_strategy(
+        pop_bets_df, payouts_df, race_results_df,
+        bet_type, "PopularityTop1_Subset", bet_amount
+    )
+
+    roi_diff = model_result.roi - pop_result.roi
+    hit_diff = model_result.hit_rate - pop_result.hit_rate
+
+    return SelectiveBetResult(
+        threshold_type=threshold_type,
+        threshold_value=threshold_value,
+        bet_type=bet_type,
+        n_total_races=n_total_races,
+        n_races_bet=n_races_bet,
+        coverage=coverage,
+        model_stake_total=model_result.stake_total_yen,
+        model_return_total=model_result.return_total_yen,
+        model_roi=model_result.roi,
+        model_hit_rate=model_result.hit_rate,
+        model_n_hits=model_result.n_hits,
+        model_avg_payout=model_result.avg_payout,
+        pop_stake_total=pop_result.stake_total_yen,
+        pop_return_total=pop_result.return_total_yen,
+        pop_roi=pop_result.roi,
+        pop_hit_rate=pop_result.hit_rate,
+        pop_n_hits=pop_result.n_hits,
+        pop_avg_payout=pop_result.avg_payout,
+        roi_diff=roi_diff,
+        hit_diff=hit_diff,
+    )
+
+
+def run_roi_sweep(
+    conn: sqlite3.Connection,
+    df: pd.DataFrame,
+    model: Any,
+    feature_cols: List[str],
+    dataset_name: str,
+    prob_thresholds: Optional[List[float]] = None,
+    gap_thresholds: Optional[List[float]] = None,
+    bet_amount: float = 100.0,
+) -> Dict[str, List[ROISweepResult]]:
+    """
+    ROI スイープ実行
+
+    複数の閾値でselective bettingを評価し、coverage-ROI曲線のデータを生成する。
+
+    Args:
+        conn: SQLite 接続
+        df: 評価対象データ
+        model: 学習済みモデル
+        feature_cols: 特徴量カラム
+        dataset_name: データセット名 ("val" or "test")
+        prob_thresholds: 確率閾値リスト (None = デフォルト)
+        gap_thresholds: ギャップ閾値リスト (None = デフォルト)
+        bet_amount: 1賭け当たりの金額
+
+    Returns:
+        Dict with keys "prob" and "gap", each containing list of ROISweepResult for each bet_type
+    """
+    if prob_thresholds is None:
+        prob_thresholds = DEFAULT_PROB_THRESHOLDS
+    if gap_thresholds is None:
+        gap_thresholds = DEFAULT_GAP_THRESHOLDS
+
+    race_ids = df["race_id"].unique().tolist()
+    n_total_races = len(race_ids)
+
+    if n_total_races == 0:
+        logger.warning("[%s] No races for ROI sweep", dataset_name)
+        return {"prob": [], "gap": []}
+
+    # 払戻データと結果データをロード
+    payouts_df = load_payouts_for_races(conn, race_ids)
+    race_results_df = load_race_results_for_roi(conn, race_ids)
+
+    if len(payouts_df) == 0:
+        logger.warning("[%s] No payout data for ROI sweep", dataset_name)
+        return {"prob": [], "gap": []}
+
+    logger.info("[%s] ROI Sweep: %d total races", dataset_name.upper(), n_total_races)
+
+    bet_types = ["単勝", "複勝"]
+    all_results: Dict[str, List[ROISweepResult]] = {"prob": [], "gap": []}
+
+    # ==== Probability Threshold Sweep ====
+    for bet_type in bet_types:
+        prob_sweep_results = []
+
+        for prob_t in prob_thresholds:
+            bets_df, _ = generate_model_top1_prob_threshold_bets(
+                df, model, feature_cols, prob_t
+            )
+            race_ids_subset = bets_df["race_id"].unique().tolist()
+
+            result = evaluate_selective_bet(
+                bets_df, race_ids_subset, payouts_df, race_results_df,
+                bet_type, "prob", prob_t, n_total_races, bet_amount
+            )
+            prob_sweep_results.append(result)
+
+        all_results["prob"].append(ROISweepResult(
+            dataset=dataset_name,
+            sweep_type="prob",
+            bet_type=bet_type,
+            results=prob_sweep_results,
+        ))
+
+    # ==== Gap Threshold Sweep ====
+    for bet_type in bet_types:
+        gap_sweep_results = []
+
+        for gap_t in gap_thresholds:
+            bets_df, _ = generate_model_top1_gap_threshold_bets(
+                df, model, feature_cols, gap_t
+            )
+            race_ids_subset = bets_df["race_id"].unique().tolist()
+
+            result = evaluate_selective_bet(
+                bets_df, race_ids_subset, payouts_df, race_results_df,
+                bet_type, "gap", gap_t, n_total_races, bet_amount
+            )
+            gap_sweep_results.append(result)
+
+        all_results["gap"].append(ROISweepResult(
+            dataset=dataset_name,
+            sweep_type="gap",
+            bet_type=bet_type,
+            results=gap_sweep_results,
+        ))
+
+    # ログ出力: 表形式
+    _log_sweep_results(dataset_name, all_results)
+
+    return all_results
+
+
+def _log_sweep_results(dataset_name: str, all_results: Dict[str, List[ROISweepResult]]) -> None:
+    """スイープ結果をログ出力（表形式）"""
+
+    for sweep_type in ["prob", "gap"]:
+        sweep_results_list = all_results.get(sweep_type, [])
+        if not sweep_results_list:
+            continue
+
+        threshold_label = "Prob" if sweep_type == "prob" else "Gap"
+
+        for sweep_result in sweep_results_list:
+            bet_type = sweep_result.bet_type
+            results = sweep_result.results
+
+            logger.info("")
+            logger.info("[%s] %s Threshold Sweep - %s", dataset_name.upper(), threshold_label, bet_type)
+            logger.info("=" * 100)
+            logger.info("%-8s %7s %6s | %-8s %6s %6s %8s | %-8s %6s %6s %8s | %7s %6s",
+                        "Thresh", "Races", "Cov%",
+                        "ModelROI", "Hit%", "Hits", "AvgPay",
+                        "PopROI", "Hit%", "Hits", "AvgPay",
+                        "Δ ROI", "Δ Hit%")
+            logger.info("-" * 100)
+
+            for r in results:
+                logger.info(
+                    "%-8.3f %7d %5.1f%% | %7.1f%% %5.1f%% %6d %8.1f | %7.1f%% %5.1f%% %6d %8.1f | %+6.1f%% %+5.1f%%",
+                    r.threshold_value, r.n_races_bet, r.coverage * 100,
+                    r.model_roi * 100, r.model_hit_rate * 100, r.model_n_hits, r.model_avg_payout,
+                    r.pop_roi * 100, r.pop_hit_rate * 100, r.pop_n_hits, r.pop_avg_payout,
+                    r.roi_diff * 100, r.hit_diff * 100,
+                )
+
+            logger.info("-" * 100)
+
+            # Top 5 by ROI (Model)
+            sorted_by_roi = sorted(results, key=lambda x: x.model_roi, reverse=True)
+            top5 = sorted_by_roi[:5]
+            logger.info("Top 5 by Model ROI:")
+            for i, r in enumerate(top5, 1):
+                logger.info("  #%d: thresh=%.3f, coverage=%.1f%%, ROI=%.1f%%, Δ=%.1f%%",
+                            i, r.threshold_value, r.coverage * 100, r.model_roi * 100, r.roi_diff * 100)
+
+
+def save_roi_sweep_artifacts(
+    all_results: Dict[str, Dict[str, List[ROISweepResult]]],
+    target_col: str,
+    timestamp: str,
+    artifacts_dir: str = "artifacts",
+) -> str:
+    """
+    ROI スイープ結果をJSONファイルに保存
+
+    Args:
+        all_results: {"val": {"prob": [...], "gap": [...]}, "test": {...}}
+        target_col: ターゲット列名
+        timestamp: タイムスタンプ文字列
+        artifacts_dir: 保存先ディレクトリ
+
+    Returns:
+        保存したファイルパス
+    """
+    out_path = Path(artifacts_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+
+    filename = f"roi_sweep_{target_col}_{timestamp}.json"
+    filepath = out_path / filename
+
+    # dataclass -> dict 変換
+    json_data = {}
+    for dataset, sweep_dict in all_results.items():
+        json_data[dataset] = {}
+        for sweep_type, sweep_results_list in sweep_dict.items():
+            json_data[dataset][sweep_type] = [
+                asdict(sr) for sr in sweep_results_list
+            ]
+
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(json_data, f, ensure_ascii=False, indent=2)
+
+    logger.info("Saved ROI sweep results to %s", filepath)
+    return str(filepath)
+
+
+# =============================================================================
 # Full Pipeline
 # =============================================================================
 
@@ -1289,6 +1765,9 @@ def run_full_pipeline(
     train_end: str = "2023-12-31",
     val_end: str = "2023-12-31",
     split_mode: str = "year_based",
+    roi_sweep: bool = False,
+    roi_sweep_prob: Optional[List[float]] = None,
+    roi_sweep_gap: Optional[List[float]] = None,
 ) -> Dict[str, Any]:
     """
     完全なパイプラインを実行
@@ -1300,6 +1779,9 @@ def run_full_pipeline(
         train_end: 学習データ終了日 (date_based モード用)
         val_end: 検証データ終了日 (date_based モード用)
         split_mode: 分割モード ("year_based" or "date_based")
+        roi_sweep: ROI スイープを実行するか
+        roi_sweep_prob: 確率閾値リスト (None = デフォルト)
+        roi_sweep_gap: ギャップ閾値リスト (None = デフォルト)
 
     Returns:
         結果の辞書
@@ -1395,6 +1877,42 @@ def run_full_pipeline(
     with open(roi_path, "w", encoding="utf-8") as f:
         json.dump(roi_data, f, ensure_ascii=False, indent=2)
     logger.info("Saved ROI results to %s", roi_path)
+
+    # ROI スイープ (オプション)
+    if roi_sweep:
+        logger.info("-" * 40)
+        logger.info("ROI Sweep (Selective Betting Analysis)")
+        logger.info("-" * 40)
+
+        val_sweep = run_roi_sweep(
+            conn, val_df, model, feature_cols, "val",
+            prob_thresholds=roi_sweep_prob,
+            gap_thresholds=roi_sweep_gap,
+        )
+        test_sweep = run_roi_sweep(
+            conn, test_df, model, feature_cols, "test",
+            prob_thresholds=roi_sweep_prob,
+            gap_thresholds=roi_sweep_gap,
+        )
+
+        # スイープ結果を保存
+        sweep_all_results = {"val": val_sweep, "test": test_sweep}
+        sweep_path = save_roi_sweep_artifacts(
+            sweep_all_results, config.target_col, timestamp, str(artifacts_dir)
+        )
+
+        # 結果に追加
+        results["roi_sweep"] = {
+            "val": {
+                "prob": [asdict(sr) for sr in val_sweep.get("prob", [])],
+                "gap": [asdict(sr) for sr in val_sweep.get("gap", [])],
+            },
+            "test": {
+                "prob": [asdict(sr) for sr in test_sweep.get("prob", [])],
+                "gap": [asdict(sr) for sr in test_sweep.get("gap", [])],
+            },
+            "artifacts_path": sweep_path,
+        }
 
     logger.info("=" * 80)
     logger.info("Pipeline completed")
