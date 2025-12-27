@@ -15,44 +15,84 @@ fetch_odds_snapshots.py - Fetch and Store Pre-race Odds Snapshots
 3. 明日のレースのオッズ取得 (cron用):
    python scripts/fetch_odds_snapshots.py --tomorrow
 
+4. HTMLデバッグ保存:
+   python scripts/fetch_odds_snapshots.py --race-id 202406050811 --save-html
+
 【decision_cutoff の考え方】
 - デフォルト: 前日21:00 JST
 - オッズは observed_at (取得時刻) と共に保存
 - 評価時は observed_at が decision_cutoff 以前のスナップショットのみを使用
 
+【安全装置】
+- 取得した馬数が race_results の馬数と一致しない場合は保存しない（欠損防止）
+- リトライ最大2回（指数バックオフ）後もダメならスキップ
+
 Usage:
     python scripts/fetch_odds_snapshots.py --race-id 202406050811
     python scripts/fetch_odds_snapshots.py --date 2024-12-28 --db netkeiba.db
     python scripts/fetch_odds_snapshots.py --tomorrow
+    python scripts/fetch_odds_snapshots.py --race-id 202406050811 --save-html
 """
 
 import argparse
 import logging
 import os
+import random
 import re
 import sqlite3
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Optional
-from urllib.parse import urljoin
+from typing import Dict, List, Optional, Tuple
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.ingestion.scraper import NetkeibaClient, BASE_URL
 from src.db.upsert import UpsertHelper
-from src.db.schema_migration import run_migrations, table_exists
+from src.db.schema_migration import run_migrations
 
 try:
+    import requests
     from bs4 import BeautifulSoup
+    _DEPS_AVAILABLE = True
 except ImportError:
-    print("BeautifulSoup4 is required. Install with: pip install beautifulsoup4")
-    sys.exit(1)
+    _DEPS_AVAILABLE = False
+    requests = None
+    BeautifulSoup = None
 
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# Configuration
+# ============================================================
+
+# User-Agent rotation list (same as scraper.py)
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:120.0) Gecko/20100101 Firefox/120.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0",
+]
+
+# Retry configuration
+MAX_RETRIES = 2
+RETRY_BACKOFF_BASE = 2.0  # seconds
+
+# Sleep configuration (between requests)
+DEFAULT_SLEEP_MIN = 2.0
+DEFAULT_SLEEP_MAX = 3.5
 
 
 # ============================================================
@@ -72,16 +112,124 @@ class OddsSnapshot:
 
 
 # ============================================================
+# HTTP Client
+# ============================================================
+
+
+class OddsHttpClient:
+    """Simple HTTP client with UA rotation, sleep, and retry."""
+
+    ODDS_BASE_URL = "https://race.netkeiba.com/odds/index.html"
+
+    def __init__(
+        self,
+        sleep_min: float = DEFAULT_SLEEP_MIN,
+        sleep_max: float = DEFAULT_SLEEP_MAX,
+    ):
+        self.session = requests.Session()
+        self.session.headers.update({
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+        })
+        self.sleep_min = sleep_min
+        self.sleep_max = sleep_max
+        self._last_request_time: Optional[float] = None
+
+    def _get_random_ua(self) -> str:
+        return random.choice(USER_AGENTS)
+
+    def _wait_if_needed(self) -> None:
+        """Sleep between requests to avoid rate limiting."""
+        if self._last_request_time is not None:
+            elapsed = time.time() - self._last_request_time
+            target_sleep = random.uniform(self.sleep_min, self.sleep_max)
+            if elapsed < target_sleep:
+                sleep_time = target_sleep - elapsed
+                logger.debug(f"Sleeping {sleep_time:.2f}s between requests")
+                time.sleep(sleep_time)
+
+    def fetch_odds_page(self, race_id: str, timeout: int = 30) -> Tuple[Optional[str], int]:
+        """
+        Fetch odds page HTML with retry and backoff.
+
+        Args:
+            race_id: 12-digit race ID
+            timeout: Request timeout in seconds
+
+        Returns:
+            Tuple of (html_content or None, status_code)
+        """
+        params = {
+            "type": "b1",  # 単勝オッズ
+            "race_id": race_id,
+        }
+
+        last_status = 0
+
+        for attempt in range(MAX_RETRIES + 1):
+            self._wait_if_needed()
+
+            ua = self._get_random_ua()
+            headers = {"User-Agent": ua}
+
+            if attempt > 0:
+                backoff = RETRY_BACKOFF_BASE * (2 ** (attempt - 1))
+                logger.info(f"Retry {attempt}/{MAX_RETRIES} after {backoff:.1f}s (UA: {ua[:40]}...)")
+                time.sleep(backoff)
+
+            try:
+                logger.debug(f"Fetching odds for {race_id} (attempt {attempt + 1})")
+                response = self.session.get(
+                    self.ODDS_BASE_URL,
+                    params=params,
+                    headers=headers,
+                    timeout=timeout,
+                )
+                self._last_request_time = time.time()
+                last_status = response.status_code
+
+                if response.status_code == 200:
+                    html = response.content.decode("utf-8", errors="replace")
+                    return html, 200
+
+                if response.status_code in (429, 500, 502, 503, 504):
+                    logger.warning(f"HTTP {response.status_code} for {race_id}, will retry")
+                    continue
+
+                # Other errors (400, 404, etc.) - don't retry
+                logger.warning(f"HTTP {response.status_code} for {race_id}, not retrying")
+                return None, response.status_code
+
+            except requests.Timeout:
+                logger.warning(f"Timeout fetching odds for {race_id}")
+                last_status = 0
+                continue
+            except requests.RequestException as e:
+                logger.warning(f"Request error for {race_id}: {e}")
+                last_status = 0
+                continue
+
+        logger.error(f"Failed to fetch odds for {race_id} after {MAX_RETRIES + 1} attempts")
+        return None, last_status
+
+    def close(self):
+        self.session.close()
+
+
+# ============================================================
 # Odds Page Parser
 # ============================================================
 
 
 def parse_odds_page(html: str, race_id: str, observed_at: str) -> List[OddsSnapshot]:
     """
-    Parse odds page HTML and extract win odds for each horse.
+    Parse odds page HTML and extract win odds for ALL horses.
 
-    The odds page URL is typically:
-    https://race.netkeiba.com/odds/index.html?type=b1&race_id=XXXXXXXXXXXX
+    The netkeiba odds page (https://race.netkeiba.com/odds/index.html?type=b1&race_id=XXX)
+    has the full odds table with all horses. We must parse the complete table,
+    not just the "人気順" (popularity ranking) partial view.
 
     Args:
         html: HTML content of the odds page
@@ -89,111 +237,189 @@ def parse_odds_page(html: str, race_id: str, observed_at: str) -> List[OddsSnaps
         observed_at: ISO format timestamp of observation
 
     Returns:
-        List of OddsSnapshot objects
+        List of OddsSnapshot objects for all horses
     """
     soup = BeautifulSoup(html, "html.parser")
-    snapshots = []
+    snapshots: List[OddsSnapshot] = []
 
-    # Try multiple table selectors for odds
-    # Pattern 1: Tanso odds table (単勝オッズ)
-    odds_table = soup.select_one("table.Odds_Table, table.RaceOdds_HorseList_Table")
+    # Strategy 1: Look for the main odds table with all horses
+    # The full table typically has class "RaceOdds_HorseList" or similar
+    # and contains rows with data-umaban attribute
 
-    if not odds_table:
-        # Pattern 2: Generic odds list
-        odds_table = soup.select_one("div.Odds_HorseList_Wrapper table")
+    # Try multiple selectors for the main odds container
+    odds_rows = []
 
-    if not odds_table:
-        # Pattern 3: Direct row parsing from page
-        rows = soup.select("tr[data-odds-umaban], tr.HorseList")
-        if rows:
-            for row in rows:
-                snapshot = _parse_odds_row_alternate(row, race_id, observed_at)
-                if snapshot:
-                    snapshots.append(snapshot)
-            return snapshots
-
-    if odds_table:
-        rows = odds_table.select("tr")
-        for row in rows:
-            snapshot = _parse_odds_row(row, race_id, observed_at)
+    # Pattern 1: Direct row selection with data attributes
+    odds_rows = soup.select("tr[data-umaban]")
+    if odds_rows:
+        logger.debug(f"Found {len(odds_rows)} rows with data-umaban attribute")
+        for row in odds_rows:
+            snapshot = _parse_odds_row_v2(row, race_id, observed_at)
             if snapshot:
                 snapshots.append(snapshot)
+        if snapshots:
+            return snapshots
 
-    # If no table found, try parsing from JSON data in script
+    # Pattern 2: Table with Odds class containing full horse list
+    for table_selector in [
+        "table.RaceOdds_HorseList_Table",
+        "table.Odds_Table",
+        "div.RaceOdds_HorseList table",
+        "div#odds_tanpuku_block table",
+        "div.Tanpuku table",
+    ]:
+        table = soup.select_one(table_selector)
+        if table:
+            rows = table.select("tr")
+            logger.debug(f"Found table '{table_selector}' with {len(rows)} rows")
+            for row in rows:
+                snapshot = _parse_odds_row_v2(row, race_id, observed_at)
+                if snapshot:
+                    snapshots.append(snapshot)
+            if snapshots:
+                return snapshots
+
+    # Pattern 3: Look for HorseList rows anywhere in page
+    horse_list_rows = soup.select("tr.HorseList")
+    if horse_list_rows:
+        logger.debug(f"Found {len(horse_list_rows)} HorseList rows")
+        for row in horse_list_rows:
+            snapshot = _parse_odds_row_v2(row, race_id, observed_at)
+            if snapshot:
+                snapshots.append(snapshot)
+        if snapshots:
+            return snapshots
+
+    # Pattern 4: Generic table row parsing
+    all_tables = soup.select("table")
+    for table in all_tables:
+        rows = table.select("tr")
+        temp_snapshots = []
+        for row in rows:
+            snapshot = _parse_odds_row_v2(row, race_id, observed_at)
+            if snapshot:
+                temp_snapshots.append(snapshot)
+        # If this table has more horses than we found so far, use it
+        if len(temp_snapshots) > len(snapshots):
+            snapshots = temp_snapshots
+
+    # Pattern 5: Try parsing from embedded JavaScript/JSON data
     if not snapshots:
         snapshots = _parse_odds_from_script(soup, race_id, observed_at)
 
     return snapshots
 
 
-def _parse_odds_row(row, race_id: str, observed_at: str) -> Optional[OddsSnapshot]:
-    """Parse a single row from the odds table."""
+def _parse_odds_row_v2(row, race_id: str, observed_at: str) -> Optional[OddsSnapshot]:
+    """
+    Parse a single row from the odds table.
+    Handles multiple HTML structures used by netkeiba.
+    """
     try:
         cells = row.select("td")
         if len(cells) < 2:
             return None
 
-        # Horse number - try multiple patterns
-        horse_no = None
+        horse_no: Optional[int] = None
+        win_odds: Optional[float] = None
+        popularity: Optional[int] = None
 
-        # Pattern 1: data-umaban attribute
+        # ===== Extract horse number =====
+
+        # Method 1: data-umaban or data-odds-umaban attribute on row
         umaban_attr = row.get("data-umaban") or row.get("data-odds-umaban")
-        if umaban_attr:
+        if umaban_attr and str(umaban_attr).isdigit():
             horse_no = int(umaban_attr)
 
-        # Pattern 2: First cell contains horse number
+        # Method 2: Umaban cell (usually first or second cell)
         if horse_no is None:
-            first_cell = cells[0].get_text(strip=True)
-            if first_cell.isdigit():
-                horse_no = int(first_cell)
+            for cell in cells[:3]:
+                cell_classes = cell.get("class", [])
+                # Look for Umaban class
+                if any("maban" in c.lower() for c in cell_classes):
+                    text = cell.get_text(strip=True)
+                    if text.isdigit():
+                        horse_no = int(text)
+                        break
+                # Check for span with Umaban class
+                umaban_span = cell.select_one("span.Umaban, span.umaban")
+                if umaban_span:
+                    text = umaban_span.get_text(strip=True)
+                    if text.isdigit():
+                        horse_no = int(text)
+                        break
 
-        # Pattern 3: Look for class with number
+        # Method 3: First numeric cell (common pattern)
         if horse_no is None:
-            num_cell = row.select_one("td.Num, td.Umaban, span.Umaban")
-            if num_cell:
-                num_text = num_cell.get_text(strip=True)
-                if num_text.isdigit():
-                    horse_no = int(num_text)
+            for cell in cells[:2]:
+                text = cell.get_text(strip=True)
+                if text.isdigit() and 1 <= int(text) <= 18:
+                    horse_no = int(text)
+                    break
 
         if horse_no is None:
             return None
 
-        # Win odds - look for odds value
-        win_odds = None
-        popularity = None
+        # ===== Extract odds and popularity =====
 
         for cell in cells:
-            cell_class = " ".join(cell.get("class", []))
+            cell_classes = " ".join(cell.get("class", []))
             cell_text = cell.get_text(strip=True)
 
-            # Look for odds cell
-            if "Odds" in cell_class or "odds" in cell_class.lower():
-                try:
-                    win_odds = float(cell_text.replace(",", ""))
-                except ValueError:
-                    pass
+            # Look for odds value
+            if win_odds is None:
+                # Check for Odds class
+                if "odds" in cell_classes.lower():
+                    try:
+                        val = float(cell_text.replace(",", ""))
+                        if 1.0 <= val <= 9999.0:
+                            win_odds = val
+                            continue
+                    except ValueError:
+                        pass
 
-            # Look for popularity cell
-            if "Popular" in cell_class or "Ninki" in cell_class or "人気" in cell_text:
-                pop_match = re.search(r"\d+", cell_text)
-                if pop_match:
-                    popularity = int(pop_match.group())
+                # Check for span with Odds class inside cell
+                odds_span = cell.select_one("span.Odds, span.odds")
+                if odds_span:
+                    try:
+                        val = float(odds_span.get_text(strip=True).replace(",", ""))
+                        if 1.0 <= val <= 9999.0:
+                            win_odds = val
+                            continue
+                    except ValueError:
+                        pass
 
-        # If no odds found in class-based cells, try position-based
+            # Look for popularity value
+            if popularity is None:
+                if "popular" in cell_classes.lower() or "ninki" in cell_classes.lower():
+                    pop_match = re.search(r"(\d+)", cell_text)
+                    if pop_match:
+                        popularity = int(pop_match.group(1))
+                        continue
+
+                # Check for "人気" text
+                if "人気" in cell_text:
+                    pop_match = re.search(r"(\d+)", cell_text)
+                    if pop_match:
+                        popularity = int(pop_match.group(1))
+                        continue
+
+        # Try position-based extraction if class-based didn't work
         if win_odds is None:
-            for i, cell in enumerate(cells[1:], 1):
+            for cell in cells[1:]:
                 cell_text = cell.get_text(strip=True)
-                # Skip if it's a horse name (contains kanji)
-                if re.search(r"[\u4e00-\u9fff]", cell_text):
+                # Skip if it contains Japanese characters (likely horse name)
+                if re.search(r"[\u4e00-\u9fff\u3040-\u30ff]", cell_text):
                     continue
                 try:
                     val = float(cell_text.replace(",", ""))
-                    if 1.0 <= val <= 1000.0:  # Reasonable odds range
+                    if 1.0 <= val <= 9999.0:
                         win_odds = val
                         break
                 except ValueError:
                     continue
 
+        # Must have at least odds or popularity to be valid
         if win_odds is None and popularity is None:
             return None
 
@@ -205,59 +431,9 @@ def _parse_odds_row(row, race_id: str, observed_at: str) -> Optional[OddsSnapsho
             popularity=popularity,
             source="netkeiba",
         )
+
     except Exception as e:
         logger.debug(f"Failed to parse odds row: {e}")
-        return None
-
-
-def _parse_odds_row_alternate(row, race_id: str, observed_at: str) -> Optional[OddsSnapshot]:
-    """Parse odds row with alternate structure."""
-    try:
-        # Get horse number
-        horse_no = None
-        umaban_elem = row.select_one("span.Umaban, td.Umaban")
-        if umaban_elem:
-            horse_no = int(umaban_elem.get_text(strip=True))
-        else:
-            data_umaban = row.get("data-umaban") or row.get("data-odds-umaban")
-            if data_umaban:
-                horse_no = int(data_umaban)
-
-        if not horse_no:
-            return None
-
-        # Get odds
-        odds_elem = row.select_one("span.Odds, td.Odds")
-        win_odds = None
-        if odds_elem:
-            odds_text = odds_elem.get_text(strip=True)
-            try:
-                win_odds = float(odds_text.replace(",", ""))
-            except ValueError:
-                pass
-
-        # Get popularity
-        popularity = None
-        pop_elem = row.select_one("span.Popular, td.Popular, span.Ninki, td.Ninki")
-        if pop_elem:
-            pop_text = pop_elem.get_text(strip=True)
-            pop_match = re.search(r"\d+", pop_text)
-            if pop_match:
-                popularity = int(pop_match.group())
-
-        if win_odds is None and popularity is None:
-            return None
-
-        return OddsSnapshot(
-            race_id=race_id,
-            horse_no=horse_no,
-            observed_at=observed_at,
-            win_odds=win_odds,
-            popularity=popularity,
-            source="netkeiba",
-        )
-    except Exception as e:
-        logger.debug(f"Failed to parse alternate odds row: {e}")
         return None
 
 
@@ -270,18 +446,18 @@ def _parse_odds_from_script(soup: BeautifulSoup, race_id: str, observed_at: str)
     for script in soup.select("script"):
         script_text = script.get_text()
 
-        # Look for odds data patterns
-        if "oddsList" in script_text or "Odds" in script_text:
-            # Try to extract JSON data
+        # Look for odds data patterns in JavaScript
+        if "oddsList" in script_text or '"odds"' in script_text or "'odds'" in script_text:
+            # Pattern 1: oddsList = [...];
             json_match = re.search(r"oddsList\s*=\s*(\[.*?\]);", script_text, re.DOTALL)
             if json_match:
                 try:
                     odds_data = json.loads(json_match.group(1))
                     for item in odds_data:
                         if isinstance(item, dict):
-                            horse_no = item.get("umaban") or item.get("horse_no")
-                            win_odds = item.get("odds") or item.get("win_odds")
-                            popularity = item.get("ninki") or item.get("popularity")
+                            horse_no = item.get("umaban") or item.get("horse_no") or item.get("no")
+                            win_odds = item.get("odds") or item.get("win_odds") or item.get("tanso")
+                            popularity = item.get("ninki") or item.get("popularity") or item.get("pop")
 
                             if horse_no:
                                 snapshots.append(OddsSnapshot(
@@ -292,8 +468,27 @@ def _parse_odds_from_script(soup: BeautifulSoup, race_id: str, observed_at: str)
                                     popularity=int(popularity) if popularity else None,
                                     source="netkeiba",
                                 ))
-                except (json.JSONDecodeError, KeyError, TypeError) as e:
-                    logger.debug(f"Failed to parse JSON odds: {e}")
+                except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
+                    logger.debug(f"Failed to parse JSON odds data: {e}")
+
+            # Pattern 2: Inline object with odds data
+            obj_match = re.search(r"\{[^{}]*\"odds\"[^{}]*\}", script_text)
+            if obj_match and not snapshots:
+                try:
+                    obj = json.loads(obj_match.group(0))
+                    # Handle various structures
+                    if isinstance(obj.get("odds"), list):
+                        for i, o in enumerate(obj["odds"], 1):
+                            snapshots.append(OddsSnapshot(
+                                race_id=race_id,
+                                horse_no=i,
+                                observed_at=observed_at,
+                                win_odds=float(o) if o else None,
+                                popularity=None,
+                                source="netkeiba",
+                            ))
+                except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                    pass
 
     return snapshots
 
@@ -304,117 +499,175 @@ def _parse_odds_from_script(soup: BeautifulSoup, race_id: str, observed_at: str)
 
 
 class OddsFetcher:
-    """Fetches and stores odds snapshots from netkeiba."""
+    """Fetches and stores odds snapshots from netkeiba with safety checks."""
 
-    # Odds page URL template
-    ODDS_URL_TEMPLATE = "https://race.netkeiba.com/odds/index.html"
-
-    def __init__(self, conn: sqlite3.Connection, client: Optional[NetkeibaClient] = None):
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        sleep_min: float = DEFAULT_SLEEP_MIN,
+        sleep_max: float = DEFAULT_SLEEP_MAX,
+        save_html_dir: Optional[str] = None,
+    ):
         """
         Args:
             conn: SQLite database connection
-            client: NetkeibaClient instance (creates new one if None)
+            sleep_min: Minimum sleep between requests (seconds)
+            sleep_max: Maximum sleep between requests (seconds)
+            save_html_dir: Directory to save HTML for debugging (None = don't save)
         """
         self.conn = conn
-        self.client = client or NetkeibaClient()
+        self.client = OddsHttpClient(sleep_min=sleep_min, sleep_max=sleep_max)
         self.upsert_helper = UpsertHelper(conn)
+        self.save_html_dir = save_html_dir
 
         # Ensure odds_snapshots table exists
         run_migrations(conn)
 
-    def fetch_odds_for_race(self, race_id: str) -> List[OddsSnapshot]:
+        # Create HTML save directory if specified
+        if self.save_html_dir:
+            Path(self.save_html_dir).mkdir(parents=True, exist_ok=True)
+
+    def get_expected_horse_count(self, race_id: str) -> Optional[int]:
         """
-        Fetch odds for a single race.
+        Get expected number of horses from race_results table.
+
+        This is the authoritative source for horse count, more reliable than races.head_count.
+        """
+        cursor = self.conn.execute(
+            "SELECT COUNT(*) FROM race_results WHERE race_id = ?",
+            (race_id,)
+        )
+        row = cursor.fetchone()
+        return row[0] if row and row[0] > 0 else None
+
+    def fetch_odds_for_race(self, race_id: str) -> Tuple[List[OddsSnapshot], Optional[str]]:
+        """
+        Fetch odds for a single race with retry.
 
         Args:
             race_id: 12-digit race ID
 
         Returns:
-            List of OddsSnapshot objects
+            Tuple of (list of snapshots, HTML content for debugging)
         """
         if not re.match(r"^\d{12}$", race_id):
             raise ValueError(f"Invalid race_id format: {race_id}")
 
         logger.info(f"Fetching odds for race {race_id}")
 
-        # Build URL for tanso (単勝) odds
-        params = {
-            "type": "b1",  # 単勝
-            "race_id": race_id,
-        }
-
         observed_at = datetime.now().isoformat()
 
-        try:
-            response = self.client.get(self.ODDS_URL_TEMPLATE, params=params)
+        # Retry loop for parsing (in case of transient HTML issues)
+        for attempt in range(MAX_RETRIES + 1):
+            html, status = self.client.fetch_odds_page(race_id)
 
-            if response.status_code != 200:
-                logger.warning(f"Failed to fetch odds page: HTTP {response.status_code}")
-                return []
+            if html is None:
+                logger.warning(f"Failed to fetch odds page for {race_id}: HTTP {status}")
+                if attempt < MAX_RETRIES:
+                    backoff = RETRY_BACKOFF_BASE * (2 ** attempt)
+                    logger.info(f"Retrying in {backoff:.1f}s...")
+                    time.sleep(backoff)
+                    continue
+                return [], None
 
-            # Decode response (odds page is usually UTF-8)
-            html = response.content.decode("utf-8", errors="replace")
+            # Save HTML for debugging if requested
+            if self.save_html_dir:
+                html_path = Path(self.save_html_dir) / f"odds_html_{race_id}.html"
+                html_path.write_text(html, encoding="utf-8")
+                logger.info(f"Saved HTML to {html_path}")
 
+            # Parse odds
             snapshots = parse_odds_page(html, race_id, observed_at)
-            logger.info(f"Parsed {len(snapshots)} odds entries for race {race_id}")
 
-            return snapshots
+            # Debug summary
+            if snapshots:
+                horse_nos = [s.horse_no for s in snapshots]
+                logger.debug(
+                    f"Parsed {len(snapshots)} entries for {race_id}: "
+                    f"horse_no min={min(horse_nos)} max={max(horse_nos)}"
+                )
+            else:
+                logger.debug(f"No odds parsed for {race_id}")
 
-        except Exception as e:
-            logger.error(f"Failed to fetch odds for race {race_id}: {e}")
-            return []
+            return snapshots, html
+
+        return [], None
 
     def fetch_and_store_odds(self, race_id: str) -> int:
         """
-        Fetch odds for a race and store in database.
+        Fetch odds for a race and store in database with safety checks.
+
+        SAFETY: Only stores if parsed count matches expected count from race_results.
+        This prevents storing incomplete data (e.g., only 8 horses instead of 16).
 
         Args:
             race_id: 12-digit race ID
 
         Returns:
-            Number of snapshots stored
+            Number of snapshots stored (0 if failed or incomplete)
         """
-        snapshots = self.fetch_odds_for_race(race_id)
-
-        if not snapshots:
-            logger.warning(f"No odds found for race {race_id}")
+        # Get expected count from race_results
+        expected = self.get_expected_horse_count(race_id)
+        if expected is None:
+            logger.warning(f"[{race_id}] No race_results found, cannot validate - skipping")
             return 0
 
-        # Convert to dict list for UPSERT
-        rows = [
-            {
-                "race_id": s.race_id,
-                "horse_no": s.horse_no,
-                "observed_at": s.observed_at,
-                "win_odds": s.win_odds,
-                "popularity": s.popularity,
-                "source": s.source,
-            }
-            for s in snapshots
-        ]
+        # Fetch with retry
+        for attempt in range(MAX_RETRIES + 1):
+            snapshots, html = self.fetch_odds_for_race(race_id)
 
-        count = self.upsert_helper.upsert_odds_snapshots(rows)
-        logger.info(f"Stored {count} odds snapshots for race {race_id}")
-        return count
+            if not snapshots:
+                logger.warning(f"[{race_id}] No odds parsed (attempt {attempt + 1})")
+                if attempt < MAX_RETRIES:
+                    backoff = RETRY_BACKOFF_BASE * (2 ** attempt)
+                    time.sleep(backoff)
+                    continue
+                return 0
+
+            parsed_count = len(snapshots)
+
+            # Safety check: parsed count must match expected
+            if parsed_count != expected:
+                logger.warning(
+                    f"[{race_id}] Count mismatch: parsed={parsed_count}, expected={expected} - "
+                    f"NOT STORING (attempt {attempt + 1}/{MAX_RETRIES + 1})"
+                )
+                if attempt < MAX_RETRIES:
+                    backoff = RETRY_BACKOFF_BASE * (2 ** attempt)
+                    logger.info(f"Retrying in {backoff:.1f}s...")
+                    time.sleep(backoff)
+                    continue
+                # Final failure - don't store incomplete data
+                return 0
+
+            # Success - store the data
+            rows = [
+                {
+                    "race_id": s.race_id,
+                    "horse_no": s.horse_no,
+                    "observed_at": s.observed_at,
+                    "win_odds": s.win_odds,
+                    "popularity": s.popularity,
+                    "source": s.source,
+                }
+                for s in snapshots
+            ]
+
+            count = self.upsert_helper.upsert_odds_snapshots(rows)
+            logger.info(f"[{race_id}] Stored {count} odds snapshots (expected={expected})")
+            return count
+
+        return 0
 
     def fetch_races_for_date(self, date_str: str) -> List[str]:
-        """
-        Get list of race IDs for a given date.
-
-        Args:
-            date_str: Date in YYYY-MM-DD format
-
-        Returns:
-            List of race IDs
-        """
-        # Query races table for the date
+        """Get list of race IDs for a given date."""
         cursor = self.conn.execute(
             "SELECT race_id FROM races WHERE date = ? ORDER BY race_id",
             (date_str,)
         )
         return [row[0] for row in cursor.fetchall()]
 
-    def fetch_all_for_date(self, date_str: str) -> int:
+    def fetch_all_for_date(self, date_str: str) -> Dict[str, int]:
         """
         Fetch odds for all races on a given date.
 
@@ -422,29 +675,42 @@ class OddsFetcher:
             date_str: Date in YYYY-MM-DD format
 
         Returns:
-            Total number of snapshots stored
+            Dict mapping race_id to stored count (0 for failures)
         """
         race_ids = self.fetch_races_for_date(date_str)
 
         if not race_ids:
             logger.warning(f"No races found for date {date_str}")
-            return 0
+            return {}
 
         logger.info(f"Fetching odds for {len(race_ids)} races on {date_str}")
 
-        total = 0
+        results: Dict[str, int] = {}
+        total_stored = 0
+        success_count = 0
+        fail_count = 0
+
         for race_id in race_ids:
             try:
                 count = self.fetch_and_store_odds(race_id)
-                total += count
+                results[race_id] = count
+                total_stored += count
+                if count > 0:
+                    success_count += 1
+                else:
+                    fail_count += 1
             except Exception as e:
-                logger.error(f"Failed to fetch odds for {race_id}: {e}")
+                logger.error(f"[{race_id}] Unexpected error: {e}")
+                results[race_id] = 0
+                fail_count += 1
 
-        logger.info(f"Total: Stored {total} odds snapshots for {date_str}")
-        return total
+        logger.info(
+            f"Summary for {date_str}: "
+            f"success={success_count}, failed={fail_count}, total_stored={total_stored}"
+        )
+        return results
 
     def close(self):
-        """Close the client."""
         self.client.close()
 
     def __enter__(self):
@@ -460,8 +726,12 @@ class OddsFetcher:
 
 
 def main() -> int:
+    if not _DEPS_AVAILABLE:
+        print("Required packages: pip install requests beautifulsoup4")
+        return 1
+
     parser = argparse.ArgumentParser(
-        description="Fetch and store pre-race odds snapshots",
+        description="Fetch and store pre-race odds snapshots with safety checks",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -474,8 +744,16 @@ Examples:
     # Fetch odds for tomorrow's races
     python scripts/fetch_odds_snapshots.py --tomorrow
 
+    # Debug: save HTML files
+    python scripts/fetch_odds_snapshots.py --race-id 202406050811 --save-html
+
     # Dry run (show what would be fetched)
     python scripts/fetch_odds_snapshots.py --date 2024-12-28 --dry-run
+
+Safety Features:
+    - Only stores if parsed horse count matches race_results count
+    - Retries up to 2 times with exponential backoff
+    - Logs warnings for any mismatches
 """,
     )
 
@@ -506,9 +784,26 @@ Examples:
         help="Show what would be fetched without storing",
     )
     parser.add_argument(
+        "--save-html",
+        action="store_true",
+        help="Save fetched HTML to artifacts/ directory for debugging",
+    )
+    parser.add_argument(
+        "--sleep-min",
+        type=float,
+        default=DEFAULT_SLEEP_MIN,
+        help=f"Minimum sleep between requests (default: {DEFAULT_SLEEP_MIN})",
+    )
+    parser.add_argument(
+        "--sleep-max",
+        type=float,
+        default=DEFAULT_SLEEP_MAX,
+        help=f"Maximum sleep between requests (default: {DEFAULT_SLEEP_MAX})",
+    )
+    parser.add_argument(
         "-v", "--verbose",
         action="store_true",
-        help="Enable verbose logging",
+        help="Enable verbose (DEBUG) logging",
     )
 
     args = parser.parse_args()
@@ -529,23 +824,40 @@ Examples:
         logger.error(f"Database not found: {db_path}")
         return 1
 
+    # HTML save directory
+    save_html_dir = "artifacts" if args.save_html else None
+
     logger.info("=" * 60)
-    logger.info("Odds Snapshot Fetcher")
+    logger.info("Odds Snapshot Fetcher (with safety checks)")
     logger.info("=" * 60)
     logger.info(f"Database: {db_path}")
+    if save_html_dir:
+        logger.info(f"HTML save directory: {save_html_dir}")
 
     conn = sqlite3.connect(db_path)
 
     try:
-        with OddsFetcher(conn) as fetcher:
+        with OddsFetcher(
+            conn,
+            sleep_min=args.sleep_min,
+            sleep_max=args.sleep_max,
+            save_html_dir=save_html_dir,
+        ) as fetcher:
             if args.race_id:
                 # Single race
+                expected = fetcher.get_expected_horse_count(args.race_id)
+                logger.info(f"Expected horses (from race_results): {expected}")
+
                 if args.dry_run:
                     logger.info(f"[DRY-RUN] Would fetch odds for race {args.race_id}")
                     return 0
 
                 count = fetcher.fetch_and_store_odds(args.race_id)
-                logger.info(f"Stored {count} odds snapshots")
+                if count > 0:
+                    logger.info(f"SUCCESS: Stored {count} odds snapshots")
+                else:
+                    logger.warning("FAILED: No odds stored (check warnings above)")
+                    return 1
 
             elif args.date or args.tomorrow:
                 # Date-based
@@ -560,11 +872,15 @@ Examples:
                     race_ids = fetcher.fetch_races_for_date(target_date)
                     logger.info(f"[DRY-RUN] Would fetch odds for {len(race_ids)} races:")
                     for rid in race_ids:
-                        logger.info(f"  - {rid}")
+                        expected = fetcher.get_expected_horse_count(rid)
+                        logger.info(f"  - {rid} (expected: {expected} horses)")
                     return 0
 
-                count = fetcher.fetch_all_for_date(target_date)
-                logger.info(f"Total: Stored {count} odds snapshots")
+                results = fetcher.fetch_all_for_date(target_date)
+                total = sum(results.values())
+                success = sum(1 for c in results.values() if c > 0)
+                failed = sum(1 for c in results.values() if c == 0)
+                logger.info(f"Total: Stored {total} odds snapshots ({success} races OK, {failed} failed)")
 
         logger.info("=" * 60)
         logger.info("Done")
