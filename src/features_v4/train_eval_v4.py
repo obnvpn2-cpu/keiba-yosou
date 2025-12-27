@@ -935,6 +935,7 @@ def load_odds_snapshots_for_races(
 
     Returns:
         DataFrame (race_id, horse_no, win_odds, popularity, observed_at) or None
+        Also includes 'snapshot_coverage' metadata in a logged message.
     """
     if not race_ids:
         return None
@@ -1004,7 +1005,35 @@ def load_odds_snapshots_for_races(
         if len(df) == 0:
             logger.debug("No odds snapshots found for specified races")
             return None
+
         df["horse_no_str"] = df["horse_no"].astype(str)
+
+        # Coverage check: どのレースにスナップショットがあるか
+        races_with_snapshot = set(df["race_id"].unique())
+        races_requested = set(race_ids)
+        races_missing = races_requested - races_with_snapshot
+        n_with = len(races_with_snapshot)
+        n_requested = len(races_requested)
+        n_missing = len(races_missing)
+
+        if n_missing > 0:
+            logger.warning(
+                "Snapshot coverage: %d/%d races have snapshots (missing: %d races)",
+                n_with, n_requested, n_missing
+            )
+            # Log first few missing race IDs for debugging
+            if n_missing <= 10:
+                logger.warning("  Missing race_ids: %s", sorted(races_missing))
+            else:
+                sample = sorted(races_missing)[:5]
+                logger.warning("  Missing race_ids (first 5): %s ... and %d more",
+                             sample, n_missing - 5)
+        else:
+            logger.debug(
+                "Snapshot coverage: %d/%d races (100%%)",
+                n_with, n_requested
+            )
+
         return df
     except Exception as e:
         logger.warning("Failed to load odds_snapshots: %s", e)
@@ -1894,6 +1923,84 @@ def save_roi_sweep_artifacts(
         json.dump(json_data, f, ensure_ascii=False, indent=2)
 
     logger.info("Saved ROI sweep results to %s", filepath)
+
+    # Also save flat version for easier analysis
+    flat_path = save_roi_sweep_flat_artifacts(
+        all_results, target_col, timestamp, artifacts_dir
+    )
+    logger.info("Saved ROI sweep flat results to %s", flat_path)
+
+    return str(filepath)
+
+
+def save_roi_sweep_flat_artifacts(
+    all_results: Dict[str, Dict[str, List[ROISweepResult]]],
+    target_col: str,
+    timestamp: str,
+    artifacts_dir: str = "artifacts",
+) -> str:
+    """
+    ROI スイープ結果をフラットな配列としてJSONファイルに保存
+
+    各行に以下のフィールドを含む:
+    - dataset: "val" or "test"
+    - kind: "prob" or "gap"
+    - bet_type: "単勝" or "複勝"
+    - threshold_value: 閾値
+    - coverage: カバレッジ (0.0-1.0)
+    - model_roi: モデルのROI
+    - pop_roi: 人気ベースラインのROI
+    - roi_diff: model_roi - pop_roi
+    - model_hit_rate: モデルの的中率
+    - pop_hit_rate: 人気ベースラインの的中率
+    - n_races_bet: 賭けたレース数
+    - n_total_races: 全レース数
+
+    Args:
+        all_results: {"val": {"prob": [...], "gap": [...]}, "test": {...}}
+        target_col: ターゲット列名
+        timestamp: タイムスタンプ文字列
+        artifacts_dir: 保存先ディレクトリ
+
+    Returns:
+        保存したファイルパス
+    """
+    out_path = Path(artifacts_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+
+    filename = f"roi_sweep_flat_{target_col}_{timestamp}.json"
+    filepath = out_path / filename
+
+    flat_rows = []
+
+    for dataset, sweep_dict in all_results.items():
+        for sweep_type, sweep_results_list in sweep_dict.items():
+            for sweep_result in sweep_results_list:
+                bet_type = sweep_result.bet_type
+                for r in sweep_result.results:
+                    flat_rows.append({
+                        "dataset": dataset,
+                        "kind": sweep_type,
+                        "bet_type": bet_type,
+                        "threshold_value": r.threshold_value,
+                        "coverage": r.coverage,
+                        "n_races_bet": r.n_races_bet,
+                        "n_total_races": r.n_total_races,
+                        "model_roi": r.model_roi,
+                        "model_hit_rate": r.model_hit_rate,
+                        "model_n_hits": r.model_n_hits,
+                        "model_avg_payout": r.model_avg_payout,
+                        "pop_roi": r.pop_roi,
+                        "pop_hit_rate": r.pop_hit_rate,
+                        "pop_n_hits": r.pop_n_hits,
+                        "pop_avg_payout": r.pop_avg_payout,
+                        "roi_diff": r.roi_diff,
+                        "hit_diff": r.hit_diff,
+                    })
+
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(flat_rows, f, ensure_ascii=False, indent=2)
+
     return str(filepath)
 
 

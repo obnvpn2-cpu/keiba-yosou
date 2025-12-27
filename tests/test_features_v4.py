@@ -9,6 +9,7 @@ Tests for:
 4. Quality report generation
 """
 
+import json
 import sqlite3
 import pytest
 from datetime import datetime, timedelta
@@ -1730,6 +1731,178 @@ class TestOddsSnapshots:
         # R3 はスナップショットなし (race_results のまま)
         r3 = results[results["race_id"] == "R3"]
         assert all(r3["popularity_source"] == "race_results")
+
+    def test_coverage_warning_when_missing_races(self, db_with_snapshots, caplog):
+        """一部のレースにスナップショットがない場合に警告ログ"""
+        import logging
+        from src.features_v4.train_eval_v4 import load_odds_snapshots_for_races
+
+        # R3 を追加してもスナップショットがないのでカバレッジ警告が出るはず
+        db_with_snapshots.execute(
+            "INSERT INTO race_results (race_id, horse_id, horse_no, finish_order, popularity) VALUES (?, ?, ?, ?, ?)",
+            ("R3", "G", 1, 1, 5),
+        )
+        db_with_snapshots.commit()
+
+        with caplog.at_level(logging.WARNING):
+            result = load_odds_snapshots_for_races(
+                db_with_snapshots,
+                ["R1", "R2", "R3"],  # R3 にはスナップショットなし
+            )
+
+        # 結果は R1, R2 のスナップショットのみ
+        assert result is not None
+        assert set(result["race_id"].unique()) == {"R1", "R2"}
+
+        # 警告ログが出力されること
+        assert "Snapshot coverage" in caplog.text
+        assert "missing: 1 races" in caplog.text or "Missing race_ids" in caplog.text
+
+
+# =============================================================================
+# ROI Sweep Flat Artifacts Tests
+# =============================================================================
+
+
+class TestRoiSweepFlatArtifacts:
+    """roi_sweep_flat JSON 出力のテスト"""
+
+    def test_save_roi_sweep_flat_structure(self, tmp_path):
+        """フラットなJSON構造が正しく生成されること"""
+        from src.features_v4.train_eval_v4 import (
+            save_roi_sweep_flat_artifacts,
+            SelectiveBetResult,
+            ROISweepResult,
+        )
+
+        # テストデータ作成
+        result1 = SelectiveBetResult(
+            threshold_type="prob",
+            threshold_value=0.10,
+            bet_type="単勝",
+            n_total_races=100,
+            n_races_bet=30,
+            coverage=0.30,
+            model_stake_total=3000.0,
+            model_return_total=3600.0,
+            model_roi=1.20,
+            model_hit_rate=0.25,
+            model_n_hits=8,
+            model_avg_payout=450.0,
+            pop_stake_total=3000.0,
+            pop_return_total=2700.0,
+            pop_roi=0.90,
+            pop_hit_rate=0.22,
+            pop_n_hits=7,
+            pop_avg_payout=386.0,
+            roi_diff=0.30,
+            hit_diff=0.03,
+        )
+
+        sweep_result = ROISweepResult(
+            dataset="test",
+            sweep_type="prob",
+            bet_type="単勝",
+            results=[result1],
+        )
+
+        all_results = {
+            "test": {
+                "prob": [sweep_result],
+                "gap": [],
+            }
+        }
+
+        # 保存
+        filepath = save_roi_sweep_flat_artifacts(
+            all_results, "target_win", "20241227_120000", str(tmp_path)
+        )
+
+        # ファイル存在確認
+        assert Path(filepath).exists()
+
+        # JSON読み込み
+        with open(filepath, "r", encoding="utf-8") as f:
+            flat_data = json.load(f)
+
+        # 構造確認
+        assert isinstance(flat_data, list)
+        assert len(flat_data) == 1
+
+        row = flat_data[0]
+        assert row["dataset"] == "test"
+        assert row["kind"] == "prob"
+        assert row["bet_type"] == "単勝"
+        assert row["threshold_value"] == 0.10
+        assert row["coverage"] == 0.30
+        assert row["model_roi"] == 1.20
+        assert row["pop_roi"] == 0.90
+        assert row["roi_diff"] == 0.30
+
+    def test_save_roi_sweep_flat_multiple_entries(self, tmp_path):
+        """複数のエントリが正しく展開されること"""
+        from src.features_v4.train_eval_v4 import (
+            save_roi_sweep_flat_artifacts,
+            SelectiveBetResult,
+            ROISweepResult,
+        )
+
+        # 複数の閾値結果
+        results = [
+            SelectiveBetResult(
+                threshold_type="gap",
+                threshold_value=t,
+                bet_type="複勝",
+                n_total_races=100,
+                n_races_bet=int(100 - t * 1000),
+                coverage=(100 - t * 1000) / 100,
+                model_stake_total=1000.0,
+                model_return_total=1100.0,
+                model_roi=1.10,
+                model_hit_rate=0.50,
+                model_n_hits=50,
+                model_avg_payout=220.0,
+                pop_stake_total=1000.0,
+                pop_return_total=900.0,
+                pop_roi=0.90,
+                pop_hit_rate=0.45,
+                pop_n_hits=45,
+                pop_avg_payout=200.0,
+                roi_diff=0.20,
+                hit_diff=0.05,
+            )
+            for t in [0.01, 0.02, 0.03]
+        ]
+
+        sweep_result = ROISweepResult(
+            dataset="val",
+            sweep_type="gap",
+            bet_type="複勝",
+            results=results,
+        )
+
+        all_results = {
+            "val": {
+                "prob": [],
+                "gap": [sweep_result],
+            }
+        }
+
+        filepath = save_roi_sweep_flat_artifacts(
+            all_results, "target_in3", "20241227_130000", str(tmp_path)
+        )
+
+        with open(filepath, "r", encoding="utf-8") as f:
+            flat_data = json.load(f)
+
+        # 3行あること
+        assert len(flat_data) == 3
+
+        # 各行のthreshold_valueが正しいこと
+        thresholds = [row["threshold_value"] for row in flat_data]
+        assert 0.01 in thresholds
+        assert 0.02 in thresholds
+        assert 0.03 in thresholds
 
 
 # =============================================================================

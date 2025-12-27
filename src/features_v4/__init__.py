@@ -84,6 +84,8 @@ from .train_eval_v4 import (
     generate_model_top1_prob_threshold_bets,
     generate_model_top1_gap_threshold_bets,
     load_odds_snapshots_for_races,
+    save_roi_sweep_artifacts,
+    save_roi_sweep_flat_artifacts,
     DEFAULT_PROB_THRESHOLDS,
     DEFAULT_GAP_THRESHOLDS,
 )
@@ -135,6 +137,8 @@ __all__ = [
     "generate_model_top1_prob_threshold_bets",
     "generate_model_top1_gap_threshold_bets",
     "load_odds_snapshots_for_races",
+    "save_roi_sweep_artifacts",
+    "save_roi_sweep_flat_artifacts",
     "DEFAULT_PROB_THRESHOLDS",
     "DEFAULT_GAP_THRESHOLDS",
 ]
