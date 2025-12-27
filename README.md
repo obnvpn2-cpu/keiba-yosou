@@ -190,6 +190,43 @@ python scripts/train_eval_v4.py --db netkeiba.db
   - test  = 2024
 - `--split-mode year_based|date_based` に対応（実装側の引数名に追従）
 
+### 3.8 前日締め運用（Pre-day Cutoff Operation）
+
+実運用では、レース前日の時点でオッズ・人気を取得して予測を確定させたい場合があります。
+この「前日締め運用」をサポートするため、`odds_snapshots` テーブルとスナップショットベースの評価機能を実装しています。
+
+#### オッズスナップショットの取得
+
+```bash
+# 単一レースのオッズ取得
+python scripts/fetch_odds_snapshots.py --race-id 202406050811
+
+# 日付指定で全レースのオッズ取得
+python scripts/fetch_odds_snapshots.py --date 2024-12-28
+
+# 明日のレースのオッズ取得 (cron用)
+python scripts/fetch_odds_snapshots.py --tomorrow
+```
+
+#### スナップショットベースの評価
+
+```bash
+# decision_cutoff を指定してROI評価
+python scripts/train_eval_v4.py --db netkeiba.db \
+  --decision-cutoff "2024-12-27T21:00:00"
+
+# スナップショットを使わない場合（race_results の最終人気を使用）
+python scripts/train_eval_v4.py --db netkeiba.db --no-snapshots
+```
+
+#### 運用フロー例
+
+1. **前日 21:00**: `fetch_odds_snapshots.py --tomorrow` でスナップショット取得
+2. **当日朝**: モデル予測 → 賭け対象選定（decision_cutoff = 前日 21:00）
+3. **レース後**: 結果反映 → ROI 評価（スナップショットの人気を使用）
+
+> **注**: `odds_snapshots` テーブルが存在しない/データがない場合は、自動的に `race_results` の人気にフォールバックします。
+
 ---
 
 ## 4. FeaturePack v1（feature_table_v4）の考え方

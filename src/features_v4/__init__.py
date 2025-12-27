@@ -83,6 +83,7 @@ from .train_eval_v4 import (
     run_roi_sweep,
     generate_model_top1_prob_threshold_bets,
     generate_model_top1_gap_threshold_bets,
+    load_odds_snapshots_for_races,
     DEFAULT_PROB_THRESHOLDS,
     DEFAULT_GAP_THRESHOLDS,
 )
@@ -133,6 +134,7 @@ __all__ = [
     "run_roi_sweep",
     "generate_model_top1_prob_threshold_bets",
     "generate_model_top1_gap_threshold_bets",
+    "load_odds_snapshots_for_races",
     "DEFAULT_PROB_THRESHOLDS",
     "DEFAULT_GAP_THRESHOLDS",
 ]

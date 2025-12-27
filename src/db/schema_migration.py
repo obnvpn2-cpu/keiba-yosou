@@ -104,6 +104,32 @@ MIGRATIONS = [
             AND name='_migrations';
         """,
     },
+    {
+        "id": "005_odds_snapshots_table",
+        "description": "Create odds_snapshots table for pre-day cutoff evaluation",
+        "up": """
+            CREATE TABLE IF NOT EXISTS odds_snapshots (
+                race_id TEXT NOT NULL,
+                horse_no INTEGER NOT NULL,
+                observed_at TEXT NOT NULL,
+                win_odds REAL,
+                popularity INTEGER,
+                source TEXT,
+                created_at TEXT DEFAULT (datetime('now', 'localtime')),
+                updated_at TEXT DEFAULT (datetime('now', 'localtime')),
+                PRIMARY KEY (race_id, horse_no, observed_at)
+            );
+
+            -- Index for efficient lookups by race_id and observed_at
+            CREATE INDEX IF NOT EXISTS idx_odds_snapshots_race_observed
+            ON odds_snapshots (race_id, observed_at);
+        """,
+        "check": """
+            SELECT COUNT(*) FROM sqlite_master
+            WHERE type='table'
+            AND name='odds_snapshots';
+        """,
+    },
 ]
 
 

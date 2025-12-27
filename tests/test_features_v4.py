@@ -1531,6 +1531,208 @@ class TestROISweepResult:
 
 
 # =============================================================================
+# Odds Snapshots Tests
+# =============================================================================
+
+class TestOddsSnapshots:
+    """odds_snapshots テーブルとスナップショットベース評価のテスト"""
+
+    @pytest.fixture
+    def db_with_snapshots(self):
+        """odds_snapshots テーブルを含むデータベース"""
+        import pandas as pd
+
+        conn = sqlite3.connect(":memory:")
+
+        # odds_snapshots テーブルを作成
+        conn.execute("""
+            CREATE TABLE odds_snapshots (
+                race_id TEXT NOT NULL,
+                horse_no INTEGER NOT NULL,
+                observed_at TEXT NOT NULL,
+                win_odds REAL,
+                popularity INTEGER,
+                source TEXT,
+                created_at TEXT DEFAULT (datetime('now', 'localtime')),
+                updated_at TEXT DEFAULT (datetime('now', 'localtime')),
+                PRIMARY KEY (race_id, horse_no, observed_at)
+            )
+        """)
+
+        # race_results テーブルを作成
+        conn.execute("""
+            CREATE TABLE race_results (
+                race_id TEXT NOT NULL,
+                horse_id TEXT NOT NULL,
+                horse_no INTEGER,
+                finish_order INTEGER,
+                popularity INTEGER,
+                PRIMARY KEY (race_id, horse_id)
+            )
+        """)
+
+        # payouts テーブルを作成
+        conn.execute("""
+            CREATE TABLE payouts (
+                race_id TEXT NOT NULL,
+                bet_type TEXT NOT NULL,
+                combination TEXT NOT NULL,
+                payout INTEGER,
+                PRIMARY KEY (race_id, bet_type, combination)
+            )
+        """)
+
+        # テストデータを挿入
+        # Race R1: スナップショットあり
+        # Race R2: スナップショットあり (異なる時刻で複数)
+        conn.executemany(
+            "INSERT INTO odds_snapshots (race_id, horse_no, observed_at, win_odds, popularity) VALUES (?, ?, ?, ?, ?)",
+            [
+                ("R1", 1, "2024-12-27T20:00:00", 5.0, 2),
+                ("R1", 2, "2024-12-27T20:00:00", 3.0, 1),
+                ("R1", 3, "2024-12-27T20:00:00", 10.0, 3),
+                # R2: 複数スナップショット (20:00 と 21:00)
+                ("R2", 1, "2024-12-27T20:00:00", 4.0, 1),  # 20:00 時点
+                ("R2", 2, "2024-12-27T20:00:00", 6.0, 2),
+                ("R2", 1, "2024-12-27T21:00:00", 3.5, 1),  # 21:00 時点 (最新)
+                ("R2", 2, "2024-12-27T21:00:00", 7.0, 2),
+            ]
+        )
+
+        # race_results (最終結果の popularity は異なる場合がある)
+        conn.executemany(
+            "INSERT INTO race_results (race_id, horse_id, horse_no, finish_order, popularity) VALUES (?, ?, ?, ?, ?)",
+            [
+                ("R1", "A", 1, 1, 3),  # 最終人気=3 (スナップショット=2 と異なる)
+                ("R1", "B", 2, 2, 1),
+                ("R1", "C", 3, 3, 2),
+                ("R2", "D", 1, 1, 2),  # 最終人気=2 (スナップショット=1 と異なる)
+                ("R2", "E", 2, 2, 1),
+            ]
+        )
+
+        # payouts
+        conn.executemany(
+            "INSERT INTO payouts (race_id, bet_type, combination, payout) VALUES (?, ?, ?, ?)",
+            [
+                ("R1", "単勝", "1", 500),
+                ("R2", "単勝", "1", 350),
+            ]
+        )
+
+        conn.commit()
+        yield conn
+        conn.close()
+
+    def test_load_odds_snapshots_basic(self, db_with_snapshots):
+        """基本的なスナップショット読み込み"""
+        from src.features_v4.train_eval_v4 import load_odds_snapshots_for_races
+
+        snapshots = load_odds_snapshots_for_races(db_with_snapshots, ["R1"])
+
+        assert snapshots is not None
+        assert len(snapshots) == 3  # R1 の 3 馬
+        assert set(snapshots["horse_no"]) == {1, 2, 3}
+
+    def test_load_odds_snapshots_latest(self, db_with_snapshots):
+        """最新スナップショットの取得"""
+        from src.features_v4.train_eval_v4 import load_odds_snapshots_for_races
+
+        # decision_cutoff なし = 最新
+        snapshots = load_odds_snapshots_for_races(db_with_snapshots, ["R2"])
+
+        assert snapshots is not None
+        r2_horse1 = snapshots[snapshots["horse_no"] == 1].iloc[0]
+        # 最新 (21:00) のオッズ
+        assert r2_horse1["win_odds"] == 3.5
+        assert r2_horse1["observed_at"] == "2024-12-27T21:00:00"
+
+    def test_load_odds_snapshots_with_cutoff(self, db_with_snapshots):
+        """decision_cutoff を指定した場合"""
+        from src.features_v4.train_eval_v4 import load_odds_snapshots_for_races
+
+        # 20:30 以前 = 20:00 のスナップショットのみ
+        snapshots = load_odds_snapshots_for_races(
+            db_with_snapshots,
+            ["R2"],
+            decision_cutoff="2024-12-27T20:30:00",
+        )
+
+        assert snapshots is not None
+        r2_horse1 = snapshots[snapshots["horse_no"] == 1].iloc[0]
+        # 20:00 のオッズ (20:30 以前で最新)
+        assert r2_horse1["win_odds"] == 4.0
+        assert r2_horse1["observed_at"] == "2024-12-27T20:00:00"
+
+    def test_load_odds_snapshots_no_table(self, in_memory_db):
+        """odds_snapshots テーブルがない場合"""
+        from src.features_v4.train_eval_v4 import load_odds_snapshots_for_races
+
+        # テーブルなし
+        result = load_odds_snapshots_for_races(in_memory_db, ["R1", "R2"])
+        assert result is None
+
+    def test_load_race_results_with_snapshots(self, db_with_snapshots):
+        """race_results にスナップショット popularity をマージ"""
+        from src.features_v4.train_eval_v4 import load_race_results_for_roi
+
+        # スナップショット使用
+        results = load_race_results_for_roi(
+            db_with_snapshots,
+            ["R1"],
+            decision_cutoff=None,
+            use_snapshots=True,
+        )
+
+        # R1 の horse_no=1 は最終 popularity=3、スナップショット popularity=2
+        r1_horse1 = results[(results["race_id"] == "R1") & (results["horse_no"] == 1)].iloc[0]
+        assert r1_horse1["popularity"] == 2  # スナップショットの値
+        assert r1_horse1["popularity_source"] == "odds_snapshot"
+
+    def test_load_race_results_without_snapshots(self, db_with_snapshots):
+        """スナップショット使用しない場合"""
+        from src.features_v4.train_eval_v4 import load_race_results_for_roi
+
+        # スナップショット不使用
+        results = load_race_results_for_roi(
+            db_with_snapshots,
+            ["R1"],
+            decision_cutoff=None,
+            use_snapshots=False,
+        )
+
+        # race_results の値がそのまま
+        r1_horse1 = results[(results["race_id"] == "R1") & (results["horse_no"] == 1)].iloc[0]
+        assert r1_horse1["popularity"] == 3  # race_results の値
+        assert r1_horse1["popularity_source"] == "race_results"
+
+    def test_load_race_results_partial_snapshots(self, db_with_snapshots):
+        """一部のレースのみスナップショットがある場合"""
+        from src.features_v4.train_eval_v4 import load_race_results_for_roi
+
+        # R3 を追加 (スナップショットなし)
+        db_with_snapshots.execute(
+            "INSERT INTO race_results (race_id, horse_id, horse_no, finish_order, popularity) VALUES (?, ?, ?, ?, ?)",
+            ("R3", "F", 1, 1, 5),
+        )
+        db_with_snapshots.commit()
+
+        results = load_race_results_for_roi(
+            db_with_snapshots,
+            ["R1", "R3"],
+            use_snapshots=True,
+        )
+
+        # R1 はスナップショットあり
+        r1 = results[results["race_id"] == "R1"]
+        assert all(r1["popularity_source"] == "odds_snapshot")
+
+        # R3 はスナップショットなし (race_results のまま)
+        r3 = results[results["race_id"] == "R3"]
+        assert all(r3["popularity_source"] == "race_results")
+
+
+# =============================================================================
 # Run Tests
 # =============================================================================
 

@@ -156,6 +156,19 @@ Examples:
         help="Comma-separated gap thresholds for sweep (default: 0.005,0.01,0.015,0.02,0.03,0.05,0.08)",
     )
 
+    # Pre-day cutoff options (前日締め運用)
+    parser.add_argument(
+        "--decision-cutoff",
+        type=str,
+        default=None,
+        help="Decision cutoff time for market evaluation (ISO format, e.g., 2024-12-27T21:00:00)",
+    )
+    parser.add_argument(
+        "--no-snapshots",
+        action="store_true",
+        help="Disable using odds_snapshots for popularity (use race_results instead)",
+    )
+
     args = parser.parse_args()
 
     # Setup logging
@@ -179,6 +192,8 @@ Examples:
     logger.info(f"Include pedigree: {not args.no_pedigree}")
     logger.info(f"Include market: {args.include_market}")
     logger.info(f"ROI sweep: {args.roi_sweep}")
+    logger.info(f"Decision cutoff: {args.decision_cutoff}")
+    logger.info(f"Use snapshots: {not args.no_snapshots}")
 
     # Create output directory
     output_dir = os.path.abspath(args.output)
@@ -215,6 +230,8 @@ Examples:
             roi_sweep=args.roi_sweep,
             roi_sweep_prob=roi_sweep_prob,
             roi_sweep_gap=roi_sweep_gap,
+            decision_cutoff=args.decision_cutoff,
+            use_snapshots=not args.no_snapshots,
         )
 
         # Print results summary
