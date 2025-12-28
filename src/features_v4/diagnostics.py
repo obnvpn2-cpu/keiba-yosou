@@ -583,9 +583,30 @@ def compute_segment_performance(
         warnings.append(msg)
         return [], warnings
 
+    # スキーマ不一致チェック: モデルの期待する特徴量数と available_cols が一致しない場合はスキップ
+    try:
+        model_num_features = model.num_feature()
+    except Exception:
+        model_num_features = None
+
+    if model_num_features is not None and len(available_cols) != model_num_features:
+        msg = (
+            f"Feature schema mismatch: available={len(available_cols)} "
+            f"expected={model_num_features}. Skipping segment performance."
+        )
+        logger.warning(msg)
+        warnings.append(msg)
+        return [], warnings
+
     # 予測確率を計算（利用可能な列のみ使用）
     X = df[available_cols].fillna(-999)
-    y_pred_proba = model.predict(X, num_iteration=model.best_iteration)
+    try:
+        y_pred_proba = model.predict(X, num_iteration=model.best_iteration)
+    except Exception as e:
+        msg = f"Model prediction failed: {e}. Skipping segment performance."
+        logger.warning(msg)
+        warnings.append(msg)
+        return [], warnings
 
     work_df = df[["race_id", target_col] + [k for k in segment_keys if k in df.columns]].copy()
     work_df["pred_proba"] = y_pred_proba
