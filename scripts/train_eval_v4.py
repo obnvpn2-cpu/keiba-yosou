@@ -134,6 +134,52 @@ def apply_feature_exclusion(
     return filtered
 
 
+def load_booster(model_path: str) -> "lgb.Booster":
+    """
+    LightGBM Boosterをロードする（model_str フォールバック付き）
+
+    Windows の日本語パス環境では lgb.Booster(model_file=...) が失敗する場合がある。
+    その場合、Python の file read で内容を読み込み、model_str 経由でロードする。
+
+    Args:
+        model_path: モデルファイルのパス
+
+    Returns:
+        lgb.Booster インスタンス
+
+    Raises:
+        FileNotFoundError: ファイルが存在しない場合
+    """
+    if not HAS_LIGHTGBM:
+        raise ImportError("lightgbm is not installed")
+
+    path = Path(model_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Model file not found: {model_path}")
+
+    # まず model_file でロードを試みる
+    model_file_error = None
+    try:
+        model = lgb.Booster(model_file=str(path))
+        logger.info("Loaded model via model_file: %s", path)
+        return model
+    except Exception as e:
+        model_file_error = e
+        logger.warning("lgb.Booster(model_file=...) failed (%s), trying model_str fallback...", e)
+
+    # フォールバック: Python read → model_str
+    try:
+        model_str = path.read_text(encoding="utf-8")
+        model = lgb.Booster(model_str=model_str)
+        logger.info("Loaded model via model_str fallback: %s", path)
+        return model
+    except Exception as e2:
+        raise RuntimeError(
+            f"Failed to load model from {model_path}. "
+            f"model_file error: {model_file_error}, model_str error: {e2}"
+        ) from e2
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Train/Eval/ROI Pipeline for FeaturePack v1",
@@ -393,7 +439,7 @@ Examples:
                     sys.exit(1)
 
             logger.info("Loading existing model: %s", args.model_path)
-            model = lgb.Booster(model_file=args.model_path)
+            model = load_booster(args.model_path)
 
             # Load feature columns with fallback
             feature_cols, used_cols_path = load_feature_columns_with_fallback(
@@ -471,6 +517,11 @@ Examples:
             logger.info(f"  Hit Rate: {roi['hit_rate']:.2%}")
             logger.info(f"  ROI:      {roi['roi']:.2%}")
 
+        # 非シリアライズ可能なオブジェクトを抽出（diagnostics 用）
+        trained_model = results.pop("_model", None)
+        trained_feature_cols = results.pop("_feature_cols", None)
+        trained_test_df = results.pop("_test_df", None)
+
         logger.info("=" * 70)
         print(json.dumps(results, indent=2, ensure_ascii=False))
 
@@ -478,53 +529,36 @@ Examples:
         if args.feature_diagnostics:
             if not HAS_LIGHTGBM:
                 logger.error("lightgbm is not installed, cannot run diagnostics")
+            elif trained_model is None:
+                logger.error("No model available for diagnostics (training may have failed)")
             else:
                 logger.info("")
                 logger.info("=" * 70)
-                logger.info("Running Feature Diagnostics...")
+                logger.info("Running Feature Diagnostics (using in-memory model)...")
                 logger.info("=" * 70)
 
-                # Load model from saved file
-                model_path = os.path.join(output_dir, f"lgbm_{args.target}_v4.txt")
-                if os.path.exists(model_path):
-                    model = lgb.Booster(model_file=model_path)
+                # in-memory model を使用（ディスクから再ロードしない）
+                model = trained_model
+                feature_cols = trained_feature_cols
+                test_df = trained_test_df
 
-                    # Load feature columns with fallback
-                    feature_cols, used_cols_path = load_feature_columns_with_fallback(
-                        output_dir, args.target
-                    )
+                # Apply feature exclusion if specified
+                if args.exclude_features_file:
+                    exclude_set = load_exclude_features(args.exclude_features_file)
+                    feature_cols = apply_feature_exclusion(feature_cols, exclude_set)
 
-                    # Apply feature exclusion if specified
-                    if args.exclude_features_file:
-                        exclude_set = load_exclude_features(args.exclude_features_file)
-                        feature_cols = apply_feature_exclusion(feature_cols, exclude_set)
-
-                    # Load data
-                    df = load_feature_data(
-                        conn,
-                        include_pedigree=not args.no_pedigree,
-                        include_market=args.include_market,
-                    )
-
-                    # Split data
-                    train_df, val_df, test_df = split_time_series(
-                        df, args.train_end, args.val_end, args.split_mode
-                    )
-
-                    # Run diagnostics on test data
-                    diag_report = run_diagnostics(
-                        model=model,
-                        df=test_df,
-                        feature_cols=feature_cols,
-                        target_col=args.target,
-                        dataset_name="test",
-                        compute_perm=not args.no_permutation,
-                        perm_top_n=args.perm_top_n,
-                        perm_n_repeats=args.perm_n_repeats,
-                    )
-                    save_diagnostics(diag_report, output_dir, args.target)
-                else:
-                    logger.error("Model file not found: %s", model_path)
+                # Run diagnostics on test data
+                diag_report = run_diagnostics(
+                    model=model,
+                    df=test_df,
+                    feature_cols=feature_cols,
+                    target_col=args.target,
+                    dataset_name="test",
+                    compute_perm=not args.no_permutation,
+                    perm_top_n=args.perm_top_n,
+                    perm_n_repeats=args.perm_n_repeats,
+                )
+                save_diagnostics(diag_report, output_dir, args.target)
 
     finally:
         conn.close()
