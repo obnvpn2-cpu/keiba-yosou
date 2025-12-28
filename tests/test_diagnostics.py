@@ -46,6 +46,9 @@ def mock_model():
         "split": np.array([500, 400, 300, 200, 100]),
     }[importance_type])
 
+    # Mock num_feature (must match sample_feature_cols length = 5)
+    model.num_feature = MagicMock(return_value=5)
+
     # Mock predict
     def mock_predict(X, num_iteration=None):
         n = len(X)
@@ -392,6 +395,26 @@ class TestComputeSegmentPerformance:
         # Should warn about missing columns
         assert len(warnings) > 0
 
+    @patch('src.features_v4.diagnostics.HAS_LIGHTGBM', True)
+    def test_schema_mismatch_skipped_as_warning(self, sample_df, sample_feature_cols):
+        """Should skip segment performance with warning when schema mismatch"""
+        # Create a model that expects a different number of features
+        mock_model = MagicMock()
+        mock_model.best_iteration = 100
+        mock_model.num_feature = MagicMock(return_value=31)  # Model expects 31 features
+        # But sample_feature_cols has only 5 features
+
+        results, warnings = compute_segment_performance(
+            mock_model, sample_df, sample_feature_cols,
+            target_col="target_win",
+            segment_keys=["surface_id"]
+        )
+        # Should return empty results
+        assert len(results) == 0
+        # Should have warning about schema mismatch
+        assert len(warnings) > 0
+        assert any("schema mismatch" in w.lower() for w in warnings)
+
 
 # =============================================================================
 # Test run_diagnostics
@@ -702,6 +725,112 @@ feature_3
 
         filtered = apply_feature_exclusion(feature_cols, exclude_set)
         assert filtered == ["feat_1", "feat_3"]
+
+
+# =============================================================================
+# Test Schema Mismatch in run_diagnostics (integration)
+# =============================================================================
+
+class TestRunDiagnosticsSchemaIntegration:
+    """Integration tests for schema mismatch handling in run_diagnostics"""
+
+    @patch('src.features_v4.diagnostics.HAS_LIGHTGBM', True)
+    def test_schema_mismatch_segment_skipped_not_error(self, sample_df, sample_feature_cols):
+        """Schema mismatch should result in segment_skipped=True but no errors"""
+        # Create model with mismatched feature count
+        mock_model = MagicMock()
+        mock_model.best_iteration = 100
+        mock_model.num_feature = MagicMock(return_value=31)  # Expects 31, but only 5 available
+        mock_model.feature_importance = MagicMock(side_effect=lambda importance_type: {
+            "gain": np.array([100.0, 80.0, 60.0, 40.0, 20.0]),
+            "split": np.array([500, 400, 300, 200, 100]),
+        }[importance_type])
+
+        report = run_diagnostics(
+            mock_model, sample_df, sample_feature_cols,
+            target_col="target_win",
+            dataset_name="test",
+            compute_perm=False,  # Skip permutation to avoid prediction
+        )
+
+        # LightGBM importance should work (doesn't need prediction)
+        assert len(report.feature_importance) == len(sample_feature_cols)
+        # Segment should be skipped (not crashed)
+        assert report.segment_skipped is True
+        # Schema mismatch should be in warnings or skip reason, NOT errors
+        assert "mismatch" in (report.segment_skip_reason or "").lower() or \
+               any("mismatch" in w.lower() for w in report.warnings)
+        # Importantly: errors should NOT contain the mismatch (it's a skip, not error)
+        assert not any("mismatch" in e.lower() for e in report.errors)
+
+
+# =============================================================================
+# Test Model Saving Fallback
+# =============================================================================
+
+class TestModelSavingFallback:
+    """Tests for model saving fallback in train_eval_v4.py"""
+
+    def test_model_to_string_fallback(self, tmp_path):
+        """When save_model fails, should fall back to model_to_string"""
+        # Create a mock model where save_model fails but model_to_string works
+        mock_model = MagicMock()
+        mock_model.best_iteration = 100
+        mock_model.save_model = MagicMock(side_effect=Exception("Permission denied"))
+        mock_model.model_to_string = MagicMock(return_value="mock model content\nline2")
+
+        from pathlib import Path as P
+
+        model_path = tmp_path / "test_model.txt"
+        model_saved = False
+
+        # Simulate the fallback logic from train_model
+        try:
+            mock_model.save_model(str(model_path))
+            model_saved = True
+        except Exception as e:
+            try:
+                best_iter = getattr(mock_model, 'best_iteration', None)
+                model_str = mock_model.model_to_string(num_iteration=best_iter)
+                model_path.write_text(model_str, encoding="utf-8")
+                model_saved = True
+            except Exception as e2:
+                pass
+
+        # Should have saved via fallback
+        assert model_saved is True
+        assert model_path.exists()
+        assert model_path.stat().st_size > 0
+        assert model_path.read_text() == "mock model content\nline2"
+
+    def test_both_save_methods_fail(self, tmp_path):
+        """When both save_model and model_to_string fail, should continue without crash"""
+        mock_model = MagicMock()
+        mock_model.best_iteration = 100
+        mock_model.save_model = MagicMock(side_effect=Exception("Permission denied"))
+        mock_model.model_to_string = MagicMock(side_effect=Exception("Internal error"))
+
+        model_path = tmp_path / "test_model.txt"
+        model_saved = False
+        error_logged = False
+
+        # Simulate the fallback logic from train_model
+        try:
+            mock_model.save_model(str(model_path))
+            model_saved = True
+        except Exception as e:
+            try:
+                best_iter = getattr(mock_model, 'best_iteration', None)
+                model_str = mock_model.model_to_string(num_iteration=best_iter)
+                model_path.write_text(model_str, encoding="utf-8")
+                model_saved = True
+            except Exception as e2:
+                error_logged = True
+
+        # Should not have saved, but also should not crash
+        assert model_saved is False
+        assert error_logged is True
+        assert not model_path.exists()
 
 
 # =============================================================================

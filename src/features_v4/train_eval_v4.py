@@ -482,10 +482,27 @@ def train_model(
         out_path = Path(output_dir)
         out_path.mkdir(parents=True, exist_ok=True)
 
-        # モデル保存
+        # モデル保存（fail-soft: save_model失敗時はmodel_to_stringでfallback）
         model_path = out_path / f"lgbm_{target_col}_v4.txt"
-        model.save_model(str(model_path))
-        logger.info("Saved model to %s", model_path)
+        model_saved = False
+        try:
+            model.save_model(str(model_path))
+            model_saved = True
+            logger.info("Saved model to %s", model_path)
+        except Exception as e:
+            logger.warning("save_model failed (%s), trying model_to_string fallback...", e)
+            try:
+                # LightGBMのmodel_to_stringでモデル文字列を取得
+                best_iter = getattr(model, 'best_iteration', None)
+                model_str = model.model_to_string(num_iteration=best_iter)
+                model_path.write_text(model_str, encoding="utf-8")
+                model_saved = True
+                logger.warning("Saved model via model_to_string fallback to %s", model_path)
+            except Exception as e2:
+                logger.error(
+                    "Both save_model and model_to_string fallback failed: %s. "
+                    "Continuing with in-memory model (model file not saved).", e2
+                )
 
         # 特徴量リスト保存
         cols_path = out_path / f"feature_columns_{target_col}_v4.json"

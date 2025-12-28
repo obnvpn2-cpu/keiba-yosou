@@ -234,9 +234,28 @@ market_popularity
 - 一部の特徴量がデータに存在しなくても、利用可能な特徴量で診断を続行
 - Permutation Importance が失敗しても、LightGBM 重要度は出力
 - Segment Performance が計算できない場合でも、警告を記録して他の診断は完了
+- **スキーマ不一致時**（`--diagnostics-only` で旧モデルを使用時等）は Segment Performance をスキップし、警告として記録（エラーではない）
 
 診断結果の JSON には `warnings` と `errors` フィールドが含まれ、
 どのような問題が発生したかを確認できます。
+
+#### Windows 環境での注意事項
+
+Windows で日本語パス（例：`C:\Users\ユーザー\デスクトップ\`）を含む環境では、
+LightGBM の `save_model()` が失敗する場合があります。
+
+この場合、自動的に `model_to_string()` + Python ファイル書き込みでフォールバック保存を試みます：
+- 成功時：WARNING ログに `"Saved model via model_to_string fallback"` と出力
+- 両方失敗時：モデルファイルは保存されず、in-memory モデルで評価・診断を続行
+
+```
+# 正常ログ例
+Saved model to models/lgbm_target_win_v4.txt
+
+# フォールバック時のログ例
+save_model failed (...), trying model_to_string fallback...
+Saved model via model_to_string fallback to models/lgbm_target_win_v4.txt
+```
 
 #### 出力内容
 
