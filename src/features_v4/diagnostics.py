@@ -135,6 +135,12 @@ class DiagnosticsReport:
     # Segment Performance
     segment_performance: List[SegmentPerformanceResult] = field(default_factory=list)
 
+    # メタ情報 (fail-soft 用)
+    errors: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+    segment_skipped: bool = False
+    segment_skip_reason: Optional[str] = None
+
 
 # =============================================================================
 # Feature Groups Definition
@@ -543,7 +549,7 @@ def compute_segment_performance(
     feature_cols: List[str],
     target_col: str = "target_win",
     segment_keys: Optional[List[str]] = None,
-) -> List[SegmentPerformanceResult]:
+) -> Tuple[List[SegmentPerformanceResult], List[str]]:
     """
     セグメント別のモデルパフォーマンスを計算
 
@@ -555,13 +561,30 @@ def compute_segment_performance(
         segment_keys: セグメント化するカラム (None = デフォルト)
 
     Returns:
-        SegmentPerformanceResult のリスト
+        Tuple of (SegmentPerformanceResult のリスト, 警告メッセージのリスト)
     """
+    warnings = []
+
     if segment_keys is None:
         segment_keys = ["surface_id", "distance_cat", "track_condition_id", "grade_id"]
 
-    # 予測確率を計算
-    X = df[feature_cols].fillna(-999)
+    # 欠損列をチェックして警告
+    available_cols = [c for c in feature_cols if c in df.columns]
+    missing_cols = [c for c in feature_cols if c not in df.columns]
+
+    if missing_cols:
+        msg = f"Missing {len(missing_cols)} feature columns in df (e.g., {missing_cols[:5]})"
+        logger.warning(msg)
+        warnings.append(msg)
+
+    if len(available_cols) == 0:
+        msg = "No feature columns available in df, skipping segment performance"
+        logger.warning(msg)
+        warnings.append(msg)
+        return [], warnings
+
+    # 予測確率を計算（利用可能な列のみ使用）
+    X = df[available_cols].fillna(-999)
     y_pred_proba = model.predict(X, num_iteration=model.best_iteration)
 
     work_df = df[["race_id", target_col] + [k for k in segment_keys if k in df.columns]].copy()
@@ -662,7 +685,7 @@ def compute_segment_performance(
     # segment_key, segment_value でソート
     results.sort(key=lambda x: (x.segment_key, str(x.segment_value)))
 
-    return results
+    return results, warnings
 
 
 # =============================================================================
@@ -681,7 +704,7 @@ def run_diagnostics(
     segment_keys: Optional[List[str]] = None,
 ) -> DiagnosticsReport:
     """
-    フル診断を実行
+    フル診断を実行 (fail-soft: 部分エラーでも続行)
 
     Args:
         model: 学習済みモデル
@@ -697,6 +720,11 @@ def run_diagnostics(
     Returns:
         DiagnosticsReport
     """
+    errors = []
+    warnings = []
+    segment_skipped = False
+    segment_skip_reason = None
+
     logger.info("=" * 70)
     logger.info("Running Feature Diagnostics for %s", dataset_name)
     logger.info("=" * 70)
@@ -704,56 +732,107 @@ def run_diagnostics(
     logger.info("  Races: %d", df["race_id"].nunique())
     logger.info("  Features: %d", len(feature_cols))
 
+    # 利用可能な特徴量を確認
+    available_feature_cols = [c for c in feature_cols if c in df.columns]
+    missing_feature_cols = [c for c in feature_cols if c not in df.columns]
+    if missing_feature_cols:
+        msg = f"Missing {len(missing_feature_cols)} feature columns (e.g., {missing_feature_cols[:5]})"
+        logger.warning(msg)
+        warnings.append(msg)
+        logger.info("  Available features: %d / %d", len(available_feature_cols), len(feature_cols))
+
     # 1. LightGBM Importance
+    lgbm_imp = []
     logger.info("")
     logger.info("1. Computing LightGBM Importance...")
-    lgbm_imp = compute_lgbm_importance(model, feature_cols)
-    logger.info("   Top 10 (gain):")
-    for i, feat in enumerate(lgbm_imp[:10], 1):
-        logger.info("     %2d. %s: %.2f", i, feat.feature_name, feat.gain)
+    try:
+        lgbm_imp = compute_lgbm_importance(model, feature_cols)
+        logger.info("   Top 10 (gain):")
+        for i, feat in enumerate(lgbm_imp[:10], 1):
+            logger.info("     %2d. %s: %.2f", i, feat.feature_name, feat.gain)
+    except Exception as e:
+        msg = f"LightGBM importance failed: {e}"
+        logger.error(msg)
+        errors.append(msg)
 
     # 2. Permutation Importance (オプション)
     perm_imp = []
-    if compute_perm:
+    if compute_perm and available_feature_cols:
         logger.info("")
         logger.info("2. Computing Permutation Importance (top %s, %d repeats)...",
                     perm_top_n or "all", perm_n_repeats)
-        perm_imp = compute_permutation_importance(
-            model, df, feature_cols, target_col,
-            n_repeats=perm_n_repeats,
-            top_n=perm_top_n,
-        )
-        logger.info("   Top 10 (delta_auc):")
-        for i, feat in enumerate(perm_imp[:10], 1):
-            logger.info("     %2d. %s: AUC=%.4f, MRR=%.4f",
-                        i, feat.feature_name, feat.delta_auc, feat.delta_mrr)
+        try:
+            perm_imp = compute_permutation_importance(
+                model, df, available_feature_cols, target_col,
+                n_repeats=perm_n_repeats,
+                top_n=perm_top_n,
+            )
+            logger.info("   Top 10 (delta_auc):")
+            for i, feat in enumerate(perm_imp[:10], 1):
+                logger.info("     %2d. %s: AUC=%.4f, MRR=%.4f",
+                            i, feat.feature_name, feat.delta_auc, feat.delta_mrr)
+        except Exception as e:
+            msg = f"Permutation importance failed: {e}"
+            logger.error(msg)
+            errors.append(msg)
+    elif not available_feature_cols:
+        msg = "Skipping permutation importance: no available feature columns"
+        logger.warning(msg)
+        warnings.append(msg)
 
     # 3. Feature Group Importance
-    logger.info("")
-    logger.info("3. Computing Feature Group Importance...")
-    group_imp = compute_group_importance(lgbm_imp, perm_imp if perm_imp else None)
-    logger.info("   Group Summary:")
-    for g in group_imp:
-        perm_str = ""
-        if g.perm_delta_auc is not None:
-            perm_str = f", perm_auc={g.perm_delta_auc:.4f}"
-        logger.info("     %s: %d features, gain=%.2f%s",
-                    g.group_name, g.n_features, g.total_gain, perm_str)
+    group_imp = []
+    if lgbm_imp:
+        logger.info("")
+        logger.info("3. Computing Feature Group Importance...")
+        try:
+            group_imp = compute_group_importance(lgbm_imp, perm_imp if perm_imp else None)
+            logger.info("   Group Summary:")
+            for g in group_imp:
+                perm_str = ""
+                if g.perm_delta_auc is not None:
+                    perm_str = f", perm_auc={g.perm_delta_auc:.4f}"
+                logger.info("     %s: %d features, gain=%.2f%s",
+                            g.group_name, g.n_features, g.total_gain, perm_str)
+        except Exception as e:
+            msg = f"Group importance failed: {e}"
+            logger.error(msg)
+            errors.append(msg)
 
-    # 4. Segment Performance
+    # 4. Segment Performance (fail-soft)
+    seg_perf = []
+    seg_warnings = []
     logger.info("")
     logger.info("4. Computing Segment Performance...")
-    seg_perf = compute_segment_performance(
-        model, df, feature_cols, target_col, segment_keys
-    )
-    logger.info("   Segment Summary:")
-    for seg in seg_perf:
-        logger.info("     %s: %d races, Top1=%.1f%%, MRR=%.3f",
-                    seg.segment_name, seg.n_races,
-                    seg.top1_hit_rate * 100, seg.mrr)
+    try:
+        seg_perf, seg_warnings = compute_segment_performance(
+            model, df, available_feature_cols, target_col, segment_keys
+        )
+        warnings.extend(seg_warnings)
+        if seg_perf:
+            logger.info("   Segment Summary:")
+            for seg in seg_perf:
+                logger.info("     %s: %d races, Top1=%.1f%%, MRR=%.3f",
+                            seg.segment_name, seg.n_races,
+                            seg.top1_hit_rate * 100, seg.mrr)
+        else:
+            segment_skipped = True
+            segment_skip_reason = "No segment results computed"
+            if seg_warnings:
+                segment_skip_reason = "; ".join(seg_warnings)
+            logger.warning("   Segment performance skipped: %s", segment_skip_reason)
+    except Exception as e:
+        segment_skipped = True
+        segment_skip_reason = str(e)
+        msg = f"Segment performance failed: {e}"
+        logger.error(msg)
+        errors.append(msg)
 
     logger.info("")
-    logger.info("Diagnostics complete.")
+    if errors:
+        logger.warning("Diagnostics completed with %d error(s)", len(errors))
+    else:
+        logger.info("Diagnostics complete.")
 
     return DiagnosticsReport(
         dataset_name=dataset_name,
@@ -764,6 +843,10 @@ def run_diagnostics(
         permutation_importance=perm_imp,
         group_importance=group_imp,
         segment_performance=seg_perf,
+        errors=errors,
+        warnings=warnings,
+        segment_skipped=segment_skipped,
+        segment_skip_reason=segment_skip_reason,
     )
 
 
@@ -903,6 +986,11 @@ def save_diagnostics(
             {"name": g.group_name, "total_gain": g.total_gain, "n_features": g.n_features}
             for g in report.group_importance
         ],
+        # メタ情報
+        "segment_skipped": report.segment_skipped,
+        "segment_skip_reason": report.segment_skip_reason,
+        "warnings": report.warnings if report.warnings else [],
+        "errors": report.errors if report.errors else [],
     }
     if report.permutation_importance:
         summary["top10_features_perm_auc"] = [
