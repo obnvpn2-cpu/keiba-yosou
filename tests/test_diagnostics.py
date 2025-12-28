@@ -834,6 +834,139 @@ class TestModelSavingFallback:
 
 
 # =============================================================================
+# Test load_booster with model_str fallback
+# =============================================================================
+
+class TestLoadBooster:
+    """Tests for load_booster helper function"""
+
+    def test_load_booster_file_not_found(self, tmp_path):
+        """Should raise FileNotFoundError when file doesn't exist"""
+        import scripts.train_eval_v4 as tev4
+
+        # Save original values
+        original_has_lgb = tev4.HAS_LIGHTGBM
+
+        try:
+            # Mock HAS_LIGHTGBM to True
+            tev4.HAS_LIGHTGBM = True
+
+            with pytest.raises(FileNotFoundError) as exc_info:
+                tev4.load_booster(str(tmp_path / "nonexistent_model.txt"))
+            assert "not found" in str(exc_info.value).lower()
+        finally:
+            # Restore
+            tev4.HAS_LIGHTGBM = original_has_lgb
+
+    def test_load_booster_model_str_fallback(self, tmp_path):
+        """Should fall back to model_str when model_file fails"""
+        import scripts.train_eval_v4 as tev4
+
+        # Create a mock model file
+        model_path = tmp_path / "test_model.txt"
+        model_path.write_text("mock model content", encoding="utf-8")
+
+        # Mock lgb.Booster to fail on model_file but succeed on model_str
+        mock_booster = MagicMock()
+
+        def mock_booster_init(model_file=None, model_str=None):
+            if model_file is not None:
+                raise Exception("Permission denied - Japanese path issue")
+            if model_str is not None:
+                return mock_booster
+            raise ValueError("Need model_file or model_str")
+
+        # Save original values
+        original_has_lgb = tev4.HAS_LIGHTGBM
+        original_lgb = tev4.lgb
+
+        try:
+            mock_lgb = MagicMock()
+            mock_lgb.Booster = MagicMock(side_effect=mock_booster_init)
+            tev4.HAS_LIGHTGBM = True
+            tev4.lgb = mock_lgb
+
+            result = tev4.load_booster(str(model_path))
+            assert result == mock_booster
+        finally:
+            # Restore
+            tev4.HAS_LIGHTGBM = original_has_lgb
+            tev4.lgb = original_lgb
+
+    def test_load_booster_both_methods_fail(self, tmp_path):
+        """Should raise RuntimeError when both methods fail"""
+        import scripts.train_eval_v4 as tev4
+
+        # Create a model file
+        model_path = tmp_path / "test_model.txt"
+        model_path.write_text("invalid model content", encoding="utf-8")
+
+        def mock_booster_init(model_file=None, model_str=None):
+            if model_file is not None:
+                raise Exception("Permission denied")
+            if model_str is not None:
+                raise Exception("Invalid model format")
+            raise ValueError("Need model_file or model_str")
+
+        # Save original values
+        original_has_lgb = tev4.HAS_LIGHTGBM
+        original_lgb = tev4.lgb
+
+        try:
+            mock_lgb = MagicMock()
+            mock_lgb.Booster = MagicMock(side_effect=mock_booster_init)
+            tev4.HAS_LIGHTGBM = True
+            tev4.lgb = mock_lgb
+
+            with pytest.raises(RuntimeError) as exc_info:
+                tev4.load_booster(str(model_path))
+            assert "Failed to load model" in str(exc_info.value)
+        finally:
+            # Restore
+            tev4.HAS_LIGHTGBM = original_has_lgb
+            tev4.lgb = original_lgb
+
+
+# =============================================================================
+# Test --feature-diagnostics uses in-memory model (no disk reload)
+# =============================================================================
+
+class TestFeatureDiagnosticsInMemory:
+    """Tests for --feature-diagnostics using in-memory model"""
+
+    def test_run_full_pipeline_returns_model(self):
+        """run_full_pipeline should return model in results"""
+        # We can't easily test the full pipeline without a DB,
+        # but we can verify the structure of what gets returned
+        # by checking the code adds _model, _feature_cols, _test_df
+
+        # This is a structural test - verify the code was modified correctly
+        import src.features_v4.train_eval_v4 as tev4_module
+        import inspect
+        source = inspect.getsource(tev4_module.run_full_pipeline)
+
+        assert '_model' in source
+        assert '_feature_cols' in source
+        assert '_test_df' in source
+        assert 'results["_model"] = model' in source
+
+    def test_feature_diagnostics_flow_uses_in_memory(self):
+        """--feature-diagnostics flow should use in-memory model, not reload from disk"""
+        # Verify the scripts/train_eval_v4.py main function uses trained_model
+        import scripts.train_eval_v4 as script_module
+        import inspect
+        source = inspect.getsource(script_module.main)
+
+        # Should extract model from results
+        assert 'trained_model = results.pop("_model"' in source
+        # Should use in-memory model directly
+        assert 'model = trained_model' in source
+        # Should NOT have lgb.Booster(model_file=...) in the diagnostics section
+        # The only lgb.Booster(model_file=...) should be in diagnostics-only mode
+        # which uses load_booster instead
+
+
+# =============================================================================
 # Run Tests
 # =============================================================================
 

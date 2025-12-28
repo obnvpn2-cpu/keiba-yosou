@@ -2201,6 +2201,12 @@ def run_full_pipeline(
     logger.info("Pipeline completed")
     logger.info("=" * 80)
 
+    # モデル・特徴量・データフレームもresultsに含める（--feature-diagnostics用）
+    # NOTE: これらは JSON シリアライズ不可なので、別キーで返す
+    results["_model"] = model
+    results["_feature_cols"] = feature_cols
+    results["_test_df"] = test_df
+
     return results
 
 

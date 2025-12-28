@@ -242,9 +242,11 @@ market_popularity
 #### Windows 環境での注意事項
 
 Windows で日本語パス（例：`C:\Users\ユーザー\デスクトップ\`）を含む環境では、
-LightGBM の `save_model()` が失敗する場合があります。
+LightGBM の `save_model()` や `Booster(model_file=...)` が失敗する場合があります。
 
-この場合、自動的に `model_to_string()` + Python ファイル書き込みでフォールバック保存を試みます：
+**1. モデル保存時のフォールバック**
+
+`save_model()` が失敗した場合、自動的に `model_to_string()` + Python ファイル書き込みでフォールバック保存を試みます：
 - 成功時：WARNING ログに `"Saved model via model_to_string fallback"` と出力
 - 両方失敗時：モデルファイルは保存されず、in-memory モデルで評価・診断を続行
 
@@ -255,6 +257,23 @@ Saved model to models/lgbm_target_win_v4.txt
 # フォールバック時のログ例
 save_model failed (...), trying model_to_string fallback...
 Saved model via model_to_string fallback to models/lgbm_target_win_v4.txt
+```
+
+**2. --feature-diagnostics での in-memory モデル使用**
+
+`--feature-diagnostics` オプション使用時は、学習後にディスクからモデルを再ロードせず、
+in-memory のモデルをそのまま使用します。これにより日本語パス環境でもエラーなく診断が実行できます。
+
+**3. --diagnostics-only でのモデルロードフォールバック**
+
+`--diagnostics-only` モードでは `load_booster()` ヘルパーを使用してモデルをロードします。
+`lgb.Booster(model_file=...)` が失敗した場合、Python の `read_text()` でファイルを読み込み、
+`lgb.Booster(model_str=...)` 経由でロードを試みます：
+
+```
+# フォールバック時のログ例
+lgb.Booster(model_file=...) failed (...), trying model_str fallback...
+Loaded model via model_str fallback: models/lgbm_target_win_v4.txt
 ```
 
 #### 出力内容
