@@ -203,7 +203,40 @@ python scripts/train_eval_v4.py --db netkeiba.db --diagnostics-only
 
 # 高速モード（Permutation Importance をスキップ）
 python scripts/train_eval_v4.py --db netkeiba.db --diagnostics-only --no-permutation
+
+# 旧モデル（v4以前）を使用（feature_columns ファイル名の自動フォールバック）
+python scripts/train_eval_v4.py --db netkeiba.db --diagnostics-only \
+  --model-path models/lgbm_target_win.txt
+
+# 特定の特徴量を除外して診断
+python scripts/train_eval_v4.py --db netkeiba.db --diagnostics-only \
+  --exclude-features-file exclude_features.txt
 ```
+
+#### 特徴量除外ファイルの形式
+
+`--exclude-features-file` で指定するファイルは、1行1特徴量名の形式です。
+`#` で始まる行はコメントとして無視されます。
+
+```text
+# 除外する特徴量リスト
+horse_weight
+horse_weight_diff
+is_first_run
+# 市場関連も除外
+market_win_odds
+market_popularity
+```
+
+#### Fail-Soft 設計
+
+診断機能は「部分的な失敗があっても続行する」設計です：
+- 一部の特徴量がデータに存在しなくても、利用可能な特徴量で診断を続行
+- Permutation Importance が失敗しても、LightGBM 重要度は出力
+- Segment Performance が計算できない場合でも、警告を記録して他の診断は完了
+
+診断結果の JSON には `warnings` と `errors` フィールドが含まれ、
+どのような問題が発生したかを確認できます。
 
 #### 出力内容
 
@@ -224,7 +257,7 @@ python scripts/train_eval_v4.py --db netkeiba.db --diagnostics-only --no-permuta
 
 5. **診断レポート**（テキスト & JSON）
    - `diagnostics_report_target_win_test_v4.txt`
-   - `diagnostics_summary_target_win_test_v4.json`
+   - `diagnostics_summary_target_win_test_v4.json`（warnings/errors 含む）
 
 ---
 
@@ -360,7 +393,7 @@ python scripts/fetch_masters.py --db netkeiba.db --report
 
 ## Chat Handoff（新チャット貼り付け用の現在地）
 
-- 今日の日付：2025-12-27（JST）
+- 今日の日付：2025-12-28（JST）
 - 前提：Road1〜Road3.5（Feature Diagnostics）までpull済み
 - 環境：
   - sqlite3 コマンドは未導入（Pythonスクリプトで運用）
@@ -368,10 +401,13 @@ python scripts/fetch_masters.py --db netkeiba.db --report
 - DB：`netkeiba.db` をそのまま使用（DBコピーはしない方針）
 - 最新の実装：
   - Feature Diagnostics：`--feature-diagnostics` / `--diagnostics-only` フラグ
+    - Fail-soft 設計：部分エラーでも続行、warnings/errors を記録
+    - `--exclude-features-file` オプション追加
+    - feature_columns ファイル名フォールバック（v4 → legacy）
   - odds_snapshots：netkeiba API 経由でオッズ取得（8馬制限バグ修正済み）
   - Snapshot-based market features：`--include-snapshots` / `--decision-cutoff` オプション
 - 次にやること（推奨順）：
-  1) Feature Diagnostics 実行：`python scripts/train_eval_v4.py --db netkeiba.db --diagnostics-only`
+  1) Feature Diagnostics 実行：`python scripts/train_eval_v4.py --db netkeiba.db --diagnostics-only --no-permutation`
   2) 診断結果を確認して、不要な特徴量を特定
   3) 特徴量選抜後に再学習・評価
   4) 閾値戦略の最適化（`--roi-sweep`）

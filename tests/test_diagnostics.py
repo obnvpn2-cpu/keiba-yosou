@@ -326,7 +326,7 @@ class TestComputeSegmentPerformance:
     @patch('src.features_v4.diagnostics.HAS_LIGHTGBM', True)
     def test_computes_for_segments(self, mock_model, sample_df, sample_feature_cols):
         """Should compute performance for each segment"""
-        results = compute_segment_performance(
+        results, warnings = compute_segment_performance(
             mock_model, sample_df, sample_feature_cols,
             target_col="target_win",
             segment_keys=["surface_id"]
@@ -336,7 +336,7 @@ class TestComputeSegmentPerformance:
     @patch('src.features_v4.diagnostics.HAS_LIGHTGBM', True)
     def test_result_type(self, mock_model, sample_df, sample_feature_cols):
         """Results should be SegmentPerformanceResult objects"""
-        results = compute_segment_performance(
+        results, warnings = compute_segment_performance(
             mock_model, sample_df, sample_feature_cols,
             target_col="target_win",
             segment_keys=["surface_id"]
@@ -347,7 +347,7 @@ class TestComputeSegmentPerformance:
     @patch('src.features_v4.diagnostics.HAS_LIGHTGBM', True)
     def test_includes_metrics(self, mock_model, sample_df, sample_feature_cols):
         """Results should include all required metrics"""
-        results = compute_segment_performance(
+        results, warnings = compute_segment_performance(
             mock_model, sample_df, sample_feature_cols,
             target_col="target_win",
             segment_keys=["surface_id"]
@@ -361,6 +361,36 @@ class TestComputeSegmentPerformance:
             assert hasattr(r, "mrr")
             assert hasattr(r, "n_races")
             assert hasattr(r, "n_entries")
+
+    @patch('src.features_v4.diagnostics.HAS_LIGHTGBM', True)
+    def test_handles_missing_columns(self, mock_model, sample_df):
+        """Should handle missing feature columns gracefully"""
+        # Use feature columns that don't exist in sample_df
+        missing_cols = ["horse_weight", "is_first_run", "some_nonexistent_col"]
+        results, warnings = compute_segment_performance(
+            mock_model, sample_df, missing_cols,
+            target_col="target_win",
+            segment_keys=["surface_id"]
+        )
+        # Should return empty results with warnings
+        assert len(results) == 0
+        assert len(warnings) > 0
+        assert any("Missing" in w for w in warnings)
+
+    @patch('src.features_v4.diagnostics.HAS_LIGHTGBM', True)
+    def test_partial_missing_columns(self, mock_model, sample_df, sample_feature_cols):
+        """Should work with partially missing columns"""
+        # Mix existing and non-existing columns
+        mixed_cols = sample_feature_cols + ["nonexistent_col_1", "nonexistent_col_2"]
+        results, warnings = compute_segment_performance(
+            mock_model, sample_df, mixed_cols,
+            target_col="target_win",
+            segment_keys=["surface_id"]
+        )
+        # Should still compute results using available columns
+        assert len(results) > 0
+        # Should warn about missing columns
+        assert len(warnings) > 0
 
 
 # =============================================================================
@@ -471,6 +501,207 @@ class TestSaveDiagnostics:
         assert len(df_lgbm) == len(sample_feature_cols)
         assert "feature_name" in df_lgbm.columns
         assert "gain" in df_lgbm.columns
+
+
+# =============================================================================
+# Test run_diagnostics fail-soft behavior
+# =============================================================================
+
+class TestRunDiagnosticsFailSoft:
+    """Tests for run_diagnostics fail-soft behavior"""
+
+    @patch('src.features_v4.diagnostics.HAS_LIGHTGBM', True)
+    def test_handles_missing_columns_gracefully(self, mock_model, sample_df):
+        """Should continue when feature columns are missing from df"""
+        # Use completely non-existent feature columns
+        missing_cols = ["horse_weight", "is_first_run", "horse_weight_diff"]
+
+        report = run_diagnostics(
+            mock_model, sample_df, missing_cols,
+            target_col="target_win",
+            dataset_name="test",
+            compute_perm=False,
+        )
+
+        # Should return a report with warnings
+        assert isinstance(report, DiagnosticsReport)
+        assert len(report.warnings) > 0
+        # Segment should be skipped or have warnings
+        assert report.segment_skipped or any("Missing" in w for w in report.warnings)
+
+    @patch('src.features_v4.diagnostics.HAS_LIGHTGBM', True)
+    def test_reports_errors_and_warnings(self, mock_model, sample_df, sample_feature_cols):
+        """Report should contain errors and warnings fields"""
+        report = run_diagnostics(
+            mock_model, sample_df, sample_feature_cols,
+            target_col="target_win",
+            dataset_name="test",
+            compute_perm=False,
+        )
+
+        # Report should have errors/warnings fields (even if empty)
+        assert hasattr(report, "errors")
+        assert hasattr(report, "warnings")
+        assert hasattr(report, "segment_skipped")
+        assert hasattr(report, "segment_skip_reason")
+
+    @patch('src.features_v4.diagnostics.HAS_LIGHTGBM', True)
+    def test_continues_on_partial_errors(self, mock_model, sample_df, sample_feature_cols):
+        """Should continue computing other diagnostics when one fails"""
+        # Create a model that fails on permutation but works for lgbm importance
+        failing_model = MagicMock()
+        failing_model.best_iteration = 100
+        failing_model.feature_importance = MagicMock(side_effect=lambda importance_type: {
+            "gain": np.array([100.0, 80.0, 60.0, 40.0, 20.0]),
+            "split": np.array([500, 400, 300, 200, 100]),
+        }[importance_type])
+        # Predict raises an error to trigger permutation failure
+        failing_model.predict = MagicMock(side_effect=Exception("Prediction failed"))
+
+        report = run_diagnostics(
+            failing_model, sample_df, sample_feature_cols,
+            target_col="target_win",
+            dataset_name="test",
+            compute_perm=True,
+            perm_top_n=2,
+            perm_n_repeats=1,
+        )
+
+        # LightGBM importance should still work
+        assert len(report.feature_importance) > 0
+        # Should have errors recorded
+        assert len(report.errors) > 0
+
+
+# =============================================================================
+# Test save_diagnostics with meta info
+# =============================================================================
+
+class TestSaveDiagnosticsMetaInfo:
+    """Tests for save_diagnostics with warnings/errors metadata"""
+
+    @patch('src.features_v4.diagnostics.HAS_LIGHTGBM', True)
+    def test_json_includes_meta_info(self, mock_model, sample_df, sample_feature_cols, tmp_path):
+        """JSON summary should include errors/warnings metadata"""
+        import json
+
+        report = run_diagnostics(
+            mock_model, sample_df, sample_feature_cols,
+            target_col="target_win",
+            dataset_name="test",
+            compute_perm=False,
+        )
+        # Add some warnings to test
+        report.warnings.append("Test warning")
+
+        save_diagnostics(report, str(tmp_path), "target_win")
+
+        # Load and check JSON
+        json_path = tmp_path / "diagnostics_summary_target_win_test_v4.json"
+        with open(json_path, "r") as f:
+            summary = json.load(f)
+
+        assert "warnings" in summary
+        assert "errors" in summary
+        assert "segment_skipped" in summary
+        assert "segment_skip_reason" in summary
+        assert "Test warning" in summary["warnings"]
+
+
+# =============================================================================
+# Test CLI Helper Functions
+# =============================================================================
+
+class TestCLIHelperFunctions:
+    """Tests for CLI helper functions in train_eval_v4.py"""
+
+    def test_load_feature_columns_with_fallback_v4_first(self, tmp_path):
+        """Should load v4 file first when it exists"""
+        import json
+        import sys
+        sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+
+        # Create both files
+        v4_cols = ["feat_v4_1", "feat_v4_2"]
+        legacy_cols = ["feat_legacy_1", "feat_legacy_2"]
+
+        v4_path = tmp_path / "feature_columns_target_win_v4.json"
+        legacy_path = tmp_path / "feature_columns_target_win.json"
+
+        with open(v4_path, "w") as f:
+            json.dump(v4_cols, f)
+        with open(legacy_path, "w") as f:
+            json.dump(legacy_cols, f)
+
+        # Import helper
+        from scripts.train_eval_v4 import load_feature_columns_with_fallback
+
+        cols, used_path = load_feature_columns_with_fallback(str(tmp_path), "target_win")
+        assert cols == v4_cols
+        assert "v4" in used_path
+
+    def test_load_feature_columns_with_fallback_to_legacy(self, tmp_path):
+        """Should fallback to legacy file when v4 doesn't exist"""
+        import json
+        import sys
+        sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+
+        # Only create legacy file
+        legacy_cols = ["feat_legacy_1", "feat_legacy_2"]
+        legacy_path = tmp_path / "feature_columns_target_win.json"
+
+        with open(legacy_path, "w") as f:
+            json.dump(legacy_cols, f)
+
+        from scripts.train_eval_v4 import load_feature_columns_with_fallback
+
+        cols, used_path = load_feature_columns_with_fallback(str(tmp_path), "target_win")
+        assert cols == legacy_cols
+        assert "v4" not in used_path
+
+    def test_load_feature_columns_raises_when_missing(self, tmp_path):
+        """Should raise FileNotFoundError when both files missing"""
+        import sys
+        sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+
+        from scripts.train_eval_v4 import load_feature_columns_with_fallback
+
+        with pytest.raises(FileNotFoundError) as exc_info:
+            load_feature_columns_with_fallback(str(tmp_path), "target_win")
+        assert "feature_columns" in str(exc_info.value).lower()
+
+    def test_load_exclude_features(self, tmp_path):
+        """Should load exclude features from file"""
+        import sys
+        sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+
+        # Create exclude file
+        exclude_path = tmp_path / "exclude.txt"
+        exclude_path.write_text("""# Comment line
+feature_1
+feature_2
+
+# Another comment
+feature_3
+""")
+
+        from scripts.train_eval_v4 import load_exclude_features
+
+        exclude_set = load_exclude_features(str(exclude_path))
+        assert exclude_set == {"feature_1", "feature_2", "feature_3"}
+
+    def test_apply_feature_exclusion(self):
+        """Should filter out excluded features"""
+        import sys
+        sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+
+        from scripts.train_eval_v4 import apply_feature_exclusion
+
+        feature_cols = ["feat_1", "feat_2", "feat_3", "feat_4"]
+        exclude_set = {"feat_2", "feat_4", "feat_5"}  # feat_5 doesn't exist
+
+        filtered = apply_feature_exclusion(feature_cols, exclude_set)
+        assert filtered == ["feat_1", "feat_3"]
 
 
 # =============================================================================

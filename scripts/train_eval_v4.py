@@ -57,6 +57,83 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def load_feature_columns_with_fallback(
+    output_dir: str,
+    target: str,
+) -> tuple[list[str], str]:
+    """
+    feature_columns JSONファイルを読み込む（v4 → legacy フォールバック付き）
+
+    Args:
+        output_dir: 出力ディレクトリ
+        target: ターゲットカラム名
+
+    Returns:
+        tuple of (feature_cols, used_path)
+    """
+    # v4 パスを優先
+    v4_path = os.path.join(output_dir, f"feature_columns_{target}_v4.json")
+    legacy_path = os.path.join(output_dir, f"feature_columns_{target}.json")
+
+    if os.path.exists(v4_path):
+        logger.info("Loading feature columns from: %s", v4_path)
+        with open(v4_path, "r") as f:
+            return json.load(f), v4_path
+    elif os.path.exists(legacy_path):
+        logger.info("v4 feature_columns not found, using legacy: %s", legacy_path)
+        with open(legacy_path, "r") as f:
+            return json.load(f), legacy_path
+    else:
+        raise FileNotFoundError(
+            f"Feature columns file not found. Tried:\n  - {v4_path}\n  - {legacy_path}"
+        )
+
+
+def load_exclude_features(filepath: str) -> set[str]:
+    """
+    除外特徴量リストを読み込む
+
+    ファイル形式: 1行1特徴量名、# で始まる行はコメント
+
+    Args:
+        filepath: 除外特徴量ファイルパス
+
+    Returns:
+        除外特徴量名のセット
+    """
+    exclude_set = set()
+    with open(filepath, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            # コメント行と空行をスキップ
+            if not line or line.startswith("#"):
+                continue
+            exclude_set.add(line)
+    logger.info("Loaded %d features to exclude from: %s", len(exclude_set), filepath)
+    return exclude_set
+
+
+def apply_feature_exclusion(
+    feature_cols: list[str],
+    exclude_set: set[str],
+) -> list[str]:
+    """
+    特徴量リストから除外特徴量を除去
+
+    Args:
+        feature_cols: 元の特徴量リスト
+        exclude_set: 除外する特徴量名のセット
+
+    Returns:
+        フィルタ後の特徴量リスト
+    """
+    filtered = [c for c in feature_cols if c not in exclude_set]
+    n_excluded = len(feature_cols) - len(filtered)
+    if n_excluded > 0:
+        logger.info("Excluded %d features, remaining: %d", n_excluded, len(filtered))
+    return filtered
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Train/Eval/ROI Pipeline for FeaturePack v1",
@@ -86,6 +163,12 @@ Examples:
 
   # Fast diagnostics (skip permutation importance)
   python scripts/train_eval_v4.py --db netkeiba.db --diagnostics-only --no-permutation
+
+  # Use legacy model with fallback (auto-detects feature_columns_target_win.json)
+  python scripts/train_eval_v4.py --db netkeiba.db --diagnostics-only --model-path models/lgbm_target_win.txt
+
+  # Exclude specific features via file
+  python scripts/train_eval_v4.py --db netkeiba.db --diagnostics-only --exclude-features-file exclude_features.txt
 """
     )
     parser.add_argument(
@@ -226,6 +309,12 @@ Examples:
         default=None,
         help="Path to existing model file for --diagnostics-only mode",
     )
+    parser.add_argument(
+        "--exclude-features-file",
+        type=str,
+        default=None,
+        help="Path to file with feature names to exclude (1 per line, # for comments)",
+    )
 
     args = parser.parse_args()
 
@@ -260,6 +349,8 @@ Examples:
     if args.diagnostics_only:
         logger.info(f"Diagnostics only mode: {args.diagnostics_only}")
         logger.info(f"Model path: {args.model_path}")
+    if args.exclude_features_file:
+        logger.info(f"Exclude features file: {args.exclude_features_file}")
 
     # Create output directory
     output_dir = os.path.abspath(args.output)
@@ -304,10 +395,15 @@ Examples:
             logger.info("Loading existing model: %s", args.model_path)
             model = lgb.Booster(model_file=args.model_path)
 
-            # Load feature columns
-            cols_path = os.path.join(output_dir, f"feature_columns_{args.target}_v4.json")
-            with open(cols_path, "r") as f:
-                feature_cols = json.load(f)
+            # Load feature columns with fallback
+            feature_cols, used_cols_path = load_feature_columns_with_fallback(
+                output_dir, args.target
+            )
+
+            # Apply feature exclusion if specified
+            if args.exclude_features_file:
+                exclude_set = load_exclude_features(args.exclude_features_file)
+                feature_cols = apply_feature_exclusion(feature_cols, exclude_set)
 
             # Load data
             logger.info("Loading feature data...")
@@ -393,10 +489,15 @@ Examples:
                 if os.path.exists(model_path):
                     model = lgb.Booster(model_file=model_path)
 
-                    # Load feature columns
-                    cols_path = os.path.join(output_dir, f"feature_columns_{args.target}_v4.json")
-                    with open(cols_path, "r") as f:
-                        feature_cols = json.load(f)
+                    # Load feature columns with fallback
+                    feature_cols, used_cols_path = load_feature_columns_with_fallback(
+                        output_dir, args.target
+                    )
+
+                    # Apply feature exclusion if specified
+                    if args.exclude_features_file:
+                        exclude_set = load_exclude_features(args.exclude_features_file)
+                        feature_cols = apply_feature_exclusion(feature_cols, exclude_set)
 
                     # Load data
                     df = load_feature_data(
