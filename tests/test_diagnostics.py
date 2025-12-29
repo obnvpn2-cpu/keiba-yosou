@@ -1430,7 +1430,7 @@ class TestGeneratePreRaceMaterials:
 
 
 class TestScenarioUIServer:
-    """Tests for ui/pre_race/server.py"""
+    """Tests for ui/pre_race/server.py (v2.0 with 2-axis bias)"""
 
     def test_server_module_imports(self):
         """Scenario UI server module should be importable"""
@@ -1439,10 +1439,13 @@ class TestScenarioUIServer:
             estimate_run_style,
             estimate_lane,
             PACE_COEF,
-            BIAS_COEF,
+            LANE_BIAS_COEF,
+            STYLE_BIAS_COEF,
         )
         assert apply_scenario_adjustment is not None
         assert PACE_COEF is not None
+        assert LANE_BIAS_COEF is not None
+        assert STYLE_BIAS_COEF is not None
 
     def test_apply_scenario_adjustment(self):
         """Scenario adjustment should modify rankings correctly"""
@@ -1460,7 +1463,8 @@ class TestScenarioUIServer:
         scenario = {
             "pace": "H",  # High pace -> closers benefit
             "track_condition": "良",
-            "bias": "フラット",
+            "lane_bias": "flat",
+            "style_bias": "flat",
             "front_runner_ids": [],
             "notes": "Test",
         }
@@ -1472,13 +1476,18 @@ class TestScenarioUIServer:
         assert "adjusted_at" in result
         assert result["scenario"] == scenario
 
-        # Each entry should have adjustment fields
+        # Each entry should have adjustment fields (v2.0 uses rank_change_win instead of delta_rank_win)
         for entry in result["entries"]:
             assert "adj_p_win" in entry
             assert "adj_rank_win" in entry
-            assert "delta_rank_win" in entry
+            assert "rank_change_win" in entry
             assert "reasons" in entry
             assert "run_style" in entry
+            assert "tags" in entry
+            assert "lane" in entry
+
+        # Should have race_comment
+        assert "race_comment" in result
 
     def test_estimate_run_style(self):
         """Run style estimation should work correctly"""
@@ -1497,19 +1506,30 @@ class TestScenarioUIServer:
         assert estimate_run_style(15, [], "h4") == "追込"
 
     def test_estimate_lane(self):
-        """Lane estimation should work correctly"""
+        """Lane estimation should work correctly (v2.0 returns with _lane suffix)"""
         from ui.pre_race.server import estimate_lane
 
-        # Small field
-        assert estimate_lane(1, 8) == "inner"
-        assert estimate_lane(4, 8) == "middle"
-        assert estimate_lane(8, 8) == "outer"
+        # Small field - estimate_lane now takes (umaban, field_size, run_style, entry)
+        assert estimate_lane(1, 8, "先行", None) == "inner_lane"
+        assert estimate_lane(4, 8, "差し", None) == "middle_lane"
+        assert estimate_lane(8, 8, "追込", None) == "outer_lane"
 
         # Large field
-        assert estimate_lane(1, 18) == "inner"
-        assert estimate_lane(5, 18) == "inner"  # 30% threshold
-        assert estimate_lane(10, 18) == "middle"
-        assert estimate_lane(16, 18) == "outer"
+        assert estimate_lane(1, 18, "先行", None) == "inner_lane"
+        assert estimate_lane(10, 18, "差し", None) == "middle_lane"
+        assert estimate_lane(16, 18, "追込", None) == "outer_lane"
+
+    def test_estimate_lane_adjusts_for_run_style(self):
+        """Lane estimation should adjust based on run style (closers tend to go outer)"""
+        from ui.pre_race.server import estimate_lane
+
+        # Inner umaban with closer style -> might go middle
+        inner_closer = estimate_lane(2, 18, "差し", None)
+        assert inner_closer in ["inner_lane", "middle_lane"]
+
+        # Outer umaban with front runner style -> might go middle
+        outer_front = estimate_lane(16, 18, "先行", None)
+        assert outer_front in ["outer_lane", "middle_lane"]
 
     def test_scenario_slow_pace_benefits_frontrunners(self):
         """Slow pace should benefit frontrunners"""
@@ -1523,7 +1543,7 @@ class TestScenarioUIServer:
             ],
         }
 
-        scenario = {"pace": "S", "track_condition": "良", "bias": "フラット", "front_runner_ids": [], "notes": ""}
+        scenario = {"pace": "S", "track_condition": "良", "lane_bias": "flat", "style_bias": "flat", "front_runner_ids": [], "notes": ""}
         result = apply_scenario_adjustment(race_data, scenario)
 
         front_entry = next(e for e in result["entries"] if e["umaban"] == 1)
@@ -1531,6 +1551,76 @@ class TestScenarioUIServer:
 
         # Frontrunner should have higher adjusted probability than closer in slow pace
         assert front_entry["adj_p_win"] > closer_entry["adj_p_win"]
+
+    def test_style_bias_front_benefits_frontrunners(self):
+        """Front style bias should benefit frontrunners"""
+        from ui.pre_race.server import apply_scenario_adjustment
+
+        race_data = {
+            "race_id": "test003",
+            "entries": [
+                {"horse_id": "h1", "umaban": 1, "name": "Front", "p_win": 0.10, "p_in3": 0.30, "rank_win": 2, "rank_in3": 2},
+                {"horse_id": "h2", "umaban": 12, "name": "Closer", "p_win": 0.10, "p_in3": 0.30, "rank_win": 2, "rank_in3": 2},
+            ],
+        }
+
+        scenario = {"pace": "M", "track_condition": "良", "lane_bias": "flat", "style_bias": "front", "front_runner_ids": [], "notes": ""}
+        result = apply_scenario_adjustment(race_data, scenario)
+
+        front_entry = next(e for e in result["entries"] if e["umaban"] == 1)
+        closer_entry = next(e for e in result["entries"] if e["umaban"] == 12)
+
+        # Frontrunner should have higher adjusted probability with front style bias
+        assert front_entry["adj_p_win"] > closer_entry["adj_p_win"]
+
+    def test_lane_bias_inner_benefits_inner_lane(self):
+        """Inner lane bias should benefit horses estimated to go inner"""
+        from ui.pre_race.server import apply_scenario_adjustment
+
+        race_data = {
+            "race_id": "test004",
+            "entries": [
+                {"horse_id": "h1", "umaban": 1, "name": "Inner", "p_win": 0.10, "p_in3": 0.30, "rank_win": 2, "rank_in3": 2},
+                {"horse_id": "h2", "umaban": 16, "name": "Outer", "p_win": 0.10, "p_in3": 0.30, "rank_win": 2, "rank_in3": 2},
+            ],
+        }
+
+        scenario = {"pace": "M", "track_condition": "良", "lane_bias": "inner", "style_bias": "flat", "front_runner_ids": [], "notes": ""}
+        result = apply_scenario_adjustment(race_data, scenario)
+
+        inner_entry = next(e for e in result["entries"] if e["umaban"] == 1)
+        outer_entry = next(e for e in result["entries"] if e["umaban"] == 16)
+
+        # Inner horse should have higher adjusted probability with inner lane bias
+        # Note: This depends on lane estimation which considers run style too
+        assert inner_entry["adj_p_win"] >= outer_entry["adj_p_win"]
+
+    def test_generate_horse_tags(self):
+        """generate_horse_tags should create appropriate tags"""
+        from ui.pre_race.server import generate_horse_tags
+
+        # Test with front runner
+        tags = generate_horse_tags({}, "先行", "inner_lane", True)
+        assert "逃げ想定" in tags
+        assert any("通過" in t for t in tags)
+
+        # Test with closer
+        tags = generate_horse_tags({}, "追込", "outer_lane", False)
+        assert "追込想定" in tags
+
+    def test_generate_race_comment(self):
+        """generate_race_comment should create a comment"""
+        from ui.pre_race.server import generate_race_comment
+
+        race_data = {"name": "テストレース", "distance": 2000, "course": "芝"}
+        scenario = {"pace": "S", "style_bias": "front", "lane_bias": "inner", "track_condition": "良", "notes": ""}
+        entries = [{"name": "Horse1", "run_style": "逃げ"}]
+
+        comment = generate_race_comment(race_data, scenario, entries)
+
+        assert "テストレース" in comment
+        assert "芝2000m" in comment
+        assert "スロー" in comment
 
 
 # =============================================================================
