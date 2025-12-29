@@ -1429,6 +1429,110 @@ class TestGeneratePreRaceMaterials:
         assert summary_json["n_features_used"] == 90
 
 
+class TestScenarioUIServer:
+    """Tests for ui/pre_race/server.py"""
+
+    def test_server_module_imports(self):
+        """Scenario UI server module should be importable"""
+        from ui.pre_race.server import (
+            apply_scenario_adjustment,
+            estimate_run_style,
+            estimate_lane,
+            PACE_COEF,
+            BIAS_COEF,
+        )
+        assert apply_scenario_adjustment is not None
+        assert PACE_COEF is not None
+
+    def test_apply_scenario_adjustment(self):
+        """Scenario adjustment should modify rankings correctly"""
+        from ui.pre_race.server import apply_scenario_adjustment
+
+        race_data = {
+            "race_id": "test001",
+            "entries": [
+                {"horse_id": "h1", "umaban": 1, "name": "Horse1", "p_win": 0.20, "p_in3": 0.50, "rank_win": 1, "rank_in3": 1},
+                {"horse_id": "h2", "umaban": 5, "name": "Horse2", "p_win": 0.15, "p_in3": 0.40, "rank_win": 2, "rank_in3": 2},
+                {"horse_id": "h3", "umaban": 10, "name": "Horse3", "p_win": 0.10, "p_in3": 0.30, "rank_win": 3, "rank_in3": 3},
+            ],
+        }
+
+        scenario = {
+            "pace": "H",  # High pace -> closers benefit
+            "track_condition": "良",
+            "bias": "フラット",
+            "front_runner_ids": [],
+            "notes": "Test",
+        }
+
+        result = apply_scenario_adjustment(race_data, scenario)
+
+        assert result["race_id"] == "test001"
+        assert len(result["entries"]) == 3
+        assert "adjusted_at" in result
+        assert result["scenario"] == scenario
+
+        # Each entry should have adjustment fields
+        for entry in result["entries"]:
+            assert "adj_p_win" in entry
+            assert "adj_rank_win" in entry
+            assert "delta_rank_win" in entry
+            assert "reasons" in entry
+            assert "run_style" in entry
+
+    def test_estimate_run_style(self):
+        """Run style estimation should work correctly"""
+        from ui.pre_race.server import estimate_run_style
+
+        # Front runner specified
+        assert estimate_run_style(5, ["h1"], "h1") == "逃げ"
+
+        # Low umaban -> 先行
+        assert estimate_run_style(2, [], "h2") == "先行"
+
+        # Middle umaban -> 差し
+        assert estimate_run_style(8, [], "h3") == "差し"
+
+        # High umaban -> 追込
+        assert estimate_run_style(15, [], "h4") == "追込"
+
+    def test_estimate_lane(self):
+        """Lane estimation should work correctly"""
+        from ui.pre_race.server import estimate_lane
+
+        # Small field
+        assert estimate_lane(1, 8) == "inner"
+        assert estimate_lane(4, 8) == "middle"
+        assert estimate_lane(8, 8) == "outer"
+
+        # Large field
+        assert estimate_lane(1, 18) == "inner"
+        assert estimate_lane(5, 18) == "inner"  # 30% threshold
+        assert estimate_lane(10, 18) == "middle"
+        assert estimate_lane(16, 18) == "outer"
+
+    def test_scenario_slow_pace_benefits_frontrunners(self):
+        """Slow pace should benefit frontrunners"""
+        from ui.pre_race.server import apply_scenario_adjustment
+
+        race_data = {
+            "race_id": "test002",
+            "entries": [
+                {"horse_id": "h1", "umaban": 1, "name": "Front", "p_win": 0.10, "p_in3": 0.30, "rank_win": 3, "rank_in3": 3},
+                {"horse_id": "h2", "umaban": 12, "name": "Closer", "p_win": 0.10, "p_in3": 0.30, "rank_win": 3, "rank_in3": 3},
+            ],
+        }
+
+        scenario = {"pace": "S", "track_condition": "良", "bias": "フラット", "front_runner_ids": [], "notes": ""}
+        result = apply_scenario_adjustment(race_data, scenario)
+
+        front_entry = next(e for e in result["entries"] if e["umaban"] == 1)
+        closer_entry = next(e for e in result["entries"] if e["umaban"] == 12)
+
+        # Frontrunner should have higher adjusted probability than closer in slow pace
+        assert front_entry["adj_p_win"] > closer_entry["adj_p_win"]
+
+
 # =============================================================================
 # Run Tests
 # =============================================================================
