@@ -112,13 +112,42 @@ class MemoParser:
         Returns:
             True if negated
         """
-        # キーワードの前後10文字程度を確認
-        start = max(0, match_pos - 10)
-        end = min(len(text), match_pos + len(keyword) + 10)
-        context = text[start:end]
+        keyword_end = match_pos + len(keyword)
 
-        for pattern in self.negation_patterns:
-            if pattern in context:
+        # キーワードの直後をチェック（「〜ではない」「〜じゃない」等）
+        # 直後5文字程度をチェック
+        after_context = text[keyword_end:min(len(text), keyword_end + 6)]
+
+        # 直後パターン（キーワードの直後に来る否定）
+        after_negation_patterns = [
+            "ではない", "じゃない", "でない",
+            "なさそう", "ないだろう", "ないかも",
+            "にくい", "しにくい", "づらい", "しづらい",
+            "難しい", "厳しい",
+            "ほどでは", "とは言え", "とは思え", "とは考え",
+        ]
+
+        for pattern in after_negation_patterns:
+            if after_context.startswith(pattern) or pattern in after_context[:5]:
+                return True
+
+        # キーワードの直前をチェック（ごく限定的）
+        before_context = text[max(0, match_pos - 5):match_pos]
+
+        # 直前パターン（まれ）
+        before_negation_patterns = [
+            "ない", "無い",  # 「ない内伸び」のようなケース（まれ）
+        ]
+
+        for pattern in before_negation_patterns:
+            if before_context.endswith(pattern):
+                return True
+
+        # 「〜か疑問」「〜か微妙」のような曖昧表現をチェック（直後2-5文字）
+        ambiguous_patterns = ["疑問", "微妙", "怪しい", "不透明"]
+        extended_after = text[keyword_end:min(len(text), keyword_end + 8)]
+        for pattern in ambiguous_patterns:
+            if pattern in extended_after:
                 return True
 
         return False
@@ -215,6 +244,99 @@ class MemoParser:
                         "label": f"血統：{pedigree_type}系言及",
                         "reason": f"血統キーワード「{keyword}」を検出",
                         "needs_feature": True,
+                    })
+
+        return matches
+
+    def _extract_frame_hint_matches(self, text: str) -> List[Dict[str, Any]]:
+        """枠番ヒントを抽出（lane_biasとは別扱い、警告付き）"""
+        matches = []
+        frame_hint_config = self.rules.get("frame_hint", {})
+
+        for value, value_config in frame_hint_config.items():
+            keywords = value_config.get("keywords", [])
+            label = value_config.get("label", value)
+            reason = value_config.get("reason", "")
+            warning_message = value_config.get("warning_message", "")
+
+            for keyword in keywords:
+                if keyword in text:
+                    idx = text.find(keyword)
+                    is_negated = self._check_negation(text, keyword, idx)
+
+                    matches.append({
+                        "category": "frame_hint",
+                        "value": value,
+                        "keyword": keyword,
+                        "position": idx,
+                        "is_negated": is_negated,
+                        "intensity": 1.0,
+                        "label": label,
+                        "reason": reason,
+                        "is_warning": True,
+                        "warning_message": warning_message,
+                    })
+
+        return matches
+
+    def _extract_race_flow_matches(self, text: str) -> List[Dict[str, Any]]:
+        """レースフロー（展開予測）を抽出"""
+        matches = []
+        race_flow_config = self.rules.get("race_flow", {})
+
+        for value, value_config in race_flow_config.items():
+            keywords = value_config.get("keywords", [])
+            label = value_config.get("label", value)
+            reason = value_config.get("reason", "")
+
+            for keyword in keywords:
+                if keyword in text:
+                    idx = text.find(keyword)
+                    is_negated = self._check_negation(text, keyword, idx)
+                    intensity = self._get_intensity_multiplier(text, keyword, idx)
+
+                    matches.append({
+                        "category": "race_flow",
+                        "value": value,
+                        "keyword": keyword,
+                        "position": idx,
+                        "is_negated": is_negated,
+                        "intensity": intensity,
+                        "label": label,
+                        "reason": reason,
+                    })
+
+        return matches
+
+    def _extract_misc_tags(self, text: str) -> List[Dict[str, Any]]:
+        """その他タグを抽出"""
+        matches = []
+        misc_config = self.rules.get("misc_tags", {})
+
+        for polarity in ["positive", "negative", "neutral"]:
+            for item in misc_config.get(polarity, []):
+                pattern = item.get("pattern", "")
+                tag = item.get("tag", "")
+
+                if pattern and pattern in text:
+                    idx = text.find(pattern)
+                    is_negated = self._check_negation(text, pattern, idx)
+
+                    # 否定されている場合、正負を反転
+                    actual_polarity = polarity
+                    if is_negated and polarity != "neutral":
+                        actual_polarity = "negative" if polarity == "positive" else "positive"
+
+                    matches.append({
+                        "category": "misc_tag",
+                        "value": tag,
+                        "keyword": pattern,
+                        "position": idx,
+                        "is_negated": is_negated,
+                        "intensity": 1.0,
+                        "label": f"情報：{tag}",
+                        "reason": f"パターン「{pattern}」を検出",
+                        "polarity": actual_polarity,
                     })
 
         return matches
@@ -365,8 +487,14 @@ class MemoParser:
                 apply_payload = {"pace": value}
             elif category == "pedigree":
                 apply_payload = {}  # 血統は適用しない
+            elif category == "frame_hint":
+                apply_payload = {}  # 枠ヒントはlane_biasに直結させない
+            elif category == "race_flow":
+                apply_payload = {}  # レースフローは参考情報
             elif category == "tag":
                 apply_payload = {"tag": value}
+            elif category == "misc_tag":
+                apply_payload = {}  # その他タグは参考情報
 
             chips.append(Chip(
                 id=chip_id,
@@ -376,6 +504,7 @@ class MemoParser:
                 apply_payload=apply_payload,
                 confidence=min(1.0, m.get("intensity", 1.0)),
                 needs_feature=m.get("needs_feature", False),
+                is_warning=m.get("is_warning", False),
             ))
 
         # 矛盾がある場合は警告チップを追加
@@ -414,6 +543,14 @@ class MemoParser:
             matches = self._extract_category_matches(text, category, config)
             all_matches.extend(matches)
 
+        # 枠番ヒント（lane_biasとは別扱い）
+        frame_hint_matches = self._extract_frame_hint_matches(text)
+        all_matches.extend(frame_hint_matches)
+
+        # レースフロー
+        race_flow_matches = self._extract_race_flow_matches(text)
+        all_matches.extend(race_flow_matches)
+
         # 血統マッチ
         pedigree_matches = self._extract_pedigree_matches(text)
         all_matches.extend(pedigree_matches)
@@ -421,6 +558,10 @@ class MemoParser:
         # アドバイザリータグ
         tag_matches = self._extract_advisory_tags(text)
         all_matches.extend(tag_matches)
+
+        # その他タグ
+        misc_tag_matches = self._extract_misc_tags(text)
+        all_matches.extend(misc_tag_matches)
 
         # 矛盾検出
         conflicts = self._detect_conflicts(all_matches)
