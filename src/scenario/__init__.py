@@ -57,6 +57,7 @@ from .spec import (
 
 from .score import (
     AdjustmentReason,
+    BodyWeightContext,
     ScenarioHorseScore,
     ScenarioScore,
 )
@@ -88,6 +89,7 @@ __all__ = [
     "ScenarioSpec",
     # score
     "AdjustmentReason",
+    "BodyWeightContext",
     "ScenarioHorseScore",
     "ScenarioScore",
     # adjuster
