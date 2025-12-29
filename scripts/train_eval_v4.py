@@ -43,6 +43,7 @@ from src.features_v4.train_eval_v4 import (
     split_time_series,
     get_train_feature_columns,
     train_model,
+    log_feature_selection_summary,
 )
 from src.features_v4.diagnostics import run_diagnostics, save_diagnostics
 
@@ -483,14 +484,23 @@ Examples:
             logger.info("Loading existing model: %s", args.model_path)
             model = load_booster(args.model_path)
 
-            # Load feature columns with fallback
-            feature_cols, used_cols_path = load_feature_columns_with_fallback(
+            # Load feature columns with fallback (candidate features)
+            candidate_features, used_cols_path = load_feature_columns_with_fallback(
                 output_dir, args.target
             )
 
             # Apply feature exclusion (from mode and/or file)
-            if exclude_features_set:
-                feature_cols = apply_feature_exclusion(feature_cols, exclude_features_set)
+            feature_cols = [c for c in candidate_features if c not in exclude_features_set]
+
+            # Log feature selection summary
+            log_feature_selection_summary(
+                mode=args.mode,
+                target_col=args.target,
+                candidate_features=candidate_features,
+                exclude_set=exclude_features_set,
+                final_features=feature_cols,
+                output_dir=output_dir,
+            )
 
             # Load data
             logger.info("Loading feature data...")
@@ -536,6 +546,7 @@ Examples:
             decision_cutoff=args.decision_cutoff,
             use_snapshots=not args.no_snapshots,
             exclude_features=exclude_features_set if exclude_features_set else None,
+            mode=args.mode,
         )
 
         # Print results summary
