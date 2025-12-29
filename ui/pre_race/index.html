@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Pre-race Scenario UI</title>
+    <title>Pre-race Scenario UI v2.0</title>
     <style>
         * {
             box-sizing: border-box;
@@ -17,7 +17,7 @@
             line-height: 1.5;
         }
         .container {
-            max-width: 1400px;
+            max-width: 1600px;
             margin: 0 auto;
             padding: 20px;
         }
@@ -29,6 +29,10 @@
         }
         header h1 {
             font-size: 1.5rem;
+        }
+        header .version {
+            font-size: 0.8rem;
+            opacity: 0.7;
         }
         .panel {
             background: white;
@@ -70,8 +74,13 @@
             font-size: 1rem;
         }
         .form-group textarea {
-            min-height: 60px;
+            min-height: 80px;
             resize: vertical;
+        }
+        .form-group .helper {
+            font-size: 0.8rem;
+            color: #666;
+            margin-top: 4px;
         }
         .btn {
             padding: 10px 20px;
@@ -120,6 +129,73 @@
         .race-info-item .value {
             font-weight: bold;
         }
+
+        /* Chips */
+        .chips-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 10px;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 4px;
+            min-height: 40px;
+        }
+        .chip {
+            display: inline-flex;
+            align-items: center;
+            padding: 6px 12px;
+            border-radius: 16px;
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: 1px solid transparent;
+        }
+        .chip:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .chip-default {
+            background: #e3f2fd;
+            color: #1565c0;
+        }
+        .chip-default:hover {
+            background: #bbdefb;
+        }
+        .chip-warning {
+            background: #fff3e0;
+            color: #e65100;
+            border-color: #ffb74d;
+        }
+        .chip-feature {
+            background: #f3e5f5;
+            color: #7b1fa2;
+        }
+        .chip-applied {
+            background: #e8f5e9;
+            color: #2e7d32;
+            border-color: #66bb6a;
+        }
+        .chip .chip-icon {
+            margin-right: 4px;
+        }
+        .chip-reason {
+            font-size: 0.75rem;
+            color: #666;
+            margin-left: 4px;
+        }
+
+        /* Comment box */
+        .race-comment {
+            background: #fff8e1;
+            border-left: 4px solid #ffc107;
+            padding: 15px;
+            margin-bottom: 15px;
+            font-size: 0.95rem;
+            line-height: 1.6;
+        }
+
+        /* Table */
         .horse-table {
             width: 100%;
             border-collapse: collapse;
@@ -136,6 +212,19 @@
             font-weight: 600;
             position: sticky;
             top: 0;
+            cursor: pointer;
+            user-select: none;
+        }
+        .horse-table th:hover {
+            background: #e9ecef;
+        }
+        .horse-table th.sorted-asc::after {
+            content: " ▲";
+            font-size: 0.7rem;
+        }
+        .horse-table th.sorted-desc::after {
+            content: " ▼";
+            font-size: 0.7rem;
         }
         .horse-table tr:hover {
             background: #f5f8ff;
@@ -158,17 +247,20 @@
         .umaban-11, .umaban-12 { background: #f80; }
         .umaban-13, .umaban-14 { background: #f0f; }
         .umaban-15, .umaban-16, .umaban-17, .umaban-18 { background: #ff0; color: #333; }
-        .delta {
+
+        /* Rank change */
+        .rank-change {
             font-weight: bold;
             text-align: center;
+            white-space: nowrap;
         }
-        .delta-up {
+        .rank-up {
             color: #27ae60;
         }
-        .delta-down {
+        .rank-down {
             color: #e74c3c;
         }
-        .delta-neutral {
+        .rank-neutral {
             color: #999;
         }
         .prob-bar {
@@ -214,6 +306,26 @@
             background: #ffebee;
             color: #c62828;
         }
+        .horse-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 3px;
+        }
+        .horse-tag {
+            font-size: 0.7rem;
+            padding: 2px 5px;
+            background: #f0f0f0;
+            border-radius: 3px;
+            color: #555;
+        }
+        .horse-tag.front {
+            background: #fff3e0;
+            color: #e65100;
+        }
+        .horse-tag.closer {
+            background: #e8f5e9;
+            color: #2e7d32;
+        }
         .loading {
             text-align: center;
             padding: 40px;
@@ -257,24 +369,27 @@
             background: #ffebee;
             color: #c62828;
         }
-        .sort-selector {
+
+        /* Tabs */
+        .tab-buttons {
             display: flex;
-            gap: 10px;
+            gap: 5px;
             margin-bottom: 15px;
         }
-        .sort-btn {
-            padding: 6px 12px;
+        .tab-btn {
+            padding: 8px 16px;
             border: 1px solid #ddd;
             background: white;
-            border-radius: 4px;
+            border-radius: 4px 4px 0 0;
             cursor: pointer;
             font-size: 0.9rem;
         }
-        .sort-btn.active {
+        .tab-btn.active {
             background: #4a90d9;
             color: white;
             border-color: #4a90d9;
         }
+
         @media (max-width: 768px) {
             .form-row {
                 flex-direction: column;
@@ -287,7 +402,7 @@
 </head>
 <body>
     <header>
-        <h1>Pre-race Scenario UI</h1>
+        <h1>Pre-race Scenario UI <span class="version">v2.0</span></h1>
     </header>
 
     <div class="container">
@@ -295,7 +410,7 @@
         <div class="panel">
             <div class="panel-header">1. レース選択</div>
             <div class="form-row">
-                <div class="form-group" style="flex: 2;">
+                <div class="form-group" style="flex: 3;">
                     <label for="raceSelect">レースファイル</label>
                     <select id="raceSelect">
                         <option value="">-- レースを選択 --</option>
@@ -311,6 +426,7 @@
         <!-- Scenario Input Panel -->
         <div class="panel" id="scenarioPanel" style="display: none;">
             <div class="panel-header">2. シナリオ入力</div>
+
             <div class="form-row">
                 <div class="form-group">
                     <label for="pace">ペース予想</label>
@@ -329,27 +445,50 @@
                         <option value="不良">不良</option>
                     </select>
                 </div>
+            </div>
+
+            <div class="form-row">
                 <div class="form-group">
-                    <label for="bias">バイアス</label>
-                    <select id="bias">
-                        <option value="内">内伸び</option>
-                        <option value="フラット" selected>フラット</option>
-                        <option value="外">外伸び</option>
+                    <label for="laneBias">進路バイアス（どのラインが伸びるか）</label>
+                    <select id="laneBias">
+                        <option value="inner">内伸び</option>
+                        <option value="middle">中央が良い</option>
+                        <option value="outer">外伸び</option>
+                        <option value="flat" selected>フラット（バイアスなし）</option>
                     </select>
+                    <div class="helper">馬場のどの位置が走りやすいか</div>
+                </div>
+                <div class="form-group">
+                    <label for="styleBias">脚質バイアス（前残り/差し届き）</label>
+                    <select id="styleBias">
+                        <option value="front">前残り傾向</option>
+                        <option value="closer">差し・追込が届く</option>
+                        <option value="flat" selected>フラット（バイアスなし）</option>
+                    </select>
+                    <div class="helper">逃げ・先行 or 差し・追込のどちらが有利か</div>
                 </div>
             </div>
+
             <div class="form-row">
                 <div class="form-group" style="flex: 2;">
                     <label for="frontRunners">逃げ想定馬（馬番をカンマ区切り）</label>
                     <input type="text" id="frontRunners" placeholder="例: 1, 5, 8">
                 </div>
             </div>
+
             <div class="form-row">
                 <div class="form-group" style="flex: 2;">
-                    <label for="notes">メモ</label>
-                    <textarea id="notes" placeholder="シナリオの根拠など"></textarea>
+                    <label for="notes">メモ（キーワードから提案チップを生成）</label>
+                    <textarea id="notes" placeholder="例: 開幕週の高速馬場で内枠、前有利になってる。瞬発力のあるディープインパクト系の血統が得意な軽い芝。" oninput="debounceAnalyzeMemo()"></textarea>
+                    <div class="helper">入力すると提案チップが表示されます。クリックでフォームに反映。</div>
                 </div>
             </div>
+
+            <!-- Suggestion Chips -->
+            <div id="chipsContainer" class="chips-container" style="display: none;">
+                <span style="color: #666; font-size: 0.85rem;">提案チップ: </span>
+            </div>
+
             <div class="actions">
                 <button class="btn btn-primary" onclick="applyScenario()">シナリオを適用</button>
                 <button class="btn btn-secondary" onclick="resetScenario()">リセット</button>
@@ -360,26 +499,29 @@
         <div class="panel" id="resultsPanel" style="display: none;">
             <div class="panel-header">3. 補正結果</div>
 
-            <div class="sort-selector">
-                <span style="align-self: center; margin-right: 10px;">並び替え:</span>
-                <button class="sort-btn active" data-sort="umaban" onclick="sortTable('umaban')">馬番順</button>
-                <button class="sort-btn" data-sort="adj_rank_win" onclick="sortTable('adj_rank_win')">勝率順</button>
-                <button class="sort-btn" data-sort="delta" onclick="sortTable('delta')">Δ順</button>
+            <!-- Race Comment -->
+            <div id="raceComment" class="race-comment" style="display: none;"></div>
+
+            <!-- Tabs for win/in3 -->
+            <div class="tab-buttons">
+                <button class="tab-btn active" data-target="win" onclick="switchTab('win')">勝率 (Win)</button>
+                <button class="tab-btn" data-target="in3" onclick="switchTab('in3')">複勝率 (In3)</button>
             </div>
 
             <div style="overflow-x: auto;">
                 <table class="horse-table" id="resultsTable">
                     <thead>
                         <tr>
-                            <th>枠</th>
-                            <th>馬名</th>
-                            <th>騎手</th>
-                            <th>脚質</th>
-                            <th>Base順</th>
-                            <th>補正順</th>
-                            <th>Δ</th>
-                            <th>Base確率</th>
-                            <th>補正確率</th>
+                            <th data-sort="umaban">枠</th>
+                            <th data-sort="name">馬名</th>
+                            <th data-sort="jockey">騎手</th>
+                            <th data-sort="run_style">脚質</th>
+                            <th data-sort="tags">タグ</th>
+                            <th data-sort="base_rank">ベース順</th>
+                            <th data-sort="adj_rank">補正順</th>
+                            <th data-sort="rank_change">順位変化</th>
+                            <th data-sort="base_p">ベース確率</th>
+                            <th data-sort="adj_p">補正確率</th>
                             <th>補正理由</th>
                         </tr>
                     </thead>
@@ -405,11 +547,45 @@
         // Global state
         let currentRaceData = null;
         let adjustedResult = null;
+        let currentTab = 'win';
+        let currentSort = { key: 'umaban', order: 'asc' };
+        let appliedChips = new Set();
+        let memoDebounceTimer = null;
 
         // Initialize
         document.addEventListener('DOMContentLoaded', () => {
             loadRaceList();
+            setupTableHeaders();
         });
+
+        // Setup table header click sorting
+        function setupTableHeaders() {
+            document.querySelectorAll('.horse-table th[data-sort]').forEach(th => {
+                th.addEventListener('click', () => {
+                    const key = th.dataset.sort;
+                    if (currentSort.key === key) {
+                        currentSort.order = currentSort.order === 'asc' ? 'desc' : 'asc';
+                    } else {
+                        currentSort.key = key;
+                        currentSort.order = 'asc';
+                    }
+                    updateSortIndicators();
+                    if (adjustedResult) {
+                        displayResults(adjustedResult);
+                    }
+                });
+            });
+        }
+
+        function updateSortIndicators() {
+            document.querySelectorAll('.horse-table th').forEach(th => {
+                th.classList.remove('sorted-asc', 'sorted-desc');
+            });
+            const activeTh = document.querySelector(`.horse-table th[data-sort="${currentSort.key}"]`);
+            if (activeTh) {
+                activeTh.classList.add(currentSort.order === 'asc' ? 'sorted-asc' : 'sorted-desc');
+            }
+        }
 
         // Load race list from server
         async function loadRaceList() {
@@ -424,7 +600,7 @@
                     data.races.forEach(race => {
                         const option = document.createElement('option');
                         option.value = race.path;
-                        option.textContent = `${race.date} - ${race.race_id}`;
+                        option.textContent = race.label || `${race.date} - ${race.race_id}`;
                         select.appendChild(option);
                     });
                 } else {
@@ -487,7 +663,7 @@
                 </div>
                 <div class="race-info-item">
                     <div class="label">レース名</div>
-                    <div class="value">${data.name || '-'}</div>
+                    <div class="value">${data.name || data.race_name || '-'}</div>
                 </div>
                 <div class="race-info-item">
                     <div class="label">距離</div>
@@ -499,6 +675,104 @@
                 </div>
             `;
             infoDiv.style.display = 'grid';
+        }
+
+        // Debounced memo analysis
+        function debounceAnalyzeMemo() {
+            if (memoDebounceTimer) {
+                clearTimeout(memoDebounceTimer);
+            }
+            memoDebounceTimer = setTimeout(analyzeMemo, 500);
+        }
+
+        // Analyze memo and generate chips
+        async function analyzeMemo() {
+            const memo = document.getElementById('notes').value;
+            const container = document.getElementById('chipsContainer');
+
+            if (!memo.trim()) {
+                container.style.display = 'none';
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/parse-memo', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ memo: memo }),
+                });
+
+                const data = await response.json();
+
+                if (data.error) {
+                    console.error('Memo parse error:', data.error);
+                    return;
+                }
+
+                displayChips(data.chips || []);
+
+            } catch (error) {
+                console.error('Failed to analyze memo:', error);
+            }
+        }
+
+        // Display suggestion chips
+        function displayChips(chips) {
+            const container = document.getElementById('chipsContainer');
+
+            if (chips.length === 0) {
+                container.style.display = 'none';
+                return;
+            }
+
+            container.style.display = 'flex';
+            container.innerHTML = '<span style="color: #666; font-size: 0.85rem; align-self: center;">提案: </span>';
+
+            chips.forEach(chip => {
+                const chipEl = document.createElement('span');
+                chipEl.className = 'chip';
+
+                if (chip.is_warning) {
+                    chipEl.className += ' chip-warning';
+                    chipEl.innerHTML = `<span class="chip-icon">⚠️</span>${chip.label}`;
+                } else if (chip.needs_feature) {
+                    chipEl.className += ' chip-feature';
+                    chipEl.innerHTML = `<span class="chip-icon">📌</span>${chip.label}`;
+                    chipEl.title = '将来特徴量化候補（現在は補正に使用しません）';
+                } else if (appliedChips.has(chip.id)) {
+                    chipEl.className += ' chip-applied';
+                    chipEl.innerHTML = `<span class="chip-icon">✓</span>${chip.label}`;
+                } else {
+                    chipEl.className += ' chip-default';
+                    chipEl.innerHTML = chip.label;
+                    chipEl.onclick = () => applyChip(chip);
+                }
+
+                container.appendChild(chipEl);
+            });
+        }
+
+        // Apply chip to form
+        function applyChip(chip) {
+            const payload = chip.apply_payload || {};
+
+            if (payload.track_condition) {
+                document.getElementById('trackCondition').value = payload.track_condition;
+            }
+            if (payload.lane_bias) {
+                document.getElementById('laneBias').value = payload.lane_bias;
+            }
+            if (payload.style_bias) {
+                document.getElementById('styleBias').value = payload.style_bias;
+            }
+            if (payload.pace) {
+                document.getElementById('pace').value = payload.pace;
+            }
+
+            appliedChips.add(chip.id);
+
+            // Re-analyze to update chip display
+            analyzeMemo();
         }
 
         // Apply scenario
@@ -523,7 +797,8 @@
             const scenario = {
                 pace: document.getElementById('pace').value,
                 track_condition: document.getElementById('trackCondition').value,
-                bias: document.getElementById('bias').value,
+                lane_bias: document.getElementById('laneBias').value,
+                style_bias: document.getElementById('styleBias').value,
                 front_runner_ids: frontRunnerIds,
                 notes: document.getElementById('notes').value,
             };
@@ -555,24 +830,54 @@
             }
         }
 
+        // Switch between win/in3 tabs
+        function switchTab(tab) {
+            currentTab = tab;
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.target === tab);
+            });
+            if (adjustedResult) {
+                displayResults(adjustedResult);
+            }
+        }
+
         // Display results
         function displayResults(result) {
             const tbody = document.getElementById('resultsBody');
             tbody.innerHTML = '';
 
-            result.entries.forEach(entry => {
+            // Display race comment
+            const commentDiv = document.getElementById('raceComment');
+            if (result.race_comment) {
+                commentDiv.textContent = result.race_comment;
+                commentDiv.style.display = 'block';
+            } else {
+                commentDiv.style.display = 'none';
+            }
+
+            // Sort entries
+            const entries = [...result.entries];
+            sortEntries(entries);
+
+            entries.forEach(entry => {
                 const row = document.createElement('tr');
 
-                // Delta styling
-                const delta = entry.delta_rank_win || 0;
-                let deltaClass = 'delta-neutral';
-                let deltaText = '→';
-                if (delta > 0) {
-                    deltaClass = 'delta-up';
-                    deltaText = `↑${delta}`;
-                } else if (delta < 0) {
-                    deltaClass = 'delta-down';
-                    deltaText = `↓${Math.abs(delta)}`;
+                // Get values based on current tab
+                const baseRank = currentTab === 'win' ? entry.base_rank_win : entry.base_rank_in3;
+                const adjRank = currentTab === 'win' ? entry.adj_rank_win : entry.adj_rank_in3;
+                const rankChange = currentTab === 'win' ? entry.rank_change_win : entry.rank_change_in3;
+                const baseP = currentTab === 'win' ? entry.base_p_win : entry.base_p_in3;
+                const adjP = currentTab === 'win' ? entry.adj_p_win : entry.adj_p_in3;
+
+                // Rank change styling
+                let rankChangeClass = 'rank-neutral';
+                let rankChangeText = '→';
+                if (rankChange > 0) {
+                    rankChangeClass = 'rank-up';
+                    rankChangeText = `↑${rankChange}`;
+                } else if (rankChange < 0) {
+                    rankChangeClass = 'rank-down';
+                    rankChangeText = `↓${Math.abs(rankChange)}`;
                 }
 
                 // Reason tags
@@ -585,24 +890,33 @@
                     return `<span class="${tagClass}">${r}</span>`;
                 }).join('');
 
+                // Horse tags
+                const horseTags = (entry.tags || []).map(t => {
+                    let tagClass = 'horse-tag';
+                    if (t.includes('逃げ') || t.includes('先行')) tagClass += ' front';
+                    if (t.includes('差し') || t.includes('追込')) tagClass += ' closer';
+                    return `<span class="${tagClass}">${t}</span>`;
+                }).join('');
+
                 // Probability bar
-                const probPercent = Math.min(100, (entry.adj_p_win || 0) * 100 * 5); // Scale for visibility
+                const probPercent = Math.min(100, (adjP || 0) * 100 * 5);
 
                 row.innerHTML = `
                     <td><span class="umaban umaban-${entry.umaban}">${entry.umaban}</span></td>
                     <td><strong>${entry.name || '-'}</strong></td>
                     <td>${entry.jockey || '-'}</td>
                     <td>${entry.run_style || '-'}</td>
-                    <td style="text-align: center;">${entry.base_rank_win || '-'}</td>
-                    <td style="text-align: center; font-weight: bold;">${entry.adj_rank_win || '-'}</td>
-                    <td class="delta ${deltaClass}">${deltaText}</td>
-                    <td>${((entry.base_p_win || 0) * 100).toFixed(1)}%</td>
+                    <td><div class="horse-tags">${horseTags || '-'}</div></td>
+                    <td style="text-align: center;">${baseRank || '-'}</td>
+                    <td style="text-align: center; font-weight: bold;">${adjRank || '-'}</td>
+                    <td class="rank-change ${rankChangeClass}">${rankChangeText}</td>
+                    <td>${((baseP || 0) * 100).toFixed(1)}%</td>
                     <td>
                         <div class="prob-bar">
                             <div class="prob-bar-bg">
                                 <div class="prob-bar-fill" style="width: ${probPercent}%"></div>
                             </div>
-                            <span class="prob-value">${((entry.adj_p_win || 0) * 100).toFixed(1)}%</span>
+                            <span class="prob-value">${((adjP || 0) * 100).toFixed(1)}%</span>
                         </div>
                     </td>
                     <td class="reasons">${reasonTags || '-'}</td>
@@ -610,41 +924,84 @@
 
                 tbody.appendChild(row);
             });
+
+            updateSortIndicators();
         }
 
-        // Sort table
-        function sortTable(sortKey) {
-            if (!adjustedResult) return;
+        // Sort entries
+        function sortEntries(entries) {
+            const key = currentSort.key;
+            const order = currentSort.order;
 
-            // Update button states
-            document.querySelectorAll('.sort-btn').forEach(btn => {
-                btn.classList.toggle('active', btn.dataset.sort === sortKey);
+            entries.sort((a, b) => {
+                let valA, valB;
+
+                switch (key) {
+                    case 'umaban':
+                        valA = a.umaban || 0;
+                        valB = b.umaban || 0;
+                        break;
+                    case 'name':
+                        valA = a.name || '';
+                        valB = b.name || '';
+                        break;
+                    case 'jockey':
+                        valA = a.jockey || '';
+                        valB = b.jockey || '';
+                        break;
+                    case 'run_style':
+                        const styleOrder = { '逃げ': 1, '先行': 2, '差し': 3, '追込': 4, '不明': 5 };
+                        valA = styleOrder[a.run_style] || 5;
+                        valB = styleOrder[b.run_style] || 5;
+                        break;
+                    case 'tags':
+                        valA = (a.tags || []).length;
+                        valB = (b.tags || []).length;
+                        break;
+                    case 'base_rank':
+                        valA = currentTab === 'win' ? (a.base_rank_win || 99) : (a.base_rank_in3 || 99);
+                        valB = currentTab === 'win' ? (b.base_rank_win || 99) : (b.base_rank_in3 || 99);
+                        break;
+                    case 'adj_rank':
+                        valA = currentTab === 'win' ? (a.adj_rank_win || 99) : (a.adj_rank_in3 || 99);
+                        valB = currentTab === 'win' ? (b.adj_rank_win || 99) : (b.adj_rank_in3 || 99);
+                        break;
+                    case 'rank_change':
+                        valA = currentTab === 'win' ? (a.rank_change_win || 0) : (a.rank_change_in3 || 0);
+                        valB = currentTab === 'win' ? (b.rank_change_win || 0) : (b.rank_change_in3 || 0);
+                        break;
+                    case 'base_p':
+                        valA = currentTab === 'win' ? (a.base_p_win || 0) : (a.base_p_in3 || 0);
+                        valB = currentTab === 'win' ? (b.base_p_win || 0) : (b.base_p_in3 || 0);
+                        break;
+                    case 'adj_p':
+                        valA = currentTab === 'win' ? (a.adj_p_win || 0) : (a.adj_p_in3 || 0);
+                        valB = currentTab === 'win' ? (b.adj_p_win || 0) : (b.adj_p_in3 || 0);
+                        break;
+                    default:
+                        valA = a.umaban || 0;
+                        valB = b.umaban || 0;
+                }
+
+                if (typeof valA === 'string') {
+                    return order === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
+                }
+                return order === 'asc' ? valA - valB : valB - valA;
             });
-
-            // Sort entries
-            const entries = [...adjustedResult.entries];
-
-            if (sortKey === 'umaban') {
-                entries.sort((a, b) => (a.umaban || 0) - (b.umaban || 0));
-            } else if (sortKey === 'adj_rank_win') {
-                entries.sort((a, b) => (a.adj_rank_win || 99) - (b.adj_rank_win || 99));
-            } else if (sortKey === 'delta') {
-                entries.sort((a, b) => (b.delta_rank_win || 0) - (a.delta_rank_win || 0));
-            }
-
-            adjustedResult.entries = entries;
-            displayResults(adjustedResult);
         }
 
         // Reset scenario
         function resetScenario() {
             document.getElementById('pace').value = 'M';
             document.getElementById('trackCondition').value = '良';
-            document.getElementById('bias').value = 'フラット';
+            document.getElementById('laneBias').value = 'flat';
+            document.getElementById('styleBias').value = 'flat';
             document.getElementById('frontRunners').value = '';
             document.getElementById('notes').value = '';
             document.getElementById('resultsPanel').style.display = 'none';
+            document.getElementById('chipsContainer').style.display = 'none';
             adjustedResult = null;
+            appliedChips.clear();
         }
 
         // Save result
