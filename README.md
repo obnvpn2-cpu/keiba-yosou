@@ -299,7 +299,68 @@ Loaded model via model_str fallback: models/lgbm_target_win_v4.txt
 
 ---
 
-### 3.9 前日締め運用（Pre-day Cutoff Operation）【実験的】
+### 3.9 前日運用モード（Pre-race Mode）
+
+レース当日の馬体重が確定する前に予測を行いたい場合は、`--mode pre_race` を使用します。
+
+```bash
+# 前日運用モード（当日体重を除外して学習・評価）
+python scripts/train_eval_v4.py --db netkeiba.db --mode pre_race
+
+# デフォルトモード（全特徴量を使用）
+python scripts/train_eval_v4.py --db netkeiba.db --mode default
+```
+
+#### 使い分け
+
+| モード | 用途 | 除外される特徴量 |
+|--------|------|------------------|
+| `default` | レース当日（馬体重確定後）の予測 | なし |
+| `pre_race` | レース前日〜当日朝（馬体重未確定）の予測 | h_body_weight, h_body_weight_diff, h_body_weight_dev, market_* |
+
+#### 体重特徴量の意味
+
+**前日安全版（Pre-race Safe）** - `--mode pre_race` でも使用可能：
+
+| 特徴量 | 説明 |
+|--------|------|
+| `h_avg_body_weight` | 過去走の平均馬体重 |
+| `h_last_body_weight` | 直近出走時の馬体重 |
+| `h_last_body_weight_diff` | 直近出走時の馬体重増減 |
+| `h_recent3_avg_body_weight` | 直近3走の平均馬体重 |
+| `h_recent3_std_body_weight` | 直近3走の馬体重標準偏差（安定性指標） |
+| `h_recent3_body_weight_trend` | 直近3走の体重トレンド（正=増量傾向、負=減量傾向） |
+| `h_body_weight_z` | 馬体重 z-score（直近体重と平均体重の乖離度） |
+
+**当日版（Race-day Only）** - `--mode pre_race` では除外：
+
+| 特徴量 | 説明 |
+|--------|------|
+| `h_body_weight` | 今走の馬体重（当日計測） |
+| `h_body_weight_diff` | 今走の馬体重増減（当日計測） |
+| `h_body_weight_dev` | 馬体重偏差（平均との差） |
+
+#### 除外特徴量の定義ファイル
+
+`config/exclude_features/pre_race.txt` に除外対象が定義されています：
+
+```text
+# 当日体重（馬体重計測は当日朝に行われる）
+h_body_weight
+h_body_weight_diff
+h_body_weight_dev
+
+# 当日市場情報
+market_win_odds
+market_popularity
+market_odds_rank
+```
+
+独自の除外リストを使用したい場合は `--exclude-features-file` オプションを使用してください。
+
+---
+
+### 3.10 前日締め運用（Pre-day Cutoff Operation）【実験的】
 
 実運用では、レース前日の時点でオッズ・人気を取得して予測を確定させたい場合があります。
 この「前日締め運用」をサポートするため、`odds_snapshots` テーブルとスナップショットベースの評価機能を実装しています。
@@ -421,6 +482,10 @@ python scripts/fetch_masters.py --db netkeiba.db --report
   - Permutation Importance（AUC, LogLoss, Top1/3/5, MRR）
   - Feature Group Importance
   - Segment Performance（芝/ダート、距離、馬場等）
+- ✅ Road 3.6：Pre-race Mode（前日運用モード）
+  - 前日安全版体重特徴量（h_last_body_weight, h_recent3_* 等）
+  - `--mode pre_race` オプション（当日体重を除外して学習）
+  - BodyWeightContext（LLM 説明用の体重コンテキスト）
 - 🔄 現在の優先事項：
   - Feature Diagnostics を使った特徴量選抜・改善
   - ベースモデルの精度向上（market特徴量は使わない方針）
@@ -431,8 +496,8 @@ python scripts/fetch_masters.py --db netkeiba.db --report
 
 ## Chat Handoff（新チャット貼り付け用の現在地）
 
-- 今日の日付：2025-12-28（JST）
-- 前提：Road1〜Road3.5（Feature Diagnostics）までpull済み
+- 今日の日付：2025-12-29（JST）
+- 前提：Road1〜Road3.6（Pre-race Mode）までpull済み
 - 環境：
   - sqlite3 コマンドは未導入（Pythonスクリプトで運用）
   - dev依存は導入済み：`pip install -r requirements-dev.txt`

@@ -13,6 +13,131 @@ from enum import Enum, auto
 from .spec import ScenarioSpec
 
 
+@dataclass
+class BodyWeightContext:
+    """
+    馬体重に関するコンテキスト情報。
+
+    LLM説明生成時に「体重変動に注意」「当日の馬体重確認」などの
+    コメントを出すための材料として使用する。
+
+    Attributes:
+        # 過去ベース (pre-race safe: 前日までに確実に取得可能)
+        avg_body_weight: 過去平均馬体重
+        last_body_weight: 直近出走時の馬体重
+        last_body_weight_diff: 直近出走時の増減
+        recent3_avg_body_weight: 直近3走の平均体重
+        recent3_std_body_weight: 直近3走の標準偏差
+        recent3_trend: 直近3走の体重トレンド (正=増量傾向)
+        body_weight_z: 体重z-score
+
+        # 当日データ (race-day only: 前日運用では None)
+        current_body_weight: 当日の馬体重 (None if not available)
+        current_body_weight_diff: 当日の増減 (None if not available)
+        current_body_weight_dev: 当日の偏差 (None if not available)
+    """
+    # 過去ベース (pre-race safe)
+    avg_body_weight: Optional[float] = None
+    last_body_weight: Optional[int] = None
+    last_body_weight_diff: Optional[int] = None
+    recent3_avg_body_weight: Optional[float] = None
+    recent3_std_body_weight: Optional[float] = None
+    recent3_trend: Optional[float] = None
+    body_weight_z: Optional[float] = None
+
+    # 当日データ (race-day only)
+    current_body_weight: Optional[int] = None
+    current_body_weight_diff: Optional[int] = None
+    current_body_weight_dev: Optional[float] = None
+
+    @property
+    def has_current_data(self) -> bool:
+        """当日体重データがあるか"""
+        return self.current_body_weight is not None
+
+    @property
+    def has_historical_data(self) -> bool:
+        """過去体重データがあるか"""
+        return self.last_body_weight is not None
+
+    @property
+    def is_weight_volatile(self) -> bool:
+        """体重変動が大きいか (std > 4kg を目安)"""
+        if self.recent3_std_body_weight is None:
+            return False
+        return self.recent3_std_body_weight > 4.0
+
+    @property
+    def is_gaining_weight(self) -> bool:
+        """増量傾向か"""
+        if self.recent3_trend is None:
+            return False
+        return self.recent3_trend > 2.0
+
+    @property
+    def is_losing_weight(self) -> bool:
+        """減量傾向か"""
+        if self.recent3_trend is None:
+            return False
+        return self.recent3_trend < -2.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        """辞書形式にシリアライズ"""
+        return {
+            # 過去ベース
+            "avg_body_weight": self.avg_body_weight,
+            "last_body_weight": self.last_body_weight,
+            "last_body_weight_diff": self.last_body_weight_diff,
+            "recent3_avg_body_weight": self.recent3_avg_body_weight,
+            "recent3_std_body_weight": self.recent3_std_body_weight,
+            "recent3_trend": self.recent3_trend,
+            "body_weight_z": self.body_weight_z,
+            # 当日データ
+            "current_body_weight": self.current_body_weight,
+            "current_body_weight_diff": self.current_body_weight_diff,
+            "current_body_weight_dev": self.current_body_weight_dev,
+            # フラグ
+            "has_current_data": self.has_current_data,
+            "has_historical_data": self.has_historical_data,
+            "is_weight_volatile": self.is_weight_volatile,
+            "is_gaining_weight": self.is_gaining_weight,
+            "is_losing_weight": self.is_losing_weight,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "BodyWeightContext":
+        """辞書形式からデシリアライズ"""
+        return cls(
+            avg_body_weight=data.get("avg_body_weight"),
+            last_body_weight=data.get("last_body_weight"),
+            last_body_weight_diff=data.get("last_body_weight_diff"),
+            recent3_avg_body_weight=data.get("recent3_avg_body_weight"),
+            recent3_std_body_weight=data.get("recent3_std_body_weight"),
+            recent3_trend=data.get("recent3_trend"),
+            body_weight_z=data.get("body_weight_z"),
+            current_body_weight=data.get("current_body_weight"),
+            current_body_weight_diff=data.get("current_body_weight_diff"),
+            current_body_weight_dev=data.get("current_body_weight_dev"),
+        )
+
+    def get_llm_notes(self) -> List[str]:
+        """LLM向けの注意点リストを生成"""
+        notes = []
+
+        if self.is_weight_volatile:
+            notes.append("体重変動大 (要確認)")
+
+        if self.is_gaining_weight:
+            notes.append("増量傾向")
+        elif self.is_losing_weight:
+            notes.append("減量傾向")
+
+        if not self.has_current_data:
+            notes.append("当日体重未確定")
+
+        return notes
+
+
 class AdjustmentReason(Enum):
     """
     補正理由のフラグ。
@@ -129,6 +254,9 @@ class ScenarioHorseScore:
     # 補正理由
     adjustment_reasons: List[AdjustmentReason] = field(default_factory=list)
 
+    # 体重コンテキスト (pre-race + race-day)
+    body_weight_context: Optional[BodyWeightContext] = None
+
     # コメント
     comment: str = ""
 
@@ -186,7 +314,7 @@ class ScenarioHorseScore:
 
     def to_dict(self) -> Dict[str, Any]:
         """辞書形式にシリアライズ"""
-        return {
+        result = {
             "horse_id": self.horse_id,
             "horse_name": self.horse_name,
             "frame_no": self.frame_no,
@@ -202,6 +330,10 @@ class ScenarioHorseScore:
             "adjustment_reasons_ja": self.get_reasons_japanese(),
             "comment": self.comment,
         }
+        # 体重コンテキスト
+        if self.body_weight_context is not None:
+            result["body_weight_context"] = self.body_weight_context.to_dict()
+        return result
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> ScenarioHorseScore:
@@ -221,6 +353,11 @@ class ScenarioHorseScore:
         if frame_no is None:
             frame_no = data.get("post_position")
 
+        # 体重コンテキスト
+        body_weight_ctx = None
+        if "body_weight_context" in data and data["body_weight_context"]:
+            body_weight_ctx = BodyWeightContext.from_dict(data["body_weight_context"])
+
         return cls(
             horse_id=data["horse_id"],
             horse_name=data.get("horse_name"),
@@ -232,6 +369,7 @@ class ScenarioHorseScore:
             adj_win=data.get("adj_win", 0.0),
             adj_in3=data.get("adj_in3", 0.0),
             adjustment_reasons=reasons,
+            body_weight_context=body_weight_ctx,
             comment=data.get("comment", ""),
         )
 
@@ -369,6 +507,7 @@ class ScenarioScore:
                     "win_delta": round(h.win_delta, 4),
                     "win_delta_pct": round(h.win_delta_pct, 1),
                     "reasons": h.get_reasons_japanese(),
+                    "weight_notes": h.body_weight_context.get_llm_notes() if h.body_weight_context else [],
                 }
                 for h in self.top_horses_by_adj_win(top_n)
             ],

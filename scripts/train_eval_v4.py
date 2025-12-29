@@ -215,6 +215,12 @@ Examples:
 
   # Exclude specific features via file
   python scripts/train_eval_v4.py --db netkeiba.db --diagnostics-only --exclude-features-file exclude_features.txt
+
+  # Pre-race mode (前日運用): excludes race-day features (h_body_weight, h_body_weight_diff, h_body_weight_dev)
+  python scripts/train_eval_v4.py --db netkeiba.db --mode pre_race --feature-diagnostics
+
+  # Pre-race mode with diagnostics-only
+  python scripts/train_eval_v4.py --db netkeiba.db --mode pre_race --diagnostics-only --model-path models/lgbm_target_win_v4_prerace.txt
 """
     )
     parser.add_argument(
@@ -222,6 +228,17 @@ Examples:
         type=str,
         required=True,
         help="Path to SQLite DB (e.g., netkeiba.db)",
+    )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        choices=["default", "pre_race"],
+        default="default",
+        help=(
+            "Operation mode: 'default' uses all features, "
+            "'pre_race' excludes race-day features (h_body_weight, h_body_weight_diff, "
+            "h_body_weight_dev, market_*) for pre-day operation"
+        ),
     )
     parser.add_argument(
         "--output", "-o",
@@ -380,6 +397,7 @@ Examples:
     logger.info("FeaturePack v1 Training Pipeline")
     logger.info("=" * 70)
     logger.info(f"Database: {db_path}")
+    logger.info(f"Mode: {args.mode}")
     logger.info(f"Target: {args.target}")
     logger.info(f"Split mode: {args.split_mode}")
     logger.info(f"Include pedigree: {not args.no_pedigree}")
@@ -397,6 +415,30 @@ Examples:
         logger.info(f"Model path: {args.model_path}")
     if args.exclude_features_file:
         logger.info(f"Exclude features file: {args.exclude_features_file}")
+
+    # Build exclude features set from mode and/or file
+    exclude_features_set = set()
+
+    # pre_race mode: load config/exclude_features/pre_race.txt
+    if args.mode == "pre_race":
+        pre_race_exclude_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "config", "exclude_features", "pre_race.txt"
+        )
+        if os.path.exists(pre_race_exclude_path):
+            pre_race_excludes = load_exclude_features(pre_race_exclude_path)
+            exclude_features_set.update(pre_race_excludes)
+            logger.info(f"Pre-race mode: loaded {len(pre_race_excludes)} exclude features")
+        else:
+            logger.warning(f"Pre-race exclude file not found: {pre_race_exclude_path}")
+
+    # Additional excludes from user-specified file
+    if args.exclude_features_file:
+        user_excludes = load_exclude_features(args.exclude_features_file)
+        exclude_features_set.update(user_excludes)
+
+    if exclude_features_set:
+        logger.info(f"Total features to exclude: {len(exclude_features_set)}")
 
     # Create output directory
     output_dir = os.path.abspath(args.output)
@@ -446,10 +488,9 @@ Examples:
                 output_dir, args.target
             )
 
-            # Apply feature exclusion if specified
-            if args.exclude_features_file:
-                exclude_set = load_exclude_features(args.exclude_features_file)
-                feature_cols = apply_feature_exclusion(feature_cols, exclude_set)
+            # Apply feature exclusion (from mode and/or file)
+            if exclude_features_set:
+                feature_cols = apply_feature_exclusion(feature_cols, exclude_features_set)
 
             # Load data
             logger.info("Loading feature data...")
@@ -494,6 +535,7 @@ Examples:
             roi_sweep_gap=roi_sweep_gap,
             decision_cutoff=args.decision_cutoff,
             use_snapshots=not args.no_snapshots,
+            exclude_features=exclude_features_set if exclude_features_set else None,
         )
 
         # Print results summary
@@ -542,10 +584,8 @@ Examples:
                 feature_cols = trained_feature_cols
                 test_df = trained_test_df
 
-                # Apply feature exclusion if specified
-                if args.exclude_features_file:
-                    exclude_set = load_exclude_features(args.exclude_features_file)
-                    feature_cols = apply_feature_exclusion(feature_cols, exclude_set)
+                # Note: exclude_features は学習時に既に適用済み
+                # trained_feature_cols には除外後の特徴量のみ含まれる
 
                 # Run diagnostics on test data
                 diag_report = run_diagnostics(

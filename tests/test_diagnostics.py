@@ -967,6 +967,317 @@ class TestFeatureDiagnosticsInMemory:
 
 
 # =============================================================================
+# Test Pre-race Body Weight Features
+# =============================================================================
+
+class TestPreRaceBodyWeightFeatures:
+    """Tests for pre-race safe body weight features in asof_aggregator"""
+
+    def test_body_weight_features_computed_from_past(self):
+        """Body weight features should be computed from past races only"""
+        from src.features_v4.asof_aggregator import AsOfAggregator
+        import sqlite3
+
+        # Create in-memory database with test data
+        conn = sqlite3.connect(":memory:")
+
+        # Create tables
+        conn.execute("""
+            CREATE TABLE races (
+                race_id TEXT PRIMARY KEY,
+                date TEXT,
+                place TEXT,
+                course_type TEXT,
+                distance INTEGER,
+                track_condition TEXT,
+                race_class TEXT,
+                grade TEXT,
+                race_no INTEGER,
+                course_turn TEXT,
+                course_inout TEXT,
+                head_count INTEGER
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE race_results (
+                race_id TEXT,
+                horse_id TEXT,
+                finish_order INTEGER,
+                body_weight INTEGER,
+                body_weight_diff INTEGER,
+                last_3f REAL,
+                passing_order TEXT,
+                win_odds REAL,
+                popularity INTEGER,
+                prize_money INTEGER,
+                jockey_id TEXT,
+                trainer_id TEXT,
+                sex TEXT,
+                age INTEGER,
+                weight REAL,
+                frame_no INTEGER,
+                horse_no INTEGER,
+                PRIMARY KEY (race_id, horse_id)
+            )
+        """)
+
+        # Insert test races
+        races_data = [
+            ("2024010101", "2024-01-01", "東京", "芝", 2000, "良", "オープン", "G1", 11, "右", "内", 16),
+            ("2024020101", "2024-02-01", "東京", "芝", 2000, "良", "オープン", "G1", 11, "右", "内", 16),
+            ("2024030101", "2024-03-01", "東京", "芝", 2000, "良", "オープン", "G1", 11, "右", "内", 16),
+            ("2024040101", "2024-04-01", "東京", "芝", 2000, "良", "オープン", "G1", 11, "右", "内", 16),
+        ]
+        conn.executemany(
+            "INSERT INTO races VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            races_data
+        )
+
+        # Insert race results for a horse
+        results_data = [
+            ("2024010101", "HORSE001", 1, 480, 0, 33.5, "1-1", 2.0, 1, 100000, "J001", "T001", "牡", 4, 55.0, 1, 1),
+            ("2024020101", "HORSE001", 2, 478, -2, 33.8, "2-2", 3.0, 2, 50000, "J001", "T001", "牡", 4, 55.0, 2, 2),
+            ("2024030101", "HORSE001", 1, 482, 4, 33.3, "1-1", 2.5, 1, 100000, "J001", "T001", "牡", 4, 55.0, 1, 1),
+        ]
+        conn.executemany(
+            "INSERT INTO race_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            results_data
+        )
+        conn.commit()
+
+        # Compute stats as of 2024-04-01 (should only use data from before this date)
+        agg = AsOfAggregator(conn)
+        stats = agg.compute_horse_asof_stats(
+            horse_id="HORSE001",
+            race_date="2024-04-01",
+            distance_cat=2000,
+            surface="芝",
+        )
+
+        # Verify new body weight features
+        assert stats.get("h_avg_body_weight") == pytest.approx(480.0, rel=0.01)
+        assert stats.get("h_last_body_weight") == 482
+        assert stats.get("h_last_body_weight_diff") == 4
+        assert stats.get("h_recent3_avg_body_weight") == pytest.approx(480.0, rel=0.01)
+        assert stats.get("h_recent3_std_body_weight") is not None
+        assert stats.get("h_recent3_body_weight_trend") is not None
+
+        conn.close()
+
+    def test_body_weight_features_empty_past(self):
+        """Body weight features should be None when there's no past data"""
+        from src.features_v4.asof_aggregator import AsOfAggregator
+        import sqlite3
+
+        conn = sqlite3.connect(":memory:")
+
+        # Create minimal tables
+        conn.execute("""
+            CREATE TABLE races (race_id TEXT, date TEXT, place TEXT, course_type TEXT,
+            distance INTEGER, track_condition TEXT, race_class TEXT, grade TEXT,
+            race_no INTEGER, course_turn TEXT, course_inout TEXT, head_count INTEGER)
+        """)
+        conn.execute("""
+            CREATE TABLE race_results (race_id TEXT, horse_id TEXT, finish_order INTEGER,
+            body_weight INTEGER, body_weight_diff INTEGER, last_3f REAL, passing_order TEXT,
+            win_odds REAL, popularity INTEGER, prize_money INTEGER, jockey_id TEXT,
+            trainer_id TEXT, sex TEXT, age INTEGER, weight REAL, frame_no INTEGER, horse_no INTEGER)
+        """)
+        conn.commit()
+
+        agg = AsOfAggregator(conn)
+        stats = agg.compute_horse_asof_stats(
+            horse_id="NONEXISTENT",
+            race_date="2024-04-01",
+        )
+
+        assert stats.get("h_last_body_weight") is None
+        assert stats.get("h_last_body_weight_diff") is None
+        assert stats.get("h_recent3_avg_body_weight") is None
+        assert stats.get("h_recent3_std_body_weight") is None
+        assert stats.get("h_recent3_body_weight_trend") is None
+        assert stats.get("h_body_weight_z") is None
+
+        conn.close()
+
+    def test_body_weight_features_single_past(self):
+        """Body weight features should handle single past race correctly"""
+        from src.features_v4.asof_aggregator import AsOfAggregator
+        import sqlite3
+
+        conn = sqlite3.connect(":memory:")
+        conn.execute("""
+            CREATE TABLE races (race_id TEXT, date TEXT, place TEXT, course_type TEXT,
+            distance INTEGER, track_condition TEXT, race_class TEXT, grade TEXT,
+            race_no INTEGER, course_turn TEXT, course_inout TEXT, head_count INTEGER)
+        """)
+        conn.execute("""
+            CREATE TABLE race_results (race_id TEXT, horse_id TEXT, finish_order INTEGER,
+            body_weight INTEGER, body_weight_diff INTEGER, last_3f REAL, passing_order TEXT,
+            win_odds REAL, popularity INTEGER, prize_money INTEGER, jockey_id TEXT,
+            trainer_id TEXT, sex TEXT, age INTEGER, weight REAL, frame_no INTEGER, horse_no INTEGER)
+        """)
+
+        # Single past race
+        conn.execute(
+            "INSERT INTO races VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("2024010101", "2024-01-01", "東京", "芝", 2000, "良", "オープン", "G1", 11, "右", "内", 16)
+        )
+        conn.execute(
+            "INSERT INTO race_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("2024010101", "HORSE001", 1, 480, 0, 33.5, "1-1", 2.0, 1, 100000, "J001", "T001", "牡", 4, 55.0, 1, 1)
+        )
+        conn.commit()
+
+        agg = AsOfAggregator(conn)
+        stats = agg.compute_horse_asof_stats(
+            horse_id="HORSE001",
+            race_date="2024-04-01",
+        )
+
+        # With only 1 past race
+        assert stats.get("h_last_body_weight") == 480
+        assert stats.get("h_recent3_avg_body_weight") == 480.0
+        assert stats.get("h_recent3_std_body_weight") is None  # Need 2+ for std
+        assert stats.get("h_recent3_body_weight_trend") is None  # Need 2+ for trend
+
+        conn.close()
+
+
+class TestPreRaceMode:
+    """Tests for --mode pre_race functionality"""
+
+    def test_pre_race_exclude_file_exists(self):
+        """Pre-race exclude file should exist"""
+        import os
+        pre_race_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "config", "exclude_features", "pre_race.txt"
+        )
+        assert os.path.exists(pre_race_path), f"Pre-race exclude file should exist at {pre_race_path}"
+
+    def test_pre_race_exclude_file_contents(self):
+        """Pre-race exclude file should contain race-day features"""
+        from scripts.train_eval_v4 import load_exclude_features
+        import os
+
+        pre_race_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "config", "exclude_features", "pre_race.txt"
+        )
+        excludes = load_exclude_features(pre_race_path)
+
+        # Should contain race-day body weight features
+        assert "h_body_weight" in excludes
+        assert "h_body_weight_diff" in excludes
+        assert "h_body_weight_dev" in excludes
+
+        # Should NOT contain pre-race safe features
+        assert "h_avg_body_weight" not in excludes
+        assert "h_last_body_weight" not in excludes
+        assert "h_recent3_avg_body_weight" not in excludes
+
+    def test_mode_argument_parsing(self):
+        """train_eval_v4.py should accept --mode argument"""
+        import subprocess
+        result = subprocess.run(
+            ["python", "scripts/train_eval_v4.py", "--help"],
+            capture_output=True,
+            text=True
+        )
+        assert "--mode" in result.stdout
+        assert "pre_race" in result.stdout
+
+
+class TestBodyWeightContext:
+    """Tests for BodyWeightContext class"""
+
+    def test_body_weight_context_creation(self):
+        """BodyWeightContext should be created with correct fields"""
+        from src.scenario import BodyWeightContext
+
+        ctx = BodyWeightContext(
+            avg_body_weight=480.0,
+            last_body_weight=478,
+            last_body_weight_diff=-2,
+            recent3_avg_body_weight=480.0,
+            recent3_std_body_weight=3.5,
+            recent3_trend=-1.0,
+            body_weight_z=-0.57,
+        )
+
+        assert ctx.avg_body_weight == 480.0
+        assert ctx.last_body_weight == 478
+        assert ctx.has_historical_data is True
+        assert ctx.has_current_data is False
+
+    def test_body_weight_context_volatile(self):
+        """BodyWeightContext should detect volatile weight"""
+        from src.scenario import BodyWeightContext
+
+        ctx = BodyWeightContext(recent3_std_body_weight=5.0)
+        assert ctx.is_weight_volatile is True
+
+        ctx2 = BodyWeightContext(recent3_std_body_weight=2.0)
+        assert ctx2.is_weight_volatile is False
+
+    def test_body_weight_context_trend(self):
+        """BodyWeightContext should detect weight trends"""
+        from src.scenario import BodyWeightContext
+
+        ctx_gain = BodyWeightContext(recent3_trend=3.0)
+        assert ctx_gain.is_gaining_weight is True
+        assert ctx_gain.is_losing_weight is False
+
+        ctx_loss = BodyWeightContext(recent3_trend=-3.0)
+        assert ctx_loss.is_gaining_weight is False
+        assert ctx_loss.is_losing_weight is True
+
+    def test_body_weight_context_llm_notes(self):
+        """BodyWeightContext should generate LLM notes"""
+        from src.scenario import BodyWeightContext
+
+        # Volatile + no current data
+        ctx = BodyWeightContext(
+            recent3_std_body_weight=5.0,
+            recent3_trend=0.0,
+        )
+        notes = ctx.get_llm_notes()
+        assert "体重変動大 (要確認)" in notes
+        assert "当日体重未確定" in notes
+
+        # Has current data
+        ctx2 = BodyWeightContext(
+            current_body_weight=480,
+            recent3_trend=-3.0,
+        )
+        notes2 = ctx2.get_llm_notes()
+        assert "当日体重未確定" not in notes2
+        assert "減量傾向" in notes2
+
+    def test_body_weight_context_serialization(self):
+        """BodyWeightContext should serialize/deserialize correctly"""
+        from src.scenario import BodyWeightContext
+
+        ctx = BodyWeightContext(
+            avg_body_weight=480.0,
+            last_body_weight=478,
+            current_body_weight=475,
+        )
+
+        # to_dict
+        d = ctx.to_dict()
+        assert d["avg_body_weight"] == 480.0
+        assert d["current_body_weight"] == 475
+        assert d["has_current_data"] is True
+
+        # from_dict
+        ctx2 = BodyWeightContext.from_dict(d)
+        assert ctx2.avg_body_weight == ctx.avg_body_weight
+        assert ctx2.current_body_weight == ctx.current_body_weight
+
+
+# =============================================================================
 # Run Tests
 # =============================================================================
 

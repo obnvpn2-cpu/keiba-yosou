@@ -148,10 +148,19 @@ CREATE TABLE IF NOT EXISTS feature_table_v4 (
     h_recent5_in3_rate REAL,          -- 直近5走複勝率
 
     -- 4.7 Weight features
-    h_body_weight INTEGER,            -- 馬体重
-    h_body_weight_diff INTEGER,       -- 馬体重増減
+    -- 4.7.1 当日体重（race-day only: 前日運用では欠損可能性あり）
+    h_body_weight INTEGER,            -- 馬体重 (当日)
+    h_body_weight_diff INTEGER,       -- 馬体重増減 (当日)
+    h_body_weight_dev REAL,           -- 馬体重偏差 (当日 - 過去平均)
+
+    -- 4.7.2 過去体重（pre-race safe: 前日までに確実に取得可能）
     h_avg_body_weight REAL,           -- 過去平均馬体重
-    h_body_weight_dev REAL,           -- 馬体重偏差 (current - avg)
+    h_last_body_weight INTEGER,       -- 直近出走時の馬体重
+    h_last_body_weight_diff INTEGER,  -- 直近出走時の馬体重増減
+    h_recent3_avg_body_weight REAL,   -- 直近3走の平均体重
+    h_recent3_std_body_weight REAL,   -- 直近3走の体重標準偏差
+    h_recent3_body_weight_trend REAL, -- 直近3走の体重トレンド (正=増量傾向)
+    h_body_weight_z REAL,             -- 体重z-score (直近 - 平均) / 標準偏差
 
     -- 4.8 First run flag
     h_is_first_run INTEGER,           -- 新馬/初出走フラグ
@@ -460,8 +469,12 @@ def get_feature_v4_columns(
         "h_recent3_avg_last3f", "h_recent5_avg_finish",
         "h_recent5_win_rate", "h_recent5_in3_rate",
 
-        # horse_form (weight)
-        "h_body_weight", "h_body_weight_diff", "h_avg_body_weight", "h_body_weight_dev",
+        # horse_form (weight - race-day)
+        "h_body_weight", "h_body_weight_diff", "h_body_weight_dev",
+        # horse_form (weight - pre-race safe)
+        "h_avg_body_weight", "h_last_body_weight", "h_last_body_weight_diff",
+        "h_recent3_avg_body_weight", "h_recent3_std_body_weight",
+        "h_recent3_body_weight_trend", "h_body_weight_z",
 
         # horse_form (first run)
         "h_is_first_run",
@@ -548,7 +561,12 @@ def get_feature_groups() -> dict:
             "h_days_since_last", "h_recent3_avg_finish", "h_recent3_best_finish",
             "h_recent3_avg_last3f", "h_recent5_avg_finish",
             "h_recent5_win_rate", "h_recent5_in3_rate",
-            "h_body_weight", "h_body_weight_diff", "h_avg_body_weight", "h_body_weight_dev",
+            # weight (race-day)
+            "h_body_weight", "h_body_weight_diff", "h_body_weight_dev",
+            # weight (pre-race safe)
+            "h_avg_body_weight", "h_last_body_weight", "h_last_body_weight_diff",
+            "h_recent3_avg_body_weight", "h_recent3_std_body_weight",
+            "h_recent3_body_weight_trend", "h_body_weight_z",
             "h_is_first_run",
         ],
         "pace_position": [

@@ -32,7 +32,7 @@ import json
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any, Set
 
 import pandas as pd
 import numpy as np
@@ -391,6 +391,7 @@ def train_model(
     val_df: pd.DataFrame,
     config: TrainConfig,
     output_dir: Optional[str] = None,
+    exclude_features: Optional[Set[str]] = None,
 ) -> Tuple[Any, List[str]]:
     """
     LightGBM モデルを学習
@@ -400,6 +401,7 @@ def train_model(
         val_df: 検証データ
         config: 学習設定
         output_dir: モデル保存先 (None の場合は保存しない)
+        exclude_features: 除外する特徴量名のセット
 
     Returns:
         (model, feature_cols)
@@ -413,6 +415,14 @@ def train_model(
         include_pedigree=config.include_pedigree,
         include_market=config.include_market,
     )
+
+    # Apply feature exclusion
+    if exclude_features:
+        n_before = len(feature_cols)
+        feature_cols = [c for c in feature_cols if c not in exclude_features]
+        n_excluded = n_before - len(feature_cols)
+        if n_excluded > 0:
+            logger.info("Excluded %d features, remaining: %d", n_excluded, len(feature_cols))
 
     logger.info("Training model for target: %s", target_col)
     logger.info("  Features: %d columns", len(feature_cols))
@@ -2037,6 +2047,7 @@ def run_full_pipeline(
     roi_sweep_gap: Optional[List[float]] = None,
     decision_cutoff: Optional[str] = None,
     use_snapshots: bool = True,
+    exclude_features: Optional[Set[str]] = None,
 ) -> Dict[str, Any]:
     """
     完全なパイプラインを実行
@@ -2053,6 +2064,7 @@ def run_full_pipeline(
         roi_sweep_gap: ギャップ閾値リスト (None = デフォルト)
         decision_cutoff: 締め切り時刻 (ISO format、前日締め運用用)
         use_snapshots: オッズスナップショットを使用するか
+        exclude_features: 除外する特徴量名のセット (pre_race モード等)
 
     Returns:
         結果の辞書
@@ -2078,7 +2090,10 @@ def run_full_pipeline(
     train_df, val_df, test_df = split_time_series(df, train_end, val_end, split_mode)
 
     # 学習
-    model, feature_cols = train_model(train_df, val_df, config, output_dir)
+    model, feature_cols = train_model(
+        train_df, val_df, config, output_dir,
+        exclude_features=exclude_features
+    )
 
     # 評価
     val_result = evaluate_model(model, val_df, feature_cols, config.target_col, "val")

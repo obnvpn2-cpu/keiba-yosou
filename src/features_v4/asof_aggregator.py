@@ -435,12 +435,56 @@ class AsOfAggregator:
             stats["h_recent5_win_rate"] = (recent5["finish_order"] == 1).sum() / len(recent5)
             stats["h_recent5_in3_rate"] = (recent5["finish_order"] <= 3).sum() / len(recent5)
 
-            # Weight stats
+            # Weight stats (全て過去レースのみから算出 - pre-race safe)
             weight_values = past["body_weight"].dropna()
             if len(weight_values) > 0:
                 stats["h_avg_body_weight"] = weight_values.mean()
             else:
                 stats["h_avg_body_weight"] = None
+
+            # --- 体重の "前日安全版" 特徴量 (pre-race safe) ---
+            # 直近出走の馬体重 & 増減
+            recent_with_weight = past_sorted[past_sorted["body_weight"].notna()]
+            if len(recent_with_weight) > 0:
+                stats["h_last_body_weight"] = recent_with_weight.iloc[0]["body_weight"]
+                stats["h_last_body_weight_diff"] = recent_with_weight.iloc[0]["body_weight_diff"]
+            else:
+                stats["h_last_body_weight"] = None
+                stats["h_last_body_weight_diff"] = None
+
+            # 直近3走の体重統計
+            recent3_weight = recent_with_weight.head(3)["body_weight"]
+            if len(recent3_weight) >= 1:
+                stats["h_recent3_avg_body_weight"] = recent3_weight.mean()
+                if len(recent3_weight) >= 2:
+                    stats["h_recent3_std_body_weight"] = recent3_weight.std()
+                else:
+                    stats["h_recent3_std_body_weight"] = None
+                # トレンド: (最新 - 最古) / 走数  (負なら減量傾向)
+                if len(recent3_weight) >= 2:
+                    newest = recent3_weight.iloc[0]
+                    oldest = recent3_weight.iloc[-1]
+                    stats["h_recent3_body_weight_trend"] = (newest - oldest) / (len(recent3_weight) - 1)
+                else:
+                    stats["h_recent3_body_weight_trend"] = None
+            else:
+                stats["h_recent3_avg_body_weight"] = None
+                stats["h_recent3_std_body_weight"] = None
+                stats["h_recent3_body_weight_trend"] = None
+
+            # 体重z-score: (直近体重 - 全平均) / 全標準偏差
+            if (stats.get("h_last_body_weight") is not None and
+                stats.get("h_avg_body_weight") is not None and
+                len(weight_values) >= 2):
+                weight_std = weight_values.std()
+                if weight_std and weight_std > 0:
+                    stats["h_body_weight_z"] = (
+                        stats["h_last_body_weight"] - stats["h_avg_body_weight"]
+                    ) / weight_std
+                else:
+                    stats["h_body_weight_z"] = None
+            else:
+                stats["h_body_weight_z"] = None
 
             # Last 3F stats
             last3f_values = past["last_3f"].dropna()
@@ -480,6 +524,13 @@ class AsOfAggregator:
             stats["h_recent5_win_rate"] = None
             stats["h_recent5_in3_rate"] = None
             stats["h_avg_body_weight"] = None
+            # 体重の "前日安全版" 特徴量 (pre-race safe) - 初出走時は全てNone
+            stats["h_last_body_weight"] = None
+            stats["h_last_body_weight_diff"] = None
+            stats["h_recent3_avg_body_weight"] = None
+            stats["h_recent3_std_body_weight"] = None
+            stats["h_recent3_body_weight_trend"] = None
+            stats["h_body_weight_z"] = None
             stats["h_avg_last3f"] = None
             stats["h_best_last3f"] = None
             stats["h_total_prize"] = 0
