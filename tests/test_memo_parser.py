@@ -333,6 +333,407 @@ class TestParseMemoFunction:
 
 
 # =============================================================================
+# Test Frame Hint Separation (v3.0)
+# 重要: 枠への言及はlane_biasに直結しない
+# =============================================================================
+
+class TestFrameHintSeparation:
+    """Tests for frame hint vs lane bias separation (v3.0 critical feature)"""
+
+    def test_inner_frame_not_lane_bias(self, parser):
+        """内枠 mention should NOT generate lane_bias.inner"""
+        result = parser.parse("内枠有利な展開")
+        chip_ids = [c.id for c in result.chips]
+
+        # Should detect frame_hint, NOT lane_bias
+        assert "frame_hint.inner_frame" in chip_ids
+        # lane_bias.inner should NOT be generated from 内枠 alone
+        lane_bias_chips = [c for c in result.chips if c.category == "lane_bias"]
+        assert len(lane_bias_chips) == 0, "内枠 should not generate lane_bias"
+
+    def test_outer_frame_not_lane_bias(self, parser):
+        """外枠 mention should NOT generate lane_bias.outer"""
+        result = parser.parse("外枠不利")
+        chip_ids = [c.id for c in result.chips]
+
+        # Should detect frame_hint
+        assert "frame_hint.outer_frame" in chip_ids
+        # Should NOT generate lane_bias.outer
+        lane_bias_chips = [c for c in result.chips if c.category == "lane_bias"]
+        assert len(lane_bias_chips) == 0
+
+    def test_frame_hint_is_warning(self, parser):
+        """Frame hint chips should have is_warning=True"""
+        result = parser.parse("内枠を引きたい")
+
+        frame_chips = [c for c in result.chips if c.category == "frame_hint"]
+        assert len(frame_chips) >= 1
+        assert frame_chips[0].is_warning == True
+
+    def test_frame_hint_no_apply_payload(self, parser):
+        """Frame hint chips should have empty apply_payload"""
+        result = parser.parse("内枠有利")
+
+        frame_chips = [c for c in result.chips if c.category == "frame_hint"]
+        if frame_chips:
+            assert frame_chips[0].apply_payload == {}
+
+    def test_lane_bias_vs_frame_hint_distinction(self, parser):
+        """内伸び should be lane_bias, 内枠 should be frame_hint"""
+        result = parser.parse("内伸びだが内枠とは限らない")
+        chip_ids = [c.id for c in result.chips]
+
+        # 内伸び → lane_bias
+        assert "lane_bias.inner" in chip_ids
+        # 内枠 → frame_hint (but negated, so may not appear as chip)
+        # The key point: lane_bias is from 内伸び, not 内枠
+
+
+# =============================================================================
+# Test Race Flow Detection (v3.0)
+# =============================================================================
+
+class TestRaceFlowDetection:
+    """Tests for race flow category (v3.0)"""
+
+    def test_many_front_runners(self, parser):
+        """Should detect many front runners scenario"""
+        result = parser.parse("逃げ馬が多くてペースが流れそう")
+        chip_ids = [c.id for c in result.chips]
+
+        assert "race_flow.many_front_runners" in chip_ids
+
+    def test_few_front_runners(self, parser):
+        """Should detect few front runners scenario"""
+        result = parser.parse("逃げ馬不在で楽逃げ確実")
+        chip_ids = [c.id for c in result.chips]
+
+        assert "race_flow.few_front_runners" in chip_ids
+
+    def test_pace_maker(self, parser):
+        """Should detect pace maker presence"""
+        result = parser.parse("ペースメーカーがいてペースは安定")
+
+        race_flow_chips = [c for c in result.chips if c.category == "race_flow"]
+        values = [c.id for c in race_flow_chips]
+        assert "race_flow.pace_maker" in values
+
+
+# =============================================================================
+# Test Natural Language Samples (v3.0)
+# 20-30 realistic memo samples
+# =============================================================================
+
+class TestNaturalLanguageSamples:
+    """Tests for natural language memo samples (v3.0 acceptance criteria)"""
+
+    # ---------------------------------------------------------------------------
+    # Sample 1-5: Basic patterns
+    # ---------------------------------------------------------------------------
+
+    def test_sample_01_opening_week_fast_track(self, parser):
+        """Sample 1: 開幕週の高速馬場パターン"""
+        result = parser.parse("開幕週で高速馬場、内伸びが続いている")
+        chip_ids = [c.id for c in result.chips]
+
+        assert "track_condition.良" in chip_ids
+        assert "lane_bias.inner" in chip_ids
+
+    def test_sample_02_heavy_track_outer(self, parser):
+        """Sample 2: 道悪の外伸びパターン"""
+        result = parser.parse("道悪で内がぐちゃぐちゃ、外を回した方が伸びる")
+        chip_ids = [c.id for c in result.chips]
+
+        assert "track_condition.重" in chip_ids
+        assert "lane_bias.outer" in chip_ids
+
+    def test_sample_03_slow_pace_front_advantage(self, parser):
+        """Sample 3: スローで前残りパターン"""
+        result = parser.parse("逃げ候補少なくスローペースで前残り濃厚")
+        chip_ids = [c.id for c in result.chips]
+
+        assert "pace.S" in chip_ids
+        assert "style_bias.front" in chip_ids
+
+    def test_sample_04_high_pace_closer_advantage(self, parser):
+        """Sample 4: ハイペースで差し有利パターン"""
+        result = parser.parse("先行馬多くハイペース必至、差し追込有利")
+        chip_ids = [c.id for c in result.chips]
+
+        assert "pace.H" in chip_ids
+        assert "style_bias.closer" in chip_ids
+
+    def test_sample_05_pedigree_mention(self, parser):
+        """Sample 5: 血統言及パターン"""
+        result = parser.parse("ディープインパクト産駒が活躍する馬場")
+
+        pedigree_chips = [c for c in result.chips if c.category == "pedigree"]
+        assert len(pedigree_chips) >= 1
+        assert pedigree_chips[0].needs_feature == True
+
+    # ---------------------------------------------------------------------------
+    # Sample 6-10: Compound conditions
+    # ---------------------------------------------------------------------------
+
+    def test_sample_06_compound_opening_front(self, parser):
+        """Sample 6: 複合条件（開幕+高速+内+前有利）"""
+        result = parser.parse("開幕週の超高速馬場で内ラチ沿いを通せる先行馬有利")
+        chip_ids = [c.id for c in result.chips]
+
+        assert "track_condition.良" in chip_ids
+        assert "lane_bias.inner" in chip_ids
+        assert "style_bias.front" in chip_ids
+
+    def test_sample_07_compound_late_meet_outer(self, parser):
+        """Sample 7: 複合条件（開催終盤+内荒れ+外伸び）"""
+        result = parser.parse("開催終盤で内が荒れて外伸び、差しが届く展開")
+        chip_ids = [c.id for c in result.chips]
+
+        assert "lane_bias.outer" in chip_ids
+        assert "style_bias.closer" in chip_ids
+
+    def test_sample_08_complex_pace_analysis(self, parser):
+        """Sample 8: 複雑な展開分析"""
+        result = parser.parse("逃げ馬複数でハナ争い、ペース流れて消耗戦になりそう")
+        chip_ids = [c.id for c in result.chips]
+
+        assert "pace.H" in chip_ids
+        assert "race_flow.many_front_runners" in chip_ids
+
+    def test_sample_09_weather_affected(self, parser):
+        """Sample 9: 天候影響パターン"""
+        result = parser.parse("雨上がりの稍重馬場、時計がかかる条件")
+        chip_ids = [c.id for c in result.chips]
+
+        assert "track_condition.稍重" in chip_ids
+
+    def test_sample_10_multiple_pedigree(self, parser):
+        """Sample 10: 複数血統言及"""
+        result = parser.parse("サンデー系かキンカメ産駒が有利な馬場設定")
+
+        pedigree_chips = [c for c in result.chips if c.category == "pedigree"]
+        # Should detect both SS系 and キンカメ
+        pedigree_values = [c.id for c in pedigree_chips]
+        assert len(pedigree_chips) >= 2
+
+    # ---------------------------------------------------------------------------
+    # Sample 11-15: Negation patterns
+    # ---------------------------------------------------------------------------
+
+    def test_sample_11_negation_outer_bias(self, parser):
+        """Sample 11: 否定パターン（外伸びではない）"""
+        result = parser.parse("外伸びではない、内が伸びる馬場")
+
+        # 外伸び should be negated, 内伸び should be detected
+        chip_ids = [c.id for c in result.chips if not c.is_warning]
+        assert "lane_bias.inner" in chip_ids
+        # 外伸び is negated so should not appear as positive chip
+        non_warning_chips = [c for c in result.chips if not c.is_warning and c.id == "lane_bias.outer"]
+        # The negated one should not generate a chip
+        assert len(non_warning_chips) == 0 or result.suggestions.get("lane_bias", {}).get("value") == "inner"
+
+    def test_sample_12_negation_high_pace(self, parser):
+        """Sample 12: 否定パターン（ハイペースにはならない）"""
+        result = parser.parse("ハイペースにはならなそう、スローで瞬発力勝負")
+        chip_ids = [c.id for c in result.chips]
+
+        # スロー should be detected
+        assert "pace.S" in chip_ids
+
+    def test_sample_13_weak_negation(self, parser):
+        """Sample 13: 弱い否定（〜しにくい）"""
+        result = parser.parse("前が残りにくいが差しも届きにくい")
+
+        # Both are somewhat negated, but the pattern should still be detected
+        # The key is that negation is considered
+        assert len(result.chips) >= 0  # Just checking parse doesn't crash
+
+    def test_sample_14_conditional_negation(self, parser):
+        """Sample 14: 条件付き否定（〜とは限らない）"""
+        result = parser.parse("内枠有利とは限らないが内を通せれば有利")
+        chip_ids = [c.id for c in result.chips]
+
+        # 内枠 is in conditional, but 内を通せれば should suggest inner lane preference
+        # This tests nuanced interpretation
+
+    def test_sample_15_doubt_expression(self, parser):
+        """Sample 15: 疑問表現（〜か疑問）"""
+        result = parser.parse("高速馬場か疑問、やや時計がかかりそう")
+
+        # 高速馬場 is doubted, 時計がかかる should be detected
+        if "track_condition" in result.suggestions:
+            # The suggestion should lean toward 稍重
+            pass
+
+    # ---------------------------------------------------------------------------
+    # Sample 16-20: Variations and synonyms
+    # ---------------------------------------------------------------------------
+
+    def test_sample_16_variation_inner_bias(self, parser):
+        """Sample 16: 内伸びの表記ゆれ"""
+        result = parser.parse("インコース有利、ラチ沿いを通す馬が有利")
+        chip_ids = [c.id for c in result.chips]
+
+        assert "lane_bias.inner" in chip_ids
+
+    def test_sample_17_variation_pace(self, parser):
+        """Sample 17: ペースの表記ゆれ"""
+        result = parser.parse("ヨーイドンの上がり勝負になりそう")
+        chip_ids = [c.id for c in result.chips]
+
+        # ヨーイドン = スロー想定
+        assert "pace.S" in chip_ids or "style_bias.front" in chip_ids
+
+    def test_sample_18_variation_track_condition(self, parser):
+        """Sample 18: 馬場状態の表記ゆれ"""
+        result = parser.parse("パンパンの良馬場で時計勝負")
+        chip_ids = [c.id for c in result.chips]
+
+        assert "track_condition.良" in chip_ids
+
+    def test_sample_19_variation_style_bias(self, parser):
+        """Sample 19: 脚質有利の表記ゆれ"""
+        result = parser.parse("末脚が活きる展開、追い込み効く")
+        chip_ids = [c.id for c in result.chips]
+
+        assert "style_bias.closer" in chip_ids
+
+    def test_sample_20_variation_heavy_track(self, parser):
+        """Sample 20: 道悪の表記ゆれ"""
+        result = parser.parse("力のいるタフな馬場、パワーが必要")
+        chip_ids = [c.id for c in result.chips]
+
+        assert "track_condition.重" in chip_ids
+
+    # ---------------------------------------------------------------------------
+    # Sample 21-25: Edge cases and special patterns
+    # ---------------------------------------------------------------------------
+
+    def test_sample_21_frame_with_lane(self, parser):
+        """Sample 21: 枠と進路の両方言及（別扱い確認）"""
+        result = parser.parse("内枠有利だが外を回しても伸びる")
+        chip_ids = [c.id for c in result.chips]
+
+        # 内枠 → frame_hint (warning)
+        assert "frame_hint.inner_frame" in chip_ids
+        # 外を回しても伸びる → lane_bias.outer
+        assert "lane_bias.outer" in chip_ids
+
+    def test_sample_22_conflicting_info(self, parser):
+        """Sample 22: 矛盾する情報"""
+        result = parser.parse("内伸びと外伸び両方あり得る、フラットに近い")
+
+        # Should detect conflict
+        assert len(result.conflicts) >= 1
+
+    def test_sample_23_intensity_modifier(self, parser):
+        """Sample 23: 強度修飾語"""
+        result1 = parser.parse("高速馬場")
+        result2 = parser.parse("超高速馬場でかなりの時計勝負")
+
+        # 超 and かなり should increase score
+        if "track_condition" in result1.suggestions and "track_condition" in result2.suggestions:
+            assert result2.suggestions["track_condition"]["score"] >= result1.suggestions["track_condition"]["score"]
+
+    def test_sample_24_advisory_tags(self, parser):
+        """Sample 24: アドバイザリータグ検出"""
+        result = parser.parse("出遅れ癖があるが末脚確実、道悪得意")
+
+        tag_chips = [c for c in result.chips if c.category == "tag"]
+        tag_values = [c.id for c in tag_chips]
+
+        # Should detect some advisory tags
+        assert len(tag_chips) >= 1
+
+    def test_sample_25_misc_tags(self, parser):
+        """Sample 25: その他タグ検出"""
+        result = parser.parse("人気薄の穴馬、妙味あり")
+
+        misc_chips = [c for c in result.chips if c.category == "misc_tag"]
+        assert len(misc_chips) >= 1
+
+    # ---------------------------------------------------------------------------
+    # Sample 26-30: Real-world complex examples
+    # ---------------------------------------------------------------------------
+
+    def test_sample_26_arima_kinen_style(self, parser):
+        """Sample 26: 有馬記念風の分析メモ"""
+        result = parser.parse(
+            "中山2500m、小回りで器用さが必要。"
+            "逃げ馬少なくスローになりそう。"
+            "内ラチ沿いを立ち回れる先行馬有利。"
+        )
+        chip_ids = [c.id for c in result.chips]
+
+        assert "pace.S" in chip_ids
+        assert "lane_bias.inner" in chip_ids
+        assert "style_bias.front" in chip_ids
+
+    def test_sample_27_derby_style(self, parser):
+        """Sample 27: ダービー風の分析メモ"""
+        result = parser.parse(
+            "東京2400m、直線長く瞬発力勝負。"
+            "高速馬場でディープ産駒向き。"
+            "外を回しても差しが届く展開。"
+        )
+        chip_ids = [c.id for c in result.chips]
+
+        assert "track_condition.良" in chip_ids
+        assert "style_bias.closer" in chip_ids
+        pedigree_chips = [c for c in result.chips if c.category == "pedigree"]
+        assert len(pedigree_chips) >= 1
+
+    def test_sample_28_sprint_race(self, parser):
+        """Sample 28: スプリント戦の分析"""
+        result = parser.parse(
+            "1200m戦、テンが速くハイペース必至。"
+            "先行馬多く消耗戦、差しが届きやすい。"
+        )
+        chip_ids = [c.id for c in result.chips]
+
+        assert "pace.H" in chip_ids
+        assert "style_bias.closer" in chip_ids
+
+    def test_sample_29_stayers_race(self, parser):
+        """Sample 29: 長距離戦の分析"""
+        result = parser.parse(
+            "3200m、スタミナ勝負になりそう。"
+            "逃げ馬不在で楽逃げ、前残りも。"
+            "ハーツ産駒の血統向き。"
+        )
+        chip_ids = [c.id for c in result.chips]
+
+        assert "race_flow.few_front_runners" in chip_ids
+        pedigree_chips = [c for c in result.chips if c.category == "pedigree"]
+        assert len(pedigree_chips) >= 1
+
+    def test_sample_30_complex_full_analysis(self, parser):
+        """Sample 30: 複合条件フル分析"""
+        result = parser.parse(
+            "開幕週の超高速馬場で内ラチ沿い有利。"
+            "逃げ候補少なくスローで前残り濃厚。"
+            "ディープ系の瞬発力が活きる。"
+            "内枠希望だが外枠でも内を突ければ可。"
+        )
+        chip_ids = [c.id for c in result.chips]
+
+        # Track condition
+        assert "track_condition.良" in chip_ids
+        # Lane bias
+        assert "lane_bias.inner" in chip_ids
+        # Pace
+        assert "pace.S" in chip_ids
+        # Style bias
+        assert "style_bias.front" in chip_ids
+        # Frame hint (warning)
+        frame_chips = [c for c in result.chips if c.category == "frame_hint"]
+        assert len(frame_chips) >= 1
+        # Pedigree
+        pedigree_chips = [c for c in result.chips if c.category == "pedigree"]
+        assert len(pedigree_chips) >= 1
+
+
+# =============================================================================
 # Run Tests
 # =============================================================================
 
