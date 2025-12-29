@@ -382,6 +382,101 @@ def get_train_feature_columns(
     return available_cols
 
 
+def log_feature_selection_summary(
+    mode: str,
+    target_col: str,
+    candidate_features: List[str],
+    exclude_set: Set[str],
+    final_features: List[str],
+    output_dir: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    特徴量選択のサマリーをログ出力し、詳細をファイルに保存する
+
+    Args:
+        mode: 実行モード ("default" or "pre_race")
+        target_col: ターゲットカラム名
+        candidate_features: 除外前の候補特徴量リスト
+        exclude_set: 除外対象特徴量のセット
+        final_features: 除外後の最終特徴量リスト
+        output_dir: 出力ディレクトリ (Noneの場合はファイル保存しない)
+
+    Returns:
+        サマリー情報の辞書
+    """
+    # 実際に除外された特徴量
+    actually_excluded = [f for f in candidate_features if f in exclude_set]
+    # 除外リストにあるが候補に存在しなかった特徴量（警告対象）
+    not_found_in_candidates = [f for f in exclude_set if f not in candidate_features]
+
+    summary = {
+        "mode": mode,
+        "target": target_col,
+        "n_candidate_features": len(candidate_features),
+        "n_exclude_requested": len(exclude_set),
+        "n_actually_excluded": len(actually_excluded),
+        "n_final_features": len(final_features),
+        "excluded_features": sorted(actually_excluded),
+        "not_found_features": sorted(not_found_in_candidates),
+        "final_features": sorted(final_features),
+    }
+
+    # ログ出力
+    logger.info("")
+    logger.info("=" * 70)
+    logger.info("Feature Selection Summary")
+    logger.info("=" * 70)
+    logger.info("  Mode:                     %s", mode)
+    logger.info("  Target:                   %s", target_col)
+    logger.info("  Candidate features:       %d", len(candidate_features))
+    logger.info("  Exclude requested:        %d", len(exclude_set))
+    logger.info("  Actually excluded:        %d", len(actually_excluded))
+    logger.info("  Final features:           %d", len(final_features))
+
+    # 除外された特徴量を表示
+    if actually_excluded:
+        logger.info("")
+        logger.info("  Excluded features:")
+        for f in sorted(actually_excluded):
+            logger.info("    - %s", f)
+
+    # 警告: 除外リストにあるが候補に存在しない特徴量
+    if not_found_in_candidates:
+        logger.warning("")
+        logger.warning("  [WARNING] Features in exclude list but NOT found in candidates:")
+        for f in sorted(not_found_in_candidates):
+            logger.warning("    - %s (typo or not available)", f)
+
+    # 差分確認: pre_race モードの場合、除外されていないと警告
+    if mode == "pre_race" and len(actually_excluded) == 0:
+        logger.warning("")
+        logger.warning("  [WARNING] pre_race mode but NO features were excluded!")
+        logger.warning("  Check that config/exclude_features/pre_race.txt exists and is correct.")
+
+    logger.info("=" * 70)
+    logger.info("")
+
+    # ファイル保存
+    if output_dir:
+        out_path = Path(output_dir)
+        out_path.mkdir(parents=True, exist_ok=True)
+
+        # JSON サマリー保存
+        summary_path = out_path / f"feature_selection_{target_col}_{mode}.json"
+        with open(summary_path, "w", encoding="utf-8") as f:
+            json.dump(summary, f, ensure_ascii=False, indent=2)
+        logger.info("Feature selection summary saved to: %s", summary_path)
+
+        # 最終特徴量リストをテキストで保存
+        features_txt_path = out_path / f"used_features_{target_col}_{mode}.txt"
+        with open(features_txt_path, "w", encoding="utf-8") as f:
+            for feat in sorted(final_features):
+                f.write(feat + "\n")
+        logger.info("Used features list saved to: %s", features_txt_path)
+
+    return summary
+
+
 # =============================================================================
 # Training
 # =============================================================================
@@ -392,6 +487,7 @@ def train_model(
     config: TrainConfig,
     output_dir: Optional[str] = None,
     exclude_features: Optional[Set[str]] = None,
+    mode: str = "default",
 ) -> Tuple[Any, List[str]]:
     """
     LightGBM モデルを学習
@@ -402,6 +498,7 @@ def train_model(
         config: 学習設定
         output_dir: モデル保存先 (None の場合は保存しない)
         exclude_features: 除外する特徴量名のセット
+        mode: 実行モード ("default" or "pre_race")
 
     Returns:
         (model, feature_cols)
@@ -410,19 +507,27 @@ def train_model(
         raise ImportError("lightgbm is not installed")
 
     target_col = config.target_col
-    feature_cols = get_train_feature_columns(
+
+    # 候補特徴量を取得（除外前）
+    candidate_features = get_train_feature_columns(
         train_df,
         include_pedigree=config.include_pedigree,
         include_market=config.include_market,
     )
 
     # Apply feature exclusion
-    if exclude_features:
-        n_before = len(feature_cols)
-        feature_cols = [c for c in feature_cols if c not in exclude_features]
-        n_excluded = n_before - len(feature_cols)
-        if n_excluded > 0:
-            logger.info("Excluded %d features, remaining: %d", n_excluded, len(feature_cols))
+    exclude_set = exclude_features if exclude_features else set()
+    feature_cols = [c for c in candidate_features if c not in exclude_set]
+
+    # 詳細なログ出力とファイル保存
+    log_feature_selection_summary(
+        mode=mode,
+        target_col=target_col,
+        candidate_features=candidate_features,
+        exclude_set=exclude_set,
+        final_features=feature_cols,
+        output_dir=output_dir,
+    )
 
     logger.info("Training model for target: %s", target_col)
     logger.info("  Features: %d columns", len(feature_cols))
@@ -2048,6 +2153,7 @@ def run_full_pipeline(
     decision_cutoff: Optional[str] = None,
     use_snapshots: bool = True,
     exclude_features: Optional[Set[str]] = None,
+    mode: str = "default",
 ) -> Dict[str, Any]:
     """
     完全なパイプラインを実行
@@ -2065,6 +2171,7 @@ def run_full_pipeline(
         decision_cutoff: 締め切り時刻 (ISO format、前日締め運用用)
         use_snapshots: オッズスナップショットを使用するか
         exclude_features: 除外する特徴量名のセット (pre_race モード等)
+        mode: 実行モード ("default" or "pre_race")
 
     Returns:
         結果の辞書
@@ -2074,6 +2181,7 @@ def run_full_pipeline(
 
     logger.info("=" * 80)
     logger.info("Running Full Train/Eval/ROI Pipeline")
+    logger.info("  Mode: %s", mode)
     logger.info("  Split mode: %s", split_mode)
     logger.info("=" * 80)
 
@@ -2092,7 +2200,8 @@ def run_full_pipeline(
     # 学習
     model, feature_cols = train_model(
         train_df, val_df, config, output_dir,
-        exclude_features=exclude_features
+        exclude_features=exclude_features,
+        mode=mode,
     )
 
     # 評価

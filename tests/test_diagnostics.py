@@ -1277,6 +1277,158 @@ class TestBodyWeightContext:
         assert ctx2.current_body_weight == ctx.current_body_weight
 
 
+class TestLogFeatureSelectionSummary:
+    """Tests for log_feature_selection_summary function (Step 0 visibility)"""
+
+    def test_log_feature_selection_summary_import(self):
+        """log_feature_selection_summary should be importable"""
+        from src.features_v4.train_eval_v4 import log_feature_selection_summary
+        assert log_feature_selection_summary is not None
+
+    def test_log_feature_selection_summary_basic(self, tmp_path):
+        """log_feature_selection_summary should log and save correct info"""
+        from src.features_v4.train_eval_v4 import log_feature_selection_summary
+
+        candidate_features = ["h_avg_body_weight", "h_body_weight", "h_last_body_weight", "market_win_odds"]
+        exclude_set = {"h_body_weight", "market_win_odds"}
+        final_features = ["h_avg_body_weight", "h_last_body_weight"]
+
+        result = log_feature_selection_summary(
+            mode="pre_race",
+            target_col="target_win",
+            candidate_features=candidate_features,
+            exclude_set=exclude_set,
+            final_features=final_features,
+            output_dir=str(tmp_path),
+        )
+
+        # Check result structure
+        assert result["mode"] == "pre_race"
+        assert result["target"] == "target_win"
+        assert result["n_candidate_features"] == 4
+        assert result["n_exclude_requested"] == 2
+        assert result["n_actually_excluded"] == 2
+        assert result["n_final_features"] == 2
+        assert "h_body_weight" in result["excluded_features"]
+        assert "market_win_odds" in result["excluded_features"]
+
+        # Check files are created
+        import os
+        summary_file = tmp_path / "feature_selection_target_win_pre_race.json"
+        features_file = tmp_path / "used_features_target_win_pre_race.txt"
+        assert os.path.exists(summary_file)
+        assert os.path.exists(features_file)
+
+        # Verify file contents
+        import json
+        with open(summary_file, "r") as f:
+            saved_summary = json.load(f)
+        assert saved_summary["n_actually_excluded"] == 2
+
+        with open(features_file, "r") as f:
+            saved_features = [line.strip() for line in f if line.strip()]
+        assert "h_avg_body_weight" in saved_features
+        assert "h_body_weight" not in saved_features
+
+    def test_log_feature_selection_warns_missing_features(self, tmp_path):
+        """log_feature_selection_summary should track features not found in candidates"""
+        from src.features_v4.train_eval_v4 import log_feature_selection_summary
+
+        candidate_features = ["h_avg_body_weight", "h_last_body_weight"]
+        # Exclude features that don't exist in candidates
+        exclude_set = {"h_body_weight", "nonexistent_feature"}
+        final_features = ["h_avg_body_weight", "h_last_body_weight"]
+
+        result = log_feature_selection_summary(
+            mode="pre_race",
+            target_col="target_win",
+            candidate_features=candidate_features,
+            exclude_set=exclude_set,
+            final_features=final_features,
+            output_dir=str(tmp_path),
+        )
+
+        # Should track not-found features
+        assert len(result["not_found_features"]) == 2
+        assert "h_body_weight" in result["not_found_features"]
+        assert "nonexistent_feature" in result["not_found_features"]
+        assert result["n_actually_excluded"] == 0
+
+
+class TestGeneratePreRaceMaterials:
+    """Tests for generate_pre_race_materials.py (Step 1)"""
+
+    def test_script_exists(self):
+        """generate_pre_race_materials.py should exist"""
+        import os
+        script_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "scripts", "generate_pre_race_materials.py"
+        )
+        assert os.path.exists(script_path), f"Script should exist at {script_path}"
+
+    def test_script_help(self):
+        """generate_pre_race_materials.py --help should work"""
+        import subprocess
+        result = subprocess.run(
+            ["python", "scripts/generate_pre_race_materials.py", "--help"],
+            capture_output=True,
+            text=True
+        )
+        assert result.returncode == 0
+        assert "--date" in result.stdout
+        assert "--out" in result.stdout
+        assert "--models-dir" in result.stdout
+        assert "pre-race" in result.stdout.lower()
+
+    def test_json_generation_functions(self):
+        """JSON generation functions should work correctly"""
+        from scripts.generate_pre_race_materials import (
+            generate_race_json,
+            generate_summary_json,
+        )
+
+        # Test race JSON generation
+        race_info = {
+            "race_id": "202405120101",
+            "date": "2024-05-12",
+            "place": "東京",
+            "race_no": 1,
+            "name": "テストレース",
+            "distance": 1600,
+            "track_condition": "良",
+        }
+        entries_df = pd.DataFrame([
+            {"horse_id": "h001", "horse_no": 1, "horse_name": "テスト馬1", "jockey_name": "騎手A", "trainer_name": "調教師A", "sex": "牡", "age": 3},
+            {"horse_id": "h002", "horse_no": 2, "horse_name": "テスト馬2", "jockey_name": "騎手B", "trainer_name": "調教師B", "sex": "牝", "age": 4},
+        ])
+        predictions = {
+            "h001": {"p_win": 0.3, "p_in3": 0.6, "rank_win": 1, "rank_in3": 1},
+            "h002": {"p_win": 0.2, "p_in3": 0.4, "rank_win": 2, "rank_in3": 2},
+        }
+
+        race_json = generate_race_json(race_info, entries_df, predictions)
+
+        assert race_json["race_id"] == "202405120101"
+        assert race_json["mode"] == "pre_race"
+        assert len(race_json["entries"]) == 2
+        assert race_json["entries"][0]["p_win"] == 0.3
+        assert race_json["entries"][0]["rank_win"] == 1
+
+        # Test summary JSON generation
+        summary_json = generate_summary_json(
+            date="2024-05-12",
+            races=[{"race_id": "202405120101", "place": "東京", "race_no": 1}],
+            n_features=90,
+            models_used=["models/lgbm_target_win.txt"],
+        )
+
+        assert summary_json["date"] == "2024-05-12"
+        assert summary_json["mode"] == "pre_race"
+        assert summary_json["n_races"] == 1
+        assert summary_json["n_features_used"] == 90
+
+
 # =============================================================================
 # Run Tests
 # =============================================================================
