@@ -394,6 +394,51 @@ class MemoParser:
 
         return matches
 
+    def _get_negation_label(self, category: str, value: str, original_label: str) -> str:
+        """
+        否定チップ用のラベルを生成
+
+        Args:
+            category: カテゴリ名
+            value: 値
+            original_label: 元のラベル
+
+        Returns:
+            否定ラベル（例: "外伸び否定"）
+        """
+        # カテゴリ別の日本語ラベル
+        category_labels = {
+            "lane_bias": {
+                "inner": "内伸び",
+                "middle": "中央",
+                "outer": "外伸び",
+            },
+            "style_bias": {
+                "front": "前残り",
+                "closer": "差し届き",
+            },
+            "pace": {
+                "S": "スロー",
+                "M": "ミドル",
+                "H": "ハイペース",
+            },
+            "track_condition": {
+                "良": "良馬場",
+                "稍重": "稍重",
+                "重": "重馬場",
+                "不良": "不良馬場",
+            },
+        }
+
+        if category in category_labels and value in category_labels[category]:
+            base_label = category_labels[category][value]
+        elif original_label:
+            base_label = original_label
+        else:
+            base_label = f"{category}.{value}"
+
+        return f"{base_label}否定"
+
     def _detect_conflicts(self, matches: List[Dict[str, Any]]) -> List[Conflict]:
         """矛盾を検出"""
         conflicts = []
@@ -471,8 +516,25 @@ class MemoParser:
                 continue
             seen_ids.add(chip_id)
 
-            # 否定されている場合はスキップ（または別のチップを生成）
+            # 否定されている場合は「否定タグ」として警告チップを生成
+            # 重要: 否定から反対側を推論しない（例：外伸びではない → inner にしない）
             if m.get("is_negated", False):
+                # 否定チップを生成（apply_payloadは空 = 自動反映しない）
+                negation_chip_id = f"negated.{category}.{value}"
+                if negation_chip_id not in seen_ids:
+                    seen_ids.add(negation_chip_id)
+                    # ラベル生成
+                    negation_label = self._get_negation_label(category, value, m.get("label", ""))
+                    chips.append(Chip(
+                        id=negation_chip_id,
+                        label=negation_label,
+                        reason=f"「{m.get('keyword', '')}」が否定されています",
+                        category="negation",
+                        apply_payload={},  # 空 = 自動適用しない
+                        confidence=m.get("intensity", 1.0),
+                        needs_feature=False,
+                        is_warning=True,
+                    ))
                 continue
 
             # apply_payload を構築

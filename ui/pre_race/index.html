@@ -326,6 +326,113 @@
             background: #e8f5e9;
             color: #2e7d32;
         }
+        /* Profile styles */
+        .profile-row {
+            display: none;
+        }
+        .profile-row.expanded {
+            display: table-row;
+        }
+        .profile-cell {
+            background: #f8f9fa;
+            padding: 15px;
+            border-bottom: 2px solid #ddd;
+        }
+        .profile-content {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+        }
+        @media (max-width: 768px) {
+            .profile-content {
+                grid-template-columns: 1fr;
+            }
+        }
+        .profile-section {
+            background: white;
+            padding: 12px;
+            border-radius: 6px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+        }
+        .profile-section-title {
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: #666;
+            margin-bottom: 6px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .profile-overview {
+            font-size: 1rem;
+            color: #333;
+            font-weight: 500;
+        }
+        .profile-supplement {
+            font-size: 0.9rem;
+            color: #555;
+        }
+        .profile-comments {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 5px;
+        }
+        .profile-comment {
+            font-size: 0.75rem;
+            padding: 3px 8px;
+            background: #e3f2fd;
+            border-radius: 10px;
+            color: #1565c0;
+        }
+        .profile-evidence {
+            font-size: 0.85rem;
+        }
+        .evidence-toggle {
+            cursor: pointer;
+            color: #4a90d9;
+            font-size: 0.8rem;
+            margin-bottom: 8px;
+        }
+        .evidence-toggle:hover {
+            text-decoration: underline;
+        }
+        .evidence-list {
+            display: none;
+        }
+        .evidence-list.expanded {
+            display: block;
+        }
+        .evidence-item {
+            padding: 6px 0;
+            border-bottom: 1px solid #eee;
+            font-size: 0.8rem;
+        }
+        .evidence-item:last-child {
+            border-bottom: none;
+        }
+        .evidence-key {
+            font-family: monospace;
+            background: #f0f0f0;
+            padding: 1px 4px;
+            border-radius: 3px;
+            font-size: 0.75rem;
+        }
+        .evidence-value {
+            font-weight: 500;
+            color: #333;
+        }
+        .evidence-reason {
+            color: #666;
+            font-size: 0.75rem;
+        }
+        .expand-btn {
+            cursor: pointer;
+            color: #4a90d9;
+            font-size: 0.8rem;
+            white-space: nowrap;
+        }
+        .expand-btn:hover {
+            text-decoration: underline;
+        }
         .loading {
             text-align: center;
             padding: 40px;
@@ -523,6 +630,7 @@
                             <th data-sort="base_p">ベース確率</th>
                             <th data-sort="adj_p">補正確率</th>
                             <th>補正理由</th>
+                            <th>詳細</th>
                         </tr>
                     </thead>
                     <tbody id="resultsBody">
@@ -859,8 +967,9 @@
             const entries = [...result.entries];
             sortEntries(entries);
 
-            entries.forEach(entry => {
+            entries.forEach((entry, idx) => {
                 const row = document.createElement('tr');
+                const profileRowId = `profile-row-${entry.umaban}`;
 
                 // Get values based on current tab
                 const baseRank = currentTab === 'win' ? entry.base_rank_win : entry.base_rank_in3;
@@ -901,6 +1010,9 @@
                 // Probability bar
                 const probPercent = Math.min(100, (adjP || 0) * 100 * 5);
 
+                // Check if profile exists
+                const hasProfile = entry.profile && (entry.profile.overview || entry.profile.comments?.length > 0);
+
                 row.innerHTML = `
                     <td><span class="umaban umaban-${entry.umaban}">${entry.umaban}</span></td>
                     <td><strong>${entry.name || '-'}</strong></td>
@@ -920,12 +1032,100 @@
                         </div>
                     </td>
                     <td class="reasons">${reasonTags || '-'}</td>
+                    <td>
+                        ${hasProfile
+                            ? `<span class="expand-btn" onclick="toggleProfile('${profileRowId}')" id="btn-${profileRowId}">詳細 ▼</span>`
+                            : '-'
+                        }
+                    </td>
                 `;
 
                 tbody.appendChild(row);
+
+                // Add profile row (hidden by default)
+                if (hasProfile) {
+                    const profileRow = document.createElement('tr');
+                    profileRow.id = profileRowId;
+                    profileRow.className = 'profile-row';
+
+                    const profile = entry.profile;
+                    const evidenceId = `evidence-${entry.umaban}`;
+
+                    // Build comments HTML
+                    const commentsHtml = (profile.comments || []).map(c =>
+                        `<span class="profile-comment">${c}</span>`
+                    ).join('');
+
+                    // Build evidence HTML
+                    const evidenceHtml = (profile.evidence || []).map(e =>
+                        `<div class="evidence-item">
+                            <span class="evidence-key">${e.key}</span>:
+                            <span class="evidence-value">${e.value}</span>
+                            <div class="evidence-reason">${e.reason}</div>
+                        </div>`
+                    ).join('');
+
+                    profileRow.innerHTML = `
+                        <td colspan="12" class="profile-cell">
+                            <div class="profile-content">
+                                <div class="profile-section">
+                                    <div class="profile-section-title">概要</div>
+                                    <div class="profile-overview">${profile.overview || '情報なし'}</div>
+                                    ${profile.supplement ? `<div class="profile-supplement" style="margin-top: 8px;">${profile.supplement}</div>` : ''}
+                                </div>
+                                <div class="profile-section">
+                                    <div class="profile-section-title">コメント</div>
+                                    <div class="profile-comments">${commentsHtml || '<span style="color: #999;">なし</span>'}</div>
+                                </div>
+                                ${(profile.evidence && profile.evidence.length > 0) ? `
+                                <div class="profile-section" style="grid-column: 1 / -1;">
+                                    <div class="profile-section-title">根拠 (Evidence)</div>
+                                    <div class="profile-evidence">
+                                        <div class="evidence-toggle" onclick="toggleEvidence('${evidenceId}')">
+                                            ▶ 根拠を表示 (${profile.evidence.length}件)
+                                        </div>
+                                        <div id="${evidenceId}" class="evidence-list">
+                                            ${evidenceHtml}
+                                        </div>
+                                    </div>
+                                </div>
+                                ` : ''}
+                            </div>
+                        </td>
+                    `;
+
+                    tbody.appendChild(profileRow);
+                }
             });
 
             updateSortIndicators();
+        }
+
+        // Toggle profile row visibility
+        function toggleProfile(rowId) {
+            const row = document.getElementById(rowId);
+            const btn = document.getElementById(`btn-${rowId}`);
+            if (row) {
+                row.classList.toggle('expanded');
+                if (btn) {
+                    btn.textContent = row.classList.contains('expanded') ? '詳細 ▲' : '詳細 ▼';
+                }
+            }
+        }
+
+        // Toggle evidence list visibility
+        function toggleEvidence(evidenceId) {
+            const list = document.getElementById(evidenceId);
+            if (list) {
+                list.classList.toggle('expanded');
+                const toggle = list.previousElementSibling;
+                if (toggle) {
+                    const count = list.children.length;
+                    toggle.textContent = list.classList.contains('expanded')
+                        ? `▼ 根拠を隠す (${count}件)`
+                        : `▶ 根拠を表示 (${count}件)`;
+                }
+            }
         }
 
         // Sort entries

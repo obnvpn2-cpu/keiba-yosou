@@ -42,6 +42,7 @@ from src.features_v4.train_eval_v4 import (
     log_feature_selection_summary,
 )
 from src.features_v4.feature_table_v4 import get_feature_v4_columns
+from src.ui_pre_race.horse_profile import generate_horse_profile
 
 try:
     import lightgbm as lgb
@@ -223,18 +224,28 @@ def generate_race_json(
     race_info: Dict[str, Any],
     entries_df: pd.DataFrame,
     predictions: Dict[str, Dict[str, float]],
+    feature_data_map: Optional[Dict[str, Dict[str, Any]]] = None,
     feature_version: str = "v4",
 ) -> Dict[str, Any]:
     """
     レースごとのJSON出力を生成
+
+    Args:
+        race_info: レース基本情報
+        entries_df: 出走馬DataFrame
+        predictions: 予測結果 {horse_id: {p_win, p_in3, ...}}
+        feature_data_map: 特徴量データ {horse_id: {feature_name: value, ...}}
+        feature_version: 特徴量バージョン
     """
     race_id = race_info["race_id"]
+    feature_data_map = feature_data_map or {}
 
     # 馬ごとのエントリー
     entries = []
     for _, row in entries_df.iterrows():
         horse_id = row["horse_id"]
         pred = predictions.get(horse_id, {})
+        feature_data = feature_data_map.get(horse_id, {})
 
         entry = {
             "horse_id": horse_id,
@@ -249,6 +260,13 @@ def generate_race_json(
             "rank_win": pred.get("rank_win"),
             "rank_in3": pred.get("rank_in3"),
         }
+
+        # プロフィール生成 (特徴量データをマージして使用)
+        merged_data = dict(feature_data)
+        merged_data.update(entry)
+        profile = generate_horse_profile(entry, feature_data)
+        entry["profile"] = profile
+
         entries.append(entry)
 
     # rank でソート
@@ -541,9 +559,15 @@ Examples:
                 for rank, (horse_id, _) in enumerate(sorted_by_in3, 1):
                     predictions[horse_id]["rank_in3"] = rank
 
+            # Build feature_data_map for profile generation
+            feature_data_map = {}
+            for _, row in race_feature_df.iterrows():
+                horse_id = row["horse_id"]
+                feature_data_map[horse_id] = row.to_dict()
+
             # Generate race JSON
             race_info = race_row.to_dict()
-            race_json = generate_race_json(race_info, entries_df, predictions)
+            race_json = generate_race_json(race_info, entries_df, predictions, feature_data_map)
 
             # Save race JSON
             race_path = out_dir / f"race_{race_id}.json"
