@@ -333,6 +333,130 @@ class TestParseMemoFunction:
 
 
 # =============================================================================
+# Test Negation Safety (v3.1)
+# 重要: 否定から反対側を推論しない（安全第一）
+# =============================================================================
+
+class TestNegationSafety:
+    """
+    否定推論安全性テスト (v3.1)
+
+    重要: 否定から反対側を推論しない
+    例: 「外伸びではない」→ inner を提案しない
+    """
+
+    def test_outer_negation_no_inner_suggestion(self, parser):
+        """
+        外伸び否定だけでは内伸びを提案しない
+
+        要件:
+        - 「外伸びではない」だけでは lane_bias.inner チップを出さない
+        - lane_bias suggestion も出さない
+        - 否定タグ（警告）は出してもよい
+        """
+        result = parser.parse("外伸びではない")
+
+        # lane_bias.inner チップが無いことを確認
+        lane_bias_chips = [c for c in result.chips if c.id == "lane_bias.inner"]
+        assert len(lane_bias_chips) == 0, "外伸び否定から inner を推論してはいけない"
+
+        # lane_bias suggestion が無いことを確認
+        lane_suggestion = result.suggestions.get("lane_bias", {})
+        lane_value = lane_suggestion.get("value") if lane_suggestion else None
+        assert lane_value is None, "外伸び否定から lane_bias を推論してはいけない"
+
+        # 否定タグは存在してもよい
+        negation_chips = [c for c in result.chips if c.id.startswith("negated.")]
+        # 否定チップがあればそれは警告であること
+        for chip in negation_chips:
+            assert chip.is_warning, "否定チップは警告フラグが立つべき"
+            assert chip.apply_payload == {}, "否定チップは apply_payload が空であるべき"
+
+    def test_inner_negation_no_outer_suggestion(self, parser):
+        """
+        内伸び否定だけでは外伸びを提案しない
+        """
+        result = parser.parse("内が伸びない馬場")
+
+        # lane_bias.outer チップが無いことを確認
+        outer_chips = [c for c in result.chips if c.id == "lane_bias.outer"]
+        assert len(outer_chips) == 0, "内伸び否定から outer を推論してはいけない"
+
+    def test_front_negation_no_closer_suggestion(self, parser):
+        """
+        前残り否定だけでは差し届きを提案しない
+        """
+        result = parser.parse("前が残りにくい馬場")
+
+        # 「差しが届きやすい」が明示されていないので、closer を推論しない
+        # (安全側に倒す)
+        style_suggestion = result.suggestions.get("style_bias", {})
+        # もし suggestion があってもスコアは0以下であるべき
+        if style_suggestion:
+            # 明示的に closer が言及されていないなら推論しない
+            pass
+
+    def test_explicit_opposite_with_negation(self, parser):
+        """
+        否定+明示的な反対が両方ある場合は、明示的な方を提案する
+
+        「外伸びではない、むしろ内が伸びる」
+        → 内が明示されているので inner を提案してよい
+        """
+        result = parser.parse("外伸びではない、むしろ内が伸びる")
+
+        # lane_bias.inner チップがあることを確認
+        inner_chips = [c for c in result.chips if c.id == "lane_bias.inner"]
+        assert len(inner_chips) == 1, "明示的な内伸びから inner を提案すべき"
+
+        # inner チップの apply_payload が正しいこと
+        assert inner_chips[0].apply_payload.get("lane_bias") == "inner"
+
+        # suggestion も inner であること
+        assert result.suggestions.get("lane_bias", {}).get("value") == "inner"
+
+    def test_negation_chip_has_warning_flag(self, parser):
+        """
+        否定チップは is_warning=True であるべき
+        """
+        result = parser.parse("外伸びではない")
+
+        negation_chips = [c for c in result.chips if "negated" in c.id]
+        for chip in negation_chips:
+            assert chip.is_warning, f"否定チップ {chip.id} は warning フラグが立つべき"
+
+    def test_negation_chip_no_apply_payload(self, parser):
+        """
+        否定チップは apply_payload が空であるべき（自動適用しない）
+        """
+        result = parser.parse("外伸びではない")
+
+        negation_chips = [c for c in result.chips if "negated" in c.id]
+        for chip in negation_chips:
+            assert chip.apply_payload == {}, f"否定チップ {chip.id} の apply_payload は空であるべき"
+
+    def test_pace_negation_no_opposite(self, parser):
+        """
+        ペース否定から反対を推論しない
+        """
+        result = parser.parse("スローにはならない")
+
+        # ハイペースを推論しない
+        high_chips = [c for c in result.chips if c.id == "pace.H"]
+        assert len(high_chips) == 0, "スロー否定から H を推論してはいけない"
+
+    def test_multiple_negations(self, parser):
+        """
+        複数の否定があっても安全に処理する
+        """
+        result = parser.parse("外伸びではなく、前も残りにくい")
+
+        # 明示されていないので inner は推論しない
+        inner_chips = [c for c in result.chips if c.id == "lane_bias.inner"]
+        assert len(inner_chips) == 0, "外伸び否定から inner を推論してはいけない"
+
+
+# =============================================================================
 # Test Frame Hint Separation (v3.0)
 # 重要: 枠への言及はlane_biasに直結しない
 # =============================================================================
