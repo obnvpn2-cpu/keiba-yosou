@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Pre-race Scenario UI v2.0</title>
+    <title>Pre-race Scenario UI v2.1</title>
     <style>
         * {
             box-sizing: border-box;
@@ -497,6 +497,82 @@
             border-color: #4a90d9;
         }
 
+        /* History Panel */
+        .history-list {
+            max-height: 300px;
+            overflow-y: auto;
+            border: 1px solid #eee;
+            border-radius: 4px;
+        }
+        .history-item {
+            padding: 12px 15px;
+            border-bottom: 1px solid #eee;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .history-item:last-child {
+            border-bottom: none;
+        }
+        .history-item:hover {
+            background: #f5f8ff;
+        }
+        .history-item.selected {
+            background: #e3f2fd;
+        }
+        .history-meta {
+            font-size: 0.85rem;
+            color: #666;
+            margin-top: 4px;
+        }
+        .history-scenario {
+            display: flex;
+            gap: 8px;
+            margin-top: 6px;
+            flex-wrap: wrap;
+        }
+        .history-scenario .tag {
+            font-size: 0.75rem;
+            padding: 2px 6px;
+            background: #e3f2fd;
+            border-radius: 3px;
+            color: #1565c0;
+        }
+        .history-empty {
+            padding: 30px;
+            text-align: center;
+            color: #999;
+        }
+
+        /* Error message */
+        .error-banner {
+            background: #ffebee;
+            border-left: 4px solid #e53935;
+            padding: 12px 16px;
+            margin-bottom: 15px;
+            border-radius: 0 4px 4px 0;
+            color: #c62828;
+        }
+        .error-banner .title {
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+        .error-banner .detail {
+            font-size: 0.9rem;
+        }
+
+        /* Date/Race selection grid */
+        .selection-grid {
+            display: grid;
+            grid-template-columns: 200px 1fr auto;
+            gap: 15px;
+            align-items: end;
+        }
+        @media (max-width: 768px) {
+            .selection-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
         @media (max-width: 768px) {
             .form-row {
                 flex-direction: column;
@@ -509,25 +585,52 @@
 </head>
 <body>
     <header>
-        <h1>Pre-race Scenario UI <span class="version">v2.0</span></h1>
+        <h1>Pre-race Scenario UI <span class="version">v2.1</span></h1>
     </header>
 
     <div class="container">
+        <!-- Error Banner (hidden by default) -->
+        <div id="errorBanner" class="error-banner" style="display: none;">
+            <div class="title">エラーが発生しました</div>
+            <div class="detail" id="errorDetail"></div>
+        </div>
+
         <!-- Race Selection Panel -->
         <div class="panel">
             <div class="panel-header">1. レース選択</div>
-            <div class="form-row">
-                <div class="form-group" style="flex: 3;">
-                    <label for="raceSelect">レースファイル</label>
-                    <select id="raceSelect">
-                        <option value="">-- レースを選択 --</option>
+            <div class="selection-grid">
+                <div class="form-group">
+                    <label for="dateSelect">日付</label>
+                    <select id="dateSelect" onchange="onDateChange()">
+                        <option value="">-- 日付を選択 --</option>
                     </select>
                 </div>
-                <div class="form-group" style="flex: 0; align-self: flex-end;">
+                <div class="form-group">
+                    <label for="raceSelect">レース</label>
+                    <select id="raceSelect" onchange="onRaceChange()">
+                        <option value="">-- 日付を選択してください --</option>
+                    </select>
+                </div>
+                <div class="form-group">
                     <button class="btn btn-primary" onclick="loadRace()">読み込み</button>
                 </div>
             </div>
             <div id="raceInfo" class="race-info" style="display: none;"></div>
+        </div>
+
+        <!-- History Panel (collapsible) -->
+        <div class="panel" id="historyPanel">
+            <div class="panel-header" style="cursor: pointer;" onclick="toggleHistoryPanel()">
+                履歴 <span id="historyToggleIcon">▼</span>
+            </div>
+            <div id="historyContent" style="display: none;">
+                <div class="form-row" style="margin-bottom: 10px;">
+                    <button class="btn btn-secondary" onclick="loadHistoryList()">履歴を更新</button>
+                </div>
+                <div class="history-list" id="historyList">
+                    <div class="history-empty">履歴がありません</div>
+                </div>
+            </div>
         </div>
 
         <!-- Scenario Input Panel -->
@@ -659,12 +762,35 @@
         let currentSort = { key: 'umaban', order: 'asc' };
         let appliedChips = new Set();
         let memoDebounceTimer = null;
+        let selectedDate = '';
+        let selectedRaceId = '';
+
+        // LocalStorage keys
+        const LS_KEY_DATE = 'prerace_last_date';
+        const LS_KEY_RACE = 'prerace_last_race';
 
         // Initialize
         document.addEventListener('DOMContentLoaded', () => {
-            loadRaceList();
+            loadDateList();
             setupTableHeaders();
         });
+
+        // Error handling
+        function showError(message, detail = '') {
+            const banner = document.getElementById('errorBanner');
+            const detailEl = document.getElementById('errorDetail');
+            detailEl.textContent = detail || message;
+            banner.style.display = 'block';
+
+            // Auto-hide after 10 seconds
+            setTimeout(() => {
+                banner.style.display = 'none';
+            }, 10000);
+        }
+
+        function hideError() {
+            document.getElementById('errorBanner').style.display = 'none';
+        }
 
         // Setup table header click sorting
         function setupTableHeaders() {
@@ -695,31 +821,111 @@
             }
         }
 
-        // Load race list from server
-        async function loadRaceList() {
+        // Load date list from server
+        async function loadDateList() {
             try {
-                const response = await fetch('/api/list-races');
+                const response = await fetch('/api/list-dates');
                 const data = await response.json();
 
-                const select = document.getElementById('raceSelect');
-                select.innerHTML = '<option value="">-- レースを選択 --</option>';
+                const select = document.getElementById('dateSelect');
+                select.innerHTML = '<option value="">-- 日付を選択 --</option>';
+
+                if (data.dates && data.dates.length > 0) {
+                    data.dates.forEach(d => {
+                        const option = document.createElement('option');
+                        option.value = d.date;
+                        option.textContent = `${d.date} (${d.n_races}レース)`;
+                        select.appendChild(option);
+                    });
+
+                    // Restore last selection from localStorage
+                    const lastDate = localStorage.getItem(LS_KEY_DATE);
+                    const lastRace = localStorage.getItem(LS_KEY_RACE);
+
+                    if (lastDate && data.dates.some(d => d.date === lastDate)) {
+                        select.value = lastDate;
+                        await onDateChange(lastRace);
+                    }
+                } else {
+                    const option = document.createElement('option');
+                    option.value = "";
+                    option.textContent = "(日付フォルダが見つかりません)";
+                    select.appendChild(option);
+                }
+            } catch (error) {
+                console.error('Failed to load date list:', error);
+                showError('日付一覧の読み込みに失敗しました', error.message);
+            }
+        }
+
+        // When date selection changes
+        async function onDateChange(restoreRaceId = null) {
+            const dateSelect = document.getElementById('dateSelect');
+            const raceSelect = document.getElementById('raceSelect');
+            selectedDate = dateSelect.value;
+
+            if (!selectedDate) {
+                raceSelect.innerHTML = '<option value="">-- 日付を選択してください --</option>';
+                return;
+            }
+
+            // Save to localStorage
+            localStorage.setItem(LS_KEY_DATE, selectedDate);
+
+            // Load races for selected date
+            try {
+                const response = await fetch(`/api/list-races?date=${encodeURIComponent(selectedDate)}`);
+                const data = await response.json();
+
+                raceSelect.innerHTML = '<option value="">-- レースを選択 --</option>';
 
                 if (data.races && data.races.length > 0) {
                     data.races.forEach(race => {
                         const option = document.createElement('option');
                         option.value = race.path;
-                        option.textContent = race.label || `${race.date} - ${race.race_id}`;
-                        select.appendChild(option);
+                        option.dataset.raceId = race.race_id;
+                        option.textContent = race.label || `${race.race_id}`;
+                        raceSelect.appendChild(option);
                     });
+
+                    // Restore race selection if provided
+                    if (restoreRaceId) {
+                        const matchOption = Array.from(raceSelect.options).find(
+                            opt => opt.dataset.raceId === restoreRaceId
+                        );
+                        if (matchOption) {
+                            raceSelect.value = matchOption.value;
+                            onRaceChange();
+                        }
+                    }
+                } else if (data.error) {
+                    showError('レース一覧の読み込みに失敗', data.error);
                 } else {
                     const option = document.createElement('option');
                     option.value = "";
-                    option.textContent = "(レースファイルが見つかりません)";
-                    select.appendChild(option);
+                    option.textContent = "(レースがありません)";
+                    raceSelect.appendChild(option);
                 }
             } catch (error) {
                 console.error('Failed to load race list:', error);
+                showError('レース一覧の読み込みに失敗しました', error.message);
             }
+        }
+
+        // When race selection changes
+        function onRaceChange() {
+            const raceSelect = document.getElementById('raceSelect');
+            const selectedOption = raceSelect.options[raceSelect.selectedIndex];
+
+            if (selectedOption && selectedOption.dataset.raceId) {
+                selectedRaceId = selectedOption.dataset.raceId;
+                localStorage.setItem(LS_KEY_RACE, selectedRaceId);
+            }
+        }
+
+        // Legacy function for backward compatibility
+        async function loadRaceList() {
+            await loadDateList();
         }
 
         // Load selected race
@@ -728,16 +934,18 @@
             const path = select.value;
 
             if (!path) {
-                alert('レースを選択してください');
+                showError('レースを選択してください');
                 return;
             }
+
+            hideError();
 
             try {
                 const response = await fetch(`/api/load-race?path=${encodeURIComponent(path)}`);
                 const data = await response.json();
 
                 if (data.error) {
-                    alert(`エラー: ${data.error}`);
+                    showError('レースデータの読み込みに失敗', data.error);
                     return;
                 }
 
@@ -747,9 +955,12 @@
                 document.getElementById('emptyState').style.display = 'none';
                 document.getElementById('resultsPanel').style.display = 'none';
 
+                // Reset scenario form
+                resetScenario();
+
             } catch (error) {
                 console.error('Failed to load race:', error);
-                alert('レースデータの読み込みに失敗しました');
+                showError('レースデータの読み込みに失敗しました', error.message);
             }
         }
 
@@ -886,9 +1097,11 @@
         // Apply scenario
         async function applyScenario() {
             if (!currentRaceData) {
-                alert('レースを読み込んでください');
+                showError('レースを読み込んでください');
                 return;
             }
+
+            hideError();
 
             // Parse front runners
             const frontRunnersInput = document.getElementById('frontRunners').value;
@@ -924,7 +1137,7 @@
                 const result = await response.json();
 
                 if (result.error) {
-                    alert(`エラー: ${result.error}`);
+                    showError('シナリオ適用に失敗', result.error);
                     return;
                 }
 
@@ -934,7 +1147,7 @@
 
             } catch (error) {
                 console.error('Failed to apply scenario:', error);
-                alert('シナリオ適用に失敗しました');
+                showError('シナリオ適用に失敗しました', error.message);
             }
         }
 
@@ -1223,6 +1436,8 @@
                 const statusDiv = document.getElementById('saveStatus');
                 if (data.status === 'saved') {
                     statusDiv.innerHTML = `<div class="status-message status-success">保存しました: ${data.path}</div>`;
+                    // Refresh history list
+                    loadHistoryList();
                 } else if (data.error) {
                     statusDiv.innerHTML = `<div class="status-message status-error">エラー: ${data.error}</div>`;
                 }
@@ -1233,7 +1448,136 @@
 
             } catch (error) {
                 console.error('Failed to save result:', error);
-                alert('保存に失敗しました');
+                showError('保存に失敗しました', error.message);
+            }
+        }
+
+        // ============================
+        // History Panel Functions
+        // ============================
+
+        function toggleHistoryPanel() {
+            const content = document.getElementById('historyContent');
+            const icon = document.getElementById('historyToggleIcon');
+            const isExpanded = content.style.display !== 'none';
+
+            content.style.display = isExpanded ? 'none' : 'block';
+            icon.textContent = isExpanded ? '▼' : '▲';
+
+            if (!isExpanded) {
+                loadHistoryList();
+            }
+        }
+
+        async function loadHistoryList() {
+            const listEl = document.getElementById('historyList');
+
+            try {
+                // Optionally filter by current date/race
+                let url = '/api/list-history';
+                if (selectedDate) {
+                    url += `?date=${encodeURIComponent(selectedDate)}`;
+                    if (selectedRaceId) {
+                        url += `&race_id=${encodeURIComponent(selectedRaceId)}`;
+                    }
+                }
+
+                const response = await fetch(url);
+                const data = await response.json();
+
+                if (data.history && data.history.length > 0) {
+                    listEl.innerHTML = '';
+                    data.history.forEach(item => {
+                        const div = document.createElement('div');
+                        div.className = 'history-item';
+                        div.onclick = () => loadHistoryItem(item.path);
+
+                        // Format timestamp
+                        const timestamp = item.timestamp || '';
+                        const formattedTime = timestamp.replace(/(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})/, '$1-$2-$3 $4:$5:$6');
+
+                        // Build scenario tags
+                        const scenario = item.scenario || {};
+                        const scenarioTags = [];
+                        if (scenario.pace) scenarioTags.push(`ペース:${scenario.pace}`);
+                        if (scenario.lane_bias && scenario.lane_bias !== 'flat') {
+                            const biasLabel = { inner: '内伸び', outer: '外伸び', middle: '中央' }[scenario.lane_bias] || scenario.lane_bias;
+                            scenarioTags.push(biasLabel);
+                        }
+                        if (scenario.style_bias && scenario.style_bias !== 'flat') {
+                            const styleLabel = { front: '前残り', closer: '差し向き' }[scenario.style_bias] || scenario.style_bias;
+                            scenarioTags.push(styleLabel);
+                        }
+                        if (scenario.track_condition && scenario.track_condition !== '良') {
+                            scenarioTags.push(`馬場:${scenario.track_condition}`);
+                        }
+
+                        div.innerHTML = `
+                            <div><strong>${item.place || ''} ${item.race_no ? item.race_no + 'R' : ''} ${item.race_name || item.race_id}</strong></div>
+                            <div class="history-meta">${item.date} | ${formattedTime}</div>
+                            ${scenarioTags.length > 0 ? `
+                                <div class="history-scenario">
+                                    ${scenarioTags.map(t => `<span class="tag">${t}</span>`).join('')}
+                                </div>
+                            ` : ''}
+                        `;
+
+                        listEl.appendChild(div);
+                    });
+                } else {
+                    listEl.innerHTML = '<div class="history-empty">履歴がありません</div>';
+                }
+            } catch (error) {
+                console.error('Failed to load history:', error);
+                listEl.innerHTML = `<div class="history-empty">履歴の読み込みに失敗しました: ${error.message}</div>`;
+            }
+        }
+
+        async function loadHistoryItem(path) {
+            try {
+                const response = await fetch(`/api/load-history?path=${encodeURIComponent(path)}`);
+                const data = await response.json();
+
+                if (data.error) {
+                    showError('履歴の読み込みに失敗', data.error);
+                    return;
+                }
+
+                // Set as adjusted result and display
+                adjustedResult = data;
+
+                // Restore scenario form values
+                if (data.scenario) {
+                    const s = data.scenario;
+                    if (s.pace) document.getElementById('pace').value = s.pace;
+                    if (s.track_condition) document.getElementById('trackCondition').value = s.track_condition;
+                    if (s.lane_bias) document.getElementById('laneBias').value = s.lane_bias;
+                    if (s.style_bias) document.getElementById('styleBias').value = s.style_bias;
+                    if (s.notes) document.getElementById('notes').value = s.notes;
+                    if (s.front_runner_ids && data.entries) {
+                        // Convert horse_ids to umabans
+                        const umabans = data.entries
+                            .filter(e => s.front_runner_ids.includes(e.horse_id))
+                            .map(e => e.umaban);
+                        document.getElementById('frontRunners').value = umabans.join(', ');
+                    }
+                }
+
+                // Display race info and results
+                displayRaceInfo(data);
+                displayResults(data);
+
+                document.getElementById('scenarioPanel').style.display = 'block';
+                document.getElementById('resultsPanel').style.display = 'block';
+                document.getElementById('emptyState').style.display = 'none';
+
+                // Highlight selected history item
+                document.querySelectorAll('.history-item').forEach(el => el.classList.remove('selected'));
+                event.target.closest('.history-item').classList.add('selected');
+
+            } catch (error) {
+                console.error('Failed to load history item:', error);
+                showError('履歴データの読み込みに失敗', error.message);
             }
         }
     </script>
