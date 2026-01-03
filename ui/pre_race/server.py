@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 """
-Pre-race Scenario UI Server (v2.1)
+Pre-race Scenario UI Server (v2.2)
 
 シナリオUIを提供するローカルサーバー。
 race_<race_id>.json を読み込み、シナリオ補正を適用し、結果を保存する。
+
+v2.2 更新:
+- 補正理由の構造化（カテゴリ別: pace, lane_bias, style_bias, track_condition, race_flow）
+- 全体コメントをテンプレート化（概況/バイアス/展開/注目）
+- 履歴ミニ要約（上位入れ替わり要約）
+- 確率変化の明示（before/after + diff）
 
 v2.1 更新:
 - 日付フォルダ選択 → レース選択の2段階UX
@@ -285,7 +291,7 @@ def generate_race_comment(
     adjusted_entries: List[Dict[str, Any]]
 ) -> str:
     """
-    全体コメントを生成
+    全体コメントを生成（後方互換 - 旧形式のテキスト）
 
     入力情報のみから説明可能な範囲で生成（捏造禁止）
     """
@@ -343,6 +349,158 @@ def generate_race_comment(
         parts.append(f"補足：{notes[:100]}")
 
     return " ".join(parts)
+
+
+def generate_race_comment_structured(
+    race_data: Dict[str, Any],
+    scenario: Dict[str, Any],
+    adjusted_entries: List[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """
+    v2.2: 構造化された全体コメントを生成
+
+    セクション:
+    1) レース概況（頭数/距離/馬場/想定ペース）
+    2) バイアス見立て（lane_bias/style_bias の意味と今回の入力）
+    3) 展開の焦点（逃げ先行の数/隊列のイメージ：メモ由来 race_flow 反映分のみ）
+    4) 注目ポイント（上位入れ替わり要因：理由カテゴリから要約）
+    """
+    race_name = race_data.get("name") or race_data.get("race_name") or ""
+    distance = race_data.get("distance", 0)
+    course = race_data.get("course", "")
+    place = race_data.get("place", "")
+    head_count = len(adjusted_entries)
+
+    pace = scenario.get("pace", "M")
+    track_condition = scenario.get("track_condition", "良")
+    lane_bias = scenario.get("lane_bias", "flat")
+    style_bias = scenario.get("style_bias", "flat")
+
+    # 1) レース概況
+    overview_parts = []
+    if race_name:
+        overview_parts.append(f"【{race_name}】")
+    if place:
+        overview_parts.append(f"{place}")
+    if course and distance:
+        overview_parts.append(f"{course}{distance}m")
+    overview_parts.append(f"{head_count}頭立て")
+
+    pace_labels = {"S": "スローペース", "M": "平均ペース", "H": "ハイペース"}
+    overview_parts.append(f"予想ペース：{pace_labels.get(pace, '不明')}")
+
+    track_labels = {"良": "良馬場", "稍重": "稍重馬場", "重": "重馬場", "不良": "不良馬場"}
+    overview_parts.append(f"馬場：{track_labels.get(track_condition, track_condition)}")
+
+    overview = "／".join(overview_parts)
+
+    # 2) バイアス見立て
+    bias_parts = []
+
+    lane_bias_labels = {
+        "inner": "内伸び（内ラチ沿いが有利）",
+        "middle": "中央良好（馬場中央が走りやすい）",
+        "outer": "外伸び（外めのラインが有利）",
+        "flat": "フラット（進路バイアスなし）",
+    }
+    bias_parts.append(f"進路：{lane_bias_labels.get(lane_bias, lane_bias)}")
+
+    style_bias_labels = {
+        "front": "前残り傾向（逃げ・先行有利）",
+        "closer": "差し届き傾向（差し・追込有利）",
+        "flat": "フラット（脚質バイアスなし）",
+    }
+    bias_parts.append(f"脚質：{style_bias_labels.get(style_bias, style_bias)}")
+
+    bias = "／".join(bias_parts)
+
+    # 3) 展開の焦点
+    front_runners = [e for e in adjusted_entries if e.get("run_style") == "逃げ"]
+    senkou = [e for e in adjusted_entries if e.get("run_style") == "先行"]
+
+    focus_parts = []
+    if len(front_runners) == 0:
+        focus_parts.append("逃げ馬不在")
+    elif len(front_runners) == 1:
+        focus_parts.append(f"逃げ候補は{front_runners[0].get('name', '?')}の単騎想定")
+    elif len(front_runners) >= 2:
+        names = "・".join([e.get("name", "?") for e in front_runners[:3]])
+        focus_parts.append(f"逃げ候補複数（{names}）→ペース競り合いの可能性")
+
+    n_front = len(front_runners) + len(senkou)
+    if n_front >= 5:
+        focus_parts.append("先行馬多め→ペース流れやすい")
+    elif n_front <= 2:
+        focus_parts.append("先行馬少→スロー傾向")
+
+    focus = "。".join(focus_parts) if focus_parts else "特記なし"
+
+    # 4) 注目ポイント（上位入れ替わり要因）
+    highlight_parts = []
+
+    # 大きな順位変化のある馬を抽出
+    big_changes = sorted(
+        [e for e in adjusted_entries if abs(e.get("rank_change_win", 0)) >= 2],
+        key=lambda x: abs(x.get("rank_change_win", 0)),
+        reverse=True
+    )[:3]
+
+    for entry in big_changes:
+        change = entry.get("rank_change_win", 0)
+        arrow = "↑" if change > 0 else "↓"
+        reasons_struct = entry.get("reasons_structured", {})
+
+        # 理由カテゴリから主要因を特定
+        main_reason = None
+        for cat in ["pace", "style_bias", "lane_bias"]:
+            if cat in reasons_struct:
+                main_reason = reasons_struct[cat].get("text", "")
+                break
+
+        if main_reason:
+            highlight_parts.append(
+                f"{entry.get('name', '?')} {arrow}{abs(change)}位（{main_reason}）"
+            )
+
+    highlight = "／".join(highlight_parts) if highlight_parts else "大きな順位変動なし"
+
+    # 補足（メモ）
+    notes = scenario.get("notes", "")
+    supplement = notes[:150] if notes else ""
+
+    return {
+        "overview": overview,
+        "bias": bias,
+        "focus": focus,
+        "highlight": highlight,
+        "supplement": supplement,
+    }
+
+
+def generate_rank_mini_summary(adjusted_entries: List[Dict[str, Any]]) -> str:
+    """
+    v2.2: 履歴用のミニ要約を生成
+
+    例: "1位 3→1, 2位 1→2, 3位 5→3"
+    """
+    # 補正後ランキングでソート
+    sorted_entries = sorted(
+        adjusted_entries,
+        key=lambda x: x.get("adj_rank_win", 99)
+    )
+
+    summary_parts = []
+    for i, entry in enumerate(sorted_entries[:3], 1):
+        base_rank = entry.get("base_rank_win", "?")
+        adj_rank = entry.get("adj_rank_win", "?")
+        name = entry.get("name", "?")
+
+        if base_rank != adj_rank:
+            summary_parts.append(f"{i}位 {name}({base_rank}→{adj_rank})")
+        else:
+            summary_parts.append(f"{i}位 {name}({adj_rank})")
+
+    return ", ".join(summary_parts)
 
 
 def apply_scenario_adjustment(
@@ -405,40 +563,104 @@ def apply_scenario_adjustment(
         adj_p_win = base_p_win * pace_coef["win"] * track_coef * lane_coef["win"] * style_coef["win"]
         adj_p_in3 = base_p_in3 * pace_coef["in3"] * track_coef * lane_coef["in3"] * style_coef["in3"]
 
-        # 補正理由を生成
-        reasons = []
+        # 補正理由を生成（カテゴリ別の構造化）
+        reasons = []  # 後方互換のためのフラットリスト
+        reasons_structured = {}  # v2.2: カテゴリ別の構造化
 
         # ペース補正
         if pace != "M":
             if pace_coef["win"] > 1.0:
-                reasons.append(f"ペース{pace}で{run_style}有利 (+{(pace_coef['win']-1)*100:.0f}%)")
+                reason_text = f"ペース{pace}で{run_style}有利 (+{(pace_coef['win']-1)*100:.0f}%)"
+                reasons.append(reason_text)
+                reasons_structured["pace"] = {
+                    "category": "pace",
+                    "input": pace,
+                    "effect": "positive",
+                    "text": reason_text,
+                    "coef": round(pace_coef["win"], 3),
+                }
             elif pace_coef["win"] < 1.0:
-                reasons.append(f"ペース{pace}で{run_style}不利 ({(pace_coef['win']-1)*100:.0f}%)")
+                reason_text = f"ペース{pace}で{run_style}不利 ({(pace_coef['win']-1)*100:.0f}%)"
+                reasons.append(reason_text)
+                reasons_structured["pace"] = {
+                    "category": "pace",
+                    "input": pace,
+                    "effect": "negative",
+                    "text": reason_text,
+                    "coef": round(pace_coef["win"], 3),
+                }
 
         # 脚質バイアス補正
         if style_bias != "flat":
             style_label = {"front": "前残り", "closer": "差し向き"}.get(style_bias, style_bias)
             if style_coef["win"] > 1.0:
-                reasons.append(f"{style_label}バイアスで有利 (+{(style_coef['win']-1)*100:.0f}%)")
+                reason_text = f"{style_label}バイアスで有利 (+{(style_coef['win']-1)*100:.0f}%)"
+                reasons.append(reason_text)
+                reasons_structured["style_bias"] = {
+                    "category": "style_bias",
+                    "input": style_bias,
+                    "effect": "positive",
+                    "text": reason_text,
+                    "coef": round(style_coef["win"], 3),
+                }
             elif style_coef["win"] < 1.0:
-                reasons.append(f"{style_label}バイアスで不利 ({(style_coef['win']-1)*100:.0f}%)")
+                reason_text = f"{style_label}バイアスで不利 ({(style_coef['win']-1)*100:.0f}%)"
+                reasons.append(reason_text)
+                reasons_structured["style_bias"] = {
+                    "category": "style_bias",
+                    "input": style_bias,
+                    "effect": "negative",
+                    "text": reason_text,
+                    "coef": round(style_coef["win"], 3),
+                }
 
         # 進路バイアス補正
         if lane_bias != "flat":
             lane_label = {"inner": "内伸び", "middle": "中央", "outer": "外伸び"}.get(lane_bias, lane_bias)
             est_lane_label = {"inner_lane": "内目", "middle_lane": "中", "outer_lane": "外目"}.get(lane, lane)
             if lane_coef["win"] > 1.0:
-                reasons.append(f"{lane_label}馬場で{est_lane_label}通過有利 (+{(lane_coef['win']-1)*100:.0f}%)")
+                reason_text = f"{lane_label}馬場で{est_lane_label}通過有利 (+{(lane_coef['win']-1)*100:.0f}%)"
+                reasons.append(reason_text)
+                reasons_structured["lane_bias"] = {
+                    "category": "lane_bias",
+                    "input": lane_bias,
+                    "effect": "positive",
+                    "text": reason_text,
+                    "coef": round(lane_coef["win"], 3),
+                }
             elif lane_coef["win"] < 1.0:
-                reasons.append(f"{lane_label}馬場で{est_lane_label}通過不利 ({(lane_coef['win']-1)*100:.0f}%)")
+                reason_text = f"{lane_label}馬場で{est_lane_label}通過不利 ({(lane_coef['win']-1)*100:.0f}%)"
+                reasons.append(reason_text)
+                reasons_structured["lane_bias"] = {
+                    "category": "lane_bias",
+                    "input": lane_bias,
+                    "effect": "negative",
+                    "text": reason_text,
+                    "coef": round(lane_coef["win"], 3),
+                }
 
         # 逃げ想定馬
         if is_front_runner:
             reasons.append("逃げ想定馬")
+            reasons_structured["race_flow"] = {
+                "category": "race_flow",
+                "input": "front_runner",
+                "effect": "info",
+                "text": "逃げ想定馬",
+                "coef": None,
+            }
 
         # 馬場状態
         if track_coef < 1.0:
-            reasons.append(f"馬場{track_condition}で減衰 ({(track_coef-1)*100:.0f}%)")
+            reason_text = f"馬場{track_condition}で減衰 ({(track_coef-1)*100:.0f}%)"
+            reasons.append(reason_text)
+            reasons_structured["track_condition"] = {
+                "category": "track_condition",
+                "input": track_condition,
+                "effect": "negative",
+                "text": reason_text,
+                "coef": round(track_coef, 3),
+            }
 
         # タグ生成
         tags = generate_horse_tags(entry, run_style, lane, is_front_runner)
@@ -456,6 +678,7 @@ def apply_scenario_adjustment(
             "run_style": run_style,
             "lane": lane,
             "reasons": reasons,
+            "reasons_structured": reasons_structured,  # v2.2: カテゴリ別構造化
             "tags": tags,
             "jockey": entry.get("jockey"),
             "trainer": entry.get("trainer"),
@@ -490,6 +713,8 @@ def apply_scenario_adjustment(
 
     # 全体コメント生成
     race_comment = generate_race_comment(race_data, scenario, adjusted_entries)
+    race_comment_structured = generate_race_comment_structured(race_data, scenario, adjusted_entries)
+    rank_mini_summary = generate_rank_mini_summary(adjusted_entries)
 
     return {
         "race_id": race_data.get("race_id"),
@@ -503,6 +728,8 @@ def apply_scenario_adjustment(
         "scenario": scenario,
         "entries": adjusted_entries,
         "race_comment": race_comment,
+        "race_comment_structured": race_comment_structured,  # v2.2: 構造化コメント
+        "rank_mini_summary": rank_mini_summary,  # v2.2: 履歴用ミニ要約
         "adjusted_at": datetime.now().isoformat(),
     }
 
@@ -875,6 +1102,11 @@ class ScenarioUIHandler(SimpleHTTPRequestHandler):
                             with open(result_file, "r", encoding="utf-8") as f:
                                 data = json.load(f)
 
+                            # v2.2: メモ有無とミニ要約を追加
+                            scenario = data.get("scenario", {})
+                            has_notes = bool(scenario.get("notes", "").strip())
+                            mini_summary = data.get("rank_mini_summary", "")
+
                             history.append({
                                 "path": str(result_file.relative_to(PROJECT_ROOT)),
                                 "date": date_dir.name,
@@ -883,8 +1115,10 @@ class ScenarioUIHandler(SimpleHTTPRequestHandler):
                                 "race_name": data.get("race_name", ""),
                                 "place": data.get("place", ""),
                                 "race_no": data.get("race_no"),
-                                "scenario": data.get("scenario", {}),
+                                "scenario": scenario,
                                 "adjusted_at": data.get("adjusted_at", ""),
+                                "has_notes": has_notes,  # v2.2
+                                "rank_mini_summary": mini_summary,  # v2.2
                             })
                         except Exception as e:
                             logger.warning(f"Failed to read history file {result_file}: {e}")
@@ -939,7 +1173,7 @@ def main():
     server = ThreadedHTTPServer(("", port), ScenarioUIHandler)
 
     logger.info("=" * 60)
-    logger.info("Pre-race Scenario UI Server v2.1")
+    logger.info("Pre-race Scenario UI Server v2.2")
     logger.info("=" * 60)
     logger.info("  URL: http://localhost:%d", port)
     logger.info("  UI:  %s", Path(__file__).parent / "index.html")

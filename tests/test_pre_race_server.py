@@ -1,12 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-Tests for ui/pre_race/server.py v2.1
+Tests for ui/pre_race/server.py v2.2
 
 Tests for:
 - Date folder listing
 - Race listing with summary JSON reading
 - Save/load history functionality
 - Error handling
+- v2.2: Structured reasons
+- v2.2: Structured race comment
+- v2.2: Mini-summary generation
 """
 
 import json
@@ -27,6 +30,8 @@ from ui.pre_race.server import (
     estimate_lane,
     generate_horse_tags,
     generate_race_comment,
+    generate_race_comment_structured,
+    generate_rank_mini_summary,
 )
 
 
@@ -422,6 +427,237 @@ class TestSummaryReading:
         assert "2500m" in label
         assert "15:25" in label
         assert "12頭" in label
+
+
+# =============================================================================
+# v2.2 Test Structured Reasons
+# =============================================================================
+
+class TestStructuredReasons:
+    """Tests for v2.2 structured reasons"""
+
+    def test_structured_reasons_included(self):
+        """Adjusted entries should include reasons_structured"""
+        race_data = {
+            "race_id": "test",
+            "name": "Test Race",
+            "entries": [
+                {"horse_id": "h001", "umaban": 1, "name": "Horse1", "p_win": 0.2, "p_in3": 0.5, "run_style": "逃げ"},
+            ]
+        }
+        scenario = {
+            "pace": "S",
+            "track_condition": "良",
+            "lane_bias": "inner",
+            "style_bias": "flat",
+            "front_runner_ids": [],
+        }
+
+        result = apply_scenario_adjustment(race_data, scenario)
+
+        # Check that reasons_structured exists
+        entry = result["entries"][0]
+        assert "reasons_structured" in entry
+        assert isinstance(entry["reasons_structured"], dict)
+
+    def test_structured_reasons_has_categories(self):
+        """Structured reasons should have correct categories"""
+        race_data = {
+            "race_id": "test",
+            "name": "Test",
+            "entries": [
+                {"horse_id": "h001", "umaban": 1, "name": "Nige", "p_win": 0.2, "p_in3": 0.5, "run_style": "逃げ"},
+            ]
+        }
+        scenario = {
+            "pace": "S",
+            "track_condition": "重",
+            "lane_bias": "inner",
+            "style_bias": "front",
+            "front_runner_ids": ["h001"],
+        }
+
+        result = apply_scenario_adjustment(race_data, scenario)
+        entry = result["entries"][0]
+        reasons = entry["reasons_structured"]
+
+        # Should have pace, style_bias, lane_bias, track_condition categories
+        assert "pace" in reasons
+        assert reasons["pace"]["category"] == "pace"
+        assert reasons["pace"]["effect"] in ["positive", "negative"]
+
+        assert "track_condition" in reasons
+        assert reasons["track_condition"]["category"] == "track_condition"
+
+
+# =============================================================================
+# v2.2 Test Structured Race Comment
+# =============================================================================
+
+class TestStructuredRaceComment:
+    """Tests for v2.2 structured race comment"""
+
+    def test_structured_comment_has_sections(self):
+        """Structured comment should have all sections"""
+        race_data = {
+            "race_id": "test",
+            "name": "Test Race",
+            "place": "東京",
+            "distance": 2000,
+            "course": "芝",
+        }
+        scenario = {
+            "pace": "S",
+            "lane_bias": "inner",
+            "style_bias": "front",
+            "track_condition": "良",
+            "notes": "Test memo",
+        }
+        entries = [
+            {"name": "Horse1", "run_style": "逃げ", "rank_change_win": 2, "reasons_structured": {"pace": {"text": "ペースSで逃げ有利"}}},
+        ]
+
+        comment = generate_race_comment_structured(race_data, scenario, entries)
+
+        assert "overview" in comment
+        assert "bias" in comment
+        assert "focus" in comment
+        assert "highlight" in comment
+        assert "supplement" in comment
+
+    def test_structured_comment_overview_content(self):
+        """Overview should include race info"""
+        race_data = {
+            "name": "有馬記念",
+            "place": "中山",
+            "distance": 2500,
+            "course": "芝",
+        }
+        scenario = {
+            "pace": "M",
+            "lane_bias": "flat",
+            "style_bias": "flat",
+            "track_condition": "良",
+        }
+
+        comment = generate_race_comment_structured(race_data, scenario, [])
+
+        assert "有馬記念" in comment["overview"]
+        assert "中山" in comment["overview"]
+        assert "2500m" in comment["overview"]
+
+    def test_structured_comment_bias_content(self):
+        """Bias section should include lane and style bias"""
+        race_data = {"name": "Test"}
+        scenario = {
+            "pace": "M",
+            "lane_bias": "inner",
+            "style_bias": "front",
+            "track_condition": "良",
+        }
+
+        comment = generate_race_comment_structured(race_data, scenario, [])
+
+        assert "内伸び" in comment["bias"]
+        assert "前残り" in comment["bias"]
+
+
+# =============================================================================
+# v2.2 Test Mini Summary
+# =============================================================================
+
+class TestMiniSummary:
+    """Tests for v2.2 mini summary generation"""
+
+    def test_mini_summary_format(self):
+        """Mini summary should show top 3 ranking"""
+        entries = [
+            {"horse_id": "h001", "name": "Horse1", "base_rank_win": 3, "adj_rank_win": 1},
+            {"horse_id": "h002", "name": "Horse2", "base_rank_win": 1, "adj_rank_win": 2},
+            {"horse_id": "h003", "name": "Horse3", "base_rank_win": 5, "adj_rank_win": 3},
+        ]
+
+        summary = generate_rank_mini_summary(entries)
+
+        assert "Horse1" in summary
+        assert "Horse2" in summary
+        assert "Horse3" in summary
+        assert "1位" in summary
+
+    def test_mini_summary_shows_rank_change(self):
+        """Mini summary should indicate rank changes"""
+        entries = [
+            {"horse_id": "h001", "name": "Changed", "base_rank_win": 5, "adj_rank_win": 1},
+        ]
+
+        summary = generate_rank_mini_summary(entries)
+
+        # Should show old → new format when changed
+        assert "5→1" in summary
+
+    def test_mini_summary_unchanged_rank(self):
+        """Mini summary should handle unchanged ranks"""
+        entries = [
+            {"horse_id": "h001", "name": "Same", "base_rank_win": 1, "adj_rank_win": 1},
+        ]
+
+        summary = generate_rank_mini_summary(entries)
+
+        # Should just show the rank without arrow
+        assert "Same" in summary
+        assert "(1)" in summary
+
+
+# =============================================================================
+# v2.2 Test Result Output Structure
+# =============================================================================
+
+class TestResultOutputV22:
+    """Tests for v2.2 result output structure"""
+
+    def test_result_has_structured_comment(self):
+        """Result should include race_comment_structured"""
+        race_data = {
+            "race_id": "test",
+            "name": "Test",
+            "entries": [
+                {"horse_id": "h001", "umaban": 1, "name": "Horse1", "p_win": 0.2, "p_in3": 0.5},
+            ]
+        }
+        scenario = {
+            "pace": "M",
+            "track_condition": "良",
+            "lane_bias": "flat",
+            "style_bias": "flat",
+            "front_runner_ids": [],
+        }
+
+        result = apply_scenario_adjustment(race_data, scenario)
+
+        assert "race_comment_structured" in result
+        assert isinstance(result["race_comment_structured"], dict)
+
+    def test_result_has_mini_summary(self):
+        """Result should include rank_mini_summary"""
+        race_data = {
+            "race_id": "test",
+            "name": "Test",
+            "entries": [
+                {"horse_id": "h001", "umaban": 1, "name": "Horse1", "p_win": 0.2, "p_in3": 0.5},
+            ]
+        }
+        scenario = {
+            "pace": "M",
+            "track_condition": "良",
+            "lane_bias": "flat",
+            "style_bias": "flat",
+            "front_runner_ids": [],
+        }
+
+        result = apply_scenario_adjustment(race_data, scenario)
+
+        assert "rank_mini_summary" in result
+        assert isinstance(result["rank_mini_summary"], str)
 
 
 # =============================================================================
