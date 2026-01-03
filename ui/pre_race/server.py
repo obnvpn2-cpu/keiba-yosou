@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
 """
-Pre-race Scenario UI Server (v2.0)
+Pre-race Scenario UI Server (v2.1)
 
 シナリオUIを提供するローカルサーバー。
 race_<race_id>.json を読み込み、シナリオ補正を適用し、結果を保存する。
+
+v2.1 更新:
+- 日付フォルダ選択 → レース選択の2段階UX
+- summary_<date>.json から人間向けレース一覧表示
+- 保存先を artifacts/pre_race/outputs/<date>/<race_id>/<timestamp>.json に変更
+- 履歴ロード機能追加
+- エラーリカバリ強化
 
 v2.0 更新:
 - トラックバイアスを2軸に分離（進路バイアス + 脚質バイアス）
@@ -17,10 +24,11 @@ v2.0 更新:
 
 Usage:
     1. サーバー起動後、http://localhost:8080 にアクセス
-    2. レースJSONファイルを選択（artifacts/pre_race/<date>/race_<race_id>.json）
-    3. シナリオを入力し「適用」をクリック
-    4. 補正後のランキングと変化量を確認
-    5. 「保存」で結果をJSONに出力
+    2. 日付フォルダを選択
+    3. レースを選択（場所/R/レース名/距離/発走時刻で表示）
+    4. シナリオを入力し「適用」をクリック
+    5. 補正後のランキングと変化量を確認
+    6. 「保存」で結果をJSONに出力（履歴から再読み込み可能）
 """
 
 import json
@@ -515,10 +523,16 @@ class ScenarioUIHandler(SimpleHTTPRequestHandler):
         """GET リクエスト処理"""
         parsed = urlparse(self.path)
 
-        if parsed.path == "/api/list-races":
+        if parsed.path == "/api/list-dates":
+            self._handle_list_dates(parsed)
+        elif parsed.path == "/api/list-races":
             self._handle_list_races(parsed)
         elif parsed.path == "/api/load-race":
             self._handle_load_race(parsed)
+        elif parsed.path == "/api/list-history":
+            self._handle_list_history(parsed)
+        elif parsed.path == "/api/load-history":
+            self._handle_load_history(parsed)
         else:
             # 静的ファイル配信
             super().do_GET()
@@ -545,74 +559,199 @@ class ScenarioUIHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(response.encode("utf-8"))
 
-    def _handle_list_races(self, parsed):
-        """レースファイル一覧を返す（メタ情報付き）"""
-        query = parse_qs(parsed.query)
-
-        # artifacts/pre_race/ 以下のディレクトリを探索
+    def _handle_list_dates(self, parsed):
+        """日付フォルダ一覧を返す"""
         artifacts_dir = PROJECT_ROOT / "artifacts" / "pre_race"
+        dates = []
 
-        races = []
         if artifacts_dir.exists():
             for date_dir in sorted(artifacts_dir.iterdir(), reverse=True):
-                if date_dir.is_dir():
-                    for race_file in sorted(date_dir.glob("race_*.json")):
-                        # JSONを読み込んでメタ情報を取得
+                if date_dir.is_dir() and date_dir.name != "outputs":
+                    # Check for summary file or race files
+                    summary_file = date_dir / f"summary_{date_dir.name}.json"
+                    race_files = list(date_dir.glob("race_*.json"))
+
+                    if summary_file.exists() or race_files:
+                        n_races = 0
+                        # Try to get race count from summary
+                        if summary_file.exists():
+                            try:
+                                with open(summary_file, "r", encoding="utf-8") as f:
+                                    summary = json.load(f)
+                                n_races = summary.get("n_races", len(summary.get("races", [])))
+                            except Exception:
+                                n_races = len(race_files)
+                        else:
+                            n_races = len(race_files)
+
+                        dates.append({
+                            "date": date_dir.name,
+                            "n_races": n_races,
+                            "has_summary": summary_file.exists(),
+                        })
+
+        self._send_json({"dates": dates[:30]})  # Latest 30 dates
+
+    def _handle_list_races(self, parsed):
+        """指定日のレース一覧を返す（summary JSONから人間向け表示）"""
+        query = parse_qs(parsed.query)
+        target_date = query.get("date", [""])[0]
+
+        artifacts_dir = PROJECT_ROOT / "artifacts" / "pre_race"
+        races = []
+
+        if not target_date:
+            # 日付指定なし: 全日付のレース一覧（後方互換）
+            if artifacts_dir.exists():
+                for date_dir in sorted(artifacts_dir.iterdir(), reverse=True):
+                    if date_dir.is_dir() and date_dir.name != "outputs":
+                        races.extend(self._load_races_for_date(date_dir))
+            self._send_json({"races": races[:50]})
+            return
+
+        # 日付指定あり: summary JSONを優先的に使用
+        date_dir = artifacts_dir / target_date
+        if not date_dir.exists():
+            self._send_json({"races": [], "error": f"Date folder not found: {target_date}"})
+            return
+
+        summary_file = date_dir / f"summary_{target_date}.json"
+
+        if summary_file.exists():
+            # summary JSONから人間向け情報を取得
+            try:
+                with open(summary_file, "r", encoding="utf-8") as f:
+                    summary = json.load(f)
+
+                for race_info in summary.get("races", []):
+                    race_id = race_info.get("race_id", "")
+                    race_file = date_dir / f"race_{race_id}.json"
+
+                    place = race_info.get("place", "")
+                    race_no = race_info.get("race_no")
+                    race_name = race_info.get("name", "")
+                    grade = race_info.get("grade", "")
+                    distance = race_info.get("distance")
+                    n_entries = race_info.get("n_entries", 0)
+
+                    # Get start_time from race file if available
+                    start_time = ""
+                    if race_file.exists():
                         try:
-                            with open(race_file, "r", encoding="utf-8") as f:
-                                data = json.load(f)
+                            with open(race_file, "r", encoding="utf-8") as rf:
+                                race_data = json.load(rf)
+                            start_time = race_data.get("start_time", "")
+                            if not n_entries:
+                                n_entries = len(race_data.get("entries", []))
+                        except Exception:
+                            pass
 
-                            race_id = data.get("race_id") or race_file.stem.replace("race_", "")
-                            race_name = data.get("name") or data.get("race_name") or ""
-                            place = data.get("place") or ""
-                            race_no = data.get("race_no")
-                            distance = data.get("distance")
-                            course = data.get("course") or ""
-                            grade = data.get("grade") or ""
-                            head_count = data.get("head_count") or len(data.get("entries", []))
+                    # Human-readable label: 中山5R 有馬記念(G1) 芝2500m 15:25 12頭
+                    label_parts = []
+                    if place:
+                        label_parts.append(place)
+                    if race_no:
+                        label_parts.append(f"{race_no}R")
+                    if race_name:
+                        label_parts.append(race_name)
+                    if grade:
+                        label_parts.append(f"({grade})")
+                    if distance:
+                        label_parts.append(f"{distance}m")
+                    if start_time:
+                        label_parts.append(start_time)
+                    if n_entries:
+                        label_parts.append(f"{n_entries}頭")
 
-                            # 表示用ラベルを構築
-                            label_parts = [date_dir.name]
-                            if place:
-                                label_parts.append(place)
-                            if race_no:
-                                label_parts.append(f"{race_no}R")
-                            if race_name:
-                                label_parts.append(race_name)
-                            if grade:
-                                label_parts.append(f"({grade})")
-                            if course and distance:
-                                label_parts.append(f"{course}{distance}m")
-                            if head_count:
-                                label_parts.append(f"{head_count}頭")
+                    races.append({
+                        "path": str(race_file.relative_to(PROJECT_ROOT)) if race_file.exists() else "",
+                        "date": target_date,
+                        "race_id": race_id,
+                        "label": " ".join(label_parts),
+                        "meta": {
+                            "place": place,
+                            "race_no": race_no,
+                            "race_name": race_name,
+                            "grade": grade,
+                            "distance": distance,
+                            "start_time": start_time,
+                            "n_entries": n_entries,
+                        }
+                    })
 
-                            races.append({
-                                "path": str(race_file.relative_to(PROJECT_ROOT)),
-                                "date": date_dir.name,
-                                "race_id": race_id,
-                                "label": " ".join(label_parts),
-                                "meta": {
-                                    "race_name": race_name,
-                                    "place": place,
-                                    "race_no": race_no,
-                                    "distance": distance,
-                                    "course": course,
-                                    "grade": grade,
-                                    "head_count": head_count,
-                                }
-                            })
-                        except Exception as e:
-                            logger.warning(f"Failed to read {race_file}: {e}")
-                            # フォールバック：最小限の情報
-                            races.append({
-                                "path": str(race_file.relative_to(PROJECT_ROOT)),
-                                "date": date_dir.name,
-                                "race_id": race_file.stem.replace("race_", ""),
-                                "label": f"{date_dir.name} - {race_file.stem}",
-                                "meta": {},
-                            })
+            except Exception as e:
+                logger.warning(f"Failed to read summary {summary_file}: {e}")
+                # Fall back to reading individual race files
+                races = self._load_races_for_date(date_dir)
+        else:
+            # No summary file, read individual race files
+            races = self._load_races_for_date(date_dir)
 
-        self._send_json({"races": races[:50]})  # 最新50件
+        self._send_json({"races": races})
+
+    def _load_races_for_date(self, date_dir: Path) -> List[Dict[str, Any]]:
+        """日付ディレクトリからレース一覧を読み込む（フォールバック用）"""
+        races = []
+        for race_file in sorted(date_dir.glob("race_*.json")):
+            try:
+                with open(race_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+
+                race_id = data.get("race_id") or race_file.stem.replace("race_", "")
+                race_name = data.get("name") or data.get("race_name") or ""
+                place = data.get("place") or ""
+                race_no = data.get("race_no")
+                distance = data.get("distance")
+                course = data.get("course") or ""
+                grade = data.get("grade") or ""
+                start_time = data.get("start_time") or ""
+                head_count = data.get("head_count") or len(data.get("entries", []))
+
+                # Human-readable label
+                label_parts = []
+                if place:
+                    label_parts.append(place)
+                if race_no:
+                    label_parts.append(f"{race_no}R")
+                if race_name:
+                    label_parts.append(race_name)
+                if grade:
+                    label_parts.append(f"({grade})")
+                if course and distance:
+                    label_parts.append(f"{course}{distance}m")
+                elif distance:
+                    label_parts.append(f"{distance}m")
+                if start_time:
+                    label_parts.append(start_time)
+                if head_count:
+                    label_parts.append(f"{head_count}頭")
+
+                races.append({
+                    "path": str(race_file.relative_to(PROJECT_ROOT)),
+                    "date": date_dir.name,
+                    "race_id": race_id,
+                    "label": " ".join(label_parts),
+                    "meta": {
+                        "place": place,
+                        "race_no": race_no,
+                        "race_name": race_name,
+                        "grade": grade,
+                        "distance": distance,
+                        "course": course,
+                        "start_time": start_time,
+                        "n_entries": head_count,
+                    }
+                })
+            except Exception as e:
+                logger.warning(f"Failed to read {race_file}: {e}")
+                races.append({
+                    "path": str(race_file.relative_to(PROJECT_ROOT)),
+                    "date": date_dir.name,
+                    "race_id": race_file.stem.replace("race_", ""),
+                    "label": f"{date_dir.name} - {race_file.stem}",
+                    "meta": {},
+                })
+        return races
 
     def _handle_load_race(self, parsed):
         """レースデータを読み込む"""
@@ -667,7 +806,7 @@ class ScenarioUIHandler(SimpleHTTPRequestHandler):
             self._send_json({"error": str(e)}, 500)
 
     def _handle_save_result(self):
-        """結果を保存"""
+        """結果を保存 (artifacts/pre_race/outputs/<date>/<race_id>/<timestamp>.json)"""
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length)
 
@@ -675,14 +814,17 @@ class ScenarioUIHandler(SimpleHTTPRequestHandler):
             request = json.loads(body.decode("utf-8"))
             result = request.get("result", {})
 
-            # 保存先ディレクトリ
-            output_dir = PROJECT_ROOT / "artifacts" / "ui_runs"
+            # Extract date and race_id
+            race_date = result.get("date", datetime.now().strftime("%Y-%m-%d"))
+            race_id = result.get("race_id", "unknown")
+
+            # New path structure: artifacts/pre_race/outputs/<date>/<race_id>/<timestamp>.json
+            output_dir = PROJECT_ROOT / "artifacts" / "pre_race" / "outputs" / race_date / race_id
             output_dir.mkdir(parents=True, exist_ok=True)
 
-            # ファイル名: timestamp_race_id.json
+            # Filename: <timestamp>.json
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            race_id = result.get("race_id", "unknown")
-            filename = f"{timestamp}_{race_id}.json"
+            filename = f"{timestamp}.json"
 
             output_path = output_dir / filename
             with open(output_path, "w", encoding="utf-8") as f:
@@ -691,9 +833,93 @@ class ScenarioUIHandler(SimpleHTTPRequestHandler):
             self._send_json({
                 "status": "saved",
                 "path": str(output_path.relative_to(PROJECT_ROOT)),
+                "date": race_date,
+                "race_id": race_id,
+                "timestamp": timestamp,
             })
         except Exception as e:
             logger.exception("Error saving result")
+            self._send_json({"error": str(e)}, 500)
+
+    def _handle_list_history(self, parsed):
+        """履歴一覧を返す（日付/レースIDでフィルタ可能）"""
+        query = parse_qs(parsed.query)
+        target_date = query.get("date", [""])[0]
+        target_race_id = query.get("race_id", [""])[0]
+
+        outputs_dir = PROJECT_ROOT / "artifacts" / "pre_race" / "outputs"
+        history = []
+
+        if not outputs_dir.exists():
+            self._send_json({"history": []})
+            return
+
+        try:
+            # Iterate through date folders
+            date_dirs = [outputs_dir / target_date] if target_date else sorted(outputs_dir.iterdir(), reverse=True)
+
+            for date_dir in date_dirs:
+                if not date_dir.is_dir():
+                    continue
+
+                # Iterate through race_id folders
+                race_dirs = [date_dir / target_race_id] if target_race_id else sorted(date_dir.iterdir(), reverse=True)
+
+                for race_dir in race_dirs:
+                    if not race_dir.is_dir():
+                        continue
+
+                    # Iterate through saved result files
+                    for result_file in sorted(race_dir.glob("*.json"), reverse=True):
+                        try:
+                            with open(result_file, "r", encoding="utf-8") as f:
+                                data = json.load(f)
+
+                            history.append({
+                                "path": str(result_file.relative_to(PROJECT_ROOT)),
+                                "date": date_dir.name,
+                                "race_id": race_dir.name,
+                                "timestamp": result_file.stem,
+                                "race_name": data.get("race_name", ""),
+                                "place": data.get("place", ""),
+                                "race_no": data.get("race_no"),
+                                "scenario": data.get("scenario", {}),
+                                "adjusted_at": data.get("adjusted_at", ""),
+                            })
+                        except Exception as e:
+                            logger.warning(f"Failed to read history file {result_file}: {e}")
+                            history.append({
+                                "path": str(result_file.relative_to(PROJECT_ROOT)),
+                                "date": date_dir.name,
+                                "race_id": race_dir.name,
+                                "timestamp": result_file.stem,
+                                "error": str(e),
+                            })
+
+            self._send_json({"history": history[:100]})  # Latest 100
+        except Exception as e:
+            logger.exception("Error listing history")
+            self._send_json({"history": [], "error": str(e)})
+
+    def _handle_load_history(self, parsed):
+        """履歴データを読み込む"""
+        query = parse_qs(parsed.query)
+        history_path = query.get("path", [""])[0]
+
+        if not history_path:
+            self._send_json({"error": "path parameter required"}, 400)
+            return
+
+        full_path = PROJECT_ROOT / history_path
+        if not full_path.exists():
+            self._send_json({"error": f"History file not found: {history_path}"}, 404)
+            return
+
+        try:
+            with open(full_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self._send_json(data)
+        except Exception as e:
             self._send_json({"error": str(e)}, 500)
 
     def log_message(self, format, *args):
@@ -713,7 +939,7 @@ def main():
     server = ThreadedHTTPServer(("", port), ScenarioUIHandler)
 
     logger.info("=" * 60)
-    logger.info("Pre-race Scenario UI Server v2.0")
+    logger.info("Pre-race Scenario UI Server v2.1")
     logger.info("=" * 60)
     logger.info("  URL: http://localhost:%d", port)
     logger.info("  UI:  %s", Path(__file__).parent / "index.html")
