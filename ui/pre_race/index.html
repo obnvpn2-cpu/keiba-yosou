@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Pre-race Scenario UI v2.1</title>
+    <title>Pre-race Scenario UI v2.2</title>
     <style>
         * {
             box-sizing: border-box;
@@ -581,11 +581,287 @@
                 font-size: 0.8rem;
             }
         }
+
+        /* v2.2 Styles */
+        /* Mode Toggle */
+        .mode-toggle {
+            display: flex;
+            gap: 5px;
+            align-items: center;
+        }
+        .mode-toggle button {
+            padding: 4px 10px;
+            border: 1px solid #d1d5db;
+            background: #fff;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.85rem;
+        }
+        .mode-toggle button.active {
+            background: #2563eb;
+            color: #fff;
+            border-color: #2563eb;
+        }
+        .mode-toggle button:hover:not(.active) {
+            background: #f3f4f6;
+        }
+
+        /* Top-N Toggle */
+        .top-n-toggle {
+            display: flex;
+            gap: 5px;
+            align-items: center;
+        }
+        .top-n-toggle label {
+            font-size: 0.85rem;
+            color: #6b7280;
+        }
+        .top-n-toggle select {
+            padding: 2px 8px;
+            border-radius: 4px;
+            border: 1px solid #d1d5db;
+            font-size: 0.85rem;
+        }
+
+        /* Top-N Highlight */
+        .horse-row.top-1 {
+            background: linear-gradient(90deg, rgba(255, 215, 0, 0.15), transparent) !important;
+        }
+        .horse-row.top-2 {
+            background: linear-gradient(90deg, rgba(192, 192, 192, 0.15), transparent) !important;
+        }
+        .horse-row.top-3 {
+            background: linear-gradient(90deg, rgba(205, 127, 50, 0.15), transparent) !important;
+        }
+        .horse-row.top-4, .horse-row.top-5 {
+            background: linear-gradient(90deg, rgba(200, 200, 200, 0.08), transparent) !important;
+        }
+        .horse-row.dim {
+            opacity: 0.5;
+        }
+
+        /* Probability Change Display */
+        .prob-change {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 1px;
+        }
+        .prob-change .values {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 0.85rem;
+        }
+        .prob-change .before {
+            color: #9ca3af;
+            font-size: 0.75rem;
+        }
+        .prob-change .arrow {
+            color: #9ca3af;
+            font-size: 0.7rem;
+        }
+        .prob-change .after {
+            font-weight: 600;
+        }
+        .prob-change .diff {
+            font-size: 0.7rem;
+            padding: 1px 4px;
+            border-radius: 3px;
+        }
+        .prob-change .diff.positive {
+            color: #16a34a;
+            background: rgba(22, 163, 74, 0.1);
+        }
+        .prob-change .diff.negative {
+            color: #dc2626;
+            background: rgba(220, 38, 38, 0.1);
+        }
+        .prob-change .diff.neutral {
+            color: #6b7280;
+            background: rgba(107, 114, 128, 0.1);
+        }
+
+        /* Structured Race Comment */
+        .race-comment-structured {
+            background: #f9fafb;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            overflow: hidden;
+        }
+        .race-comment-structured .section {
+            padding: 10px 15px;
+            border-bottom: 1px solid #e5e7eb;
+        }
+        .race-comment-structured .section:last-child {
+            border-bottom: none;
+        }
+        .race-comment-structured .section-title {
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: #6b7280;
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+        .race-comment-structured .section-content {
+            font-size: 0.9rem;
+            color: #374151;
+        }
+        .race-comment-toggle {
+            display: flex;
+            justify-content: center;
+            padding: 6px;
+            background: #f3f4f6;
+            cursor: pointer;
+            font-size: 0.8rem;
+            color: #6b7280;
+        }
+        .race-comment-toggle:hover {
+            background: #e5e7eb;
+        }
+        .race-comment-detail {
+            display: none;
+        }
+        .race-comment-detail.expanded {
+            display: block;
+        }
+
+        /* History Enhancements */
+        .history-item .meta {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 4px;
+        }
+        .history-item .has-notes-badge {
+            font-size: 0.7rem;
+            padding: 1px 5px;
+            border-radius: 3px;
+            background: #dbeafe;
+            color: #1d4ed8;
+        }
+        .history-item .mini-summary {
+            font-size: 0.75rem;
+            color: #6b7280;
+            margin-top: 4px;
+            font-style: italic;
+        }
+        .history-viewing-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 4px 10px;
+            background: #fef3c7;
+            color: #92400e;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            margin-right: 10px;
+        }
+        .history-viewing-badge.hidden {
+            display: none;
+        }
+
+        /* Chip Categories */
+        .chip-category-group {
+            margin-bottom: 10px;
+        }
+        .chip-category-label {
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: #6b7280;
+            margin-bottom: 4px;
+        }
+        .chip-category-chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 5px;
+        }
+        .chip.chip-negated {
+            background: #fef3c7 !important;
+            color: #92400e !important;
+            border-color: #fcd34d !important;
+        }
+
+        /* Structured Reasons */
+        .reason-structured {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+        }
+        .reason-cat-tag {
+            display: inline-flex;
+            align-items: center;
+            gap: 2px;
+            font-size: 0.7rem;
+            padding: 2px 6px;
+            border-radius: 3px;
+        }
+        .reason-cat-tag.pace {
+            background: #dbeafe;
+            color: #1d4ed8;
+        }
+        .reason-cat-tag.lane_bias {
+            background: #dcfce7;
+            color: #15803d;
+        }
+        .reason-cat-tag.style_bias {
+            background: #fce7f3;
+            color: #be185d;
+        }
+        .reason-cat-tag.track_condition {
+            background: #fef3c7;
+            color: #92400e;
+        }
+        .reason-cat-tag.race_flow {
+            background: #f3e8ff;
+            color: #7c3aed;
+        }
+
+        /* Filter Controls */
+        .filter-controls {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            margin-bottom: 10px;
+            flex-wrap: wrap;
+        }
+        .filter-checkbox {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 0.85rem;
+            color: #4b5563;
+        }
+        .filter-checkbox input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+        }
+
+        /* Results header bar */
+        .results-header-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        .results-header-left {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        .results-header-right {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
     </style>
 </head>
 <body>
     <header>
-        <h1>Pre-race Scenario UI <span class="version">v2.1</span></h1>
+        <h1>Pre-race Scenario UI <span class="version">v2.2</span></h1>
     </header>
 
     <div class="container">
@@ -707,15 +983,74 @@
 
         <!-- Results Panel -->
         <div class="panel" id="resultsPanel" style="display: none;">
-            <div class="panel-header">3. 補正結果</div>
+            <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
+                <span>3. 補正結果</span>
+                <span id="historyViewingBadge" class="history-viewing-badge hidden">閲覧中：過去結果</span>
+            </div>
 
-            <!-- Race Comment -->
+            <!-- Structured Race Comment (v2.2) -->
+            <div id="raceCommentStructured" class="race-comment-structured" style="display: none;">
+                <div class="section">
+                    <div class="section-title">概況</div>
+                    <div class="section-content" id="commentOverview"></div>
+                </div>
+                <div class="section">
+                    <div class="section-title">バイアス</div>
+                    <div class="section-content" id="commentBias"></div>
+                </div>
+                <div id="commentDetailSection" class="race-comment-detail">
+                    <div class="section">
+                        <div class="section-title">展開</div>
+                        <div class="section-content" id="commentFocus"></div>
+                    </div>
+                    <div class="section">
+                        <div class="section-title">注目</div>
+                        <div class="section-content" id="commentHighlight"></div>
+                    </div>
+                    <div class="section" id="commentSupplementSection" style="display: none;">
+                        <div class="section-title">メモ補足</div>
+                        <div class="section-content" id="commentSupplement"></div>
+                    </div>
+                </div>
+                <div class="race-comment-toggle" onclick="toggleRaceCommentDetail()">
+                    <span id="commentToggleText">▼ 詳細を表示</span>
+                </div>
+            </div>
+
+            <!-- Legacy Race Comment (hidden but kept for compatibility) -->
             <div id="raceComment" class="race-comment" style="display: none;"></div>
 
-            <!-- Tabs for win/in3 -->
-            <div class="tab-buttons">
-                <button class="tab-btn active" data-target="win" onclick="switchTab('win')">勝率 (Win)</button>
-                <button class="tab-btn" data-target="in3" onclick="switchTab('in3')">複勝率 (In3)</button>
+            <!-- Results Header Bar (v2.2) -->
+            <div class="results-header-bar">
+                <div class="results-header-left">
+                    <!-- Mode Toggle -->
+                    <div class="mode-toggle">
+                        <button class="active" data-mode="win" onclick="switchMode('win')">WIN</button>
+                        <button data-mode="in3" onclick="switchMode('in3')">IN3</button>
+                    </div>
+                    <!-- Top-N Toggle -->
+                    <div class="top-n-toggle">
+                        <label>強調:</label>
+                        <select id="topNSelect" onchange="onTopNChange()">
+                            <option value="0">なし</option>
+                            <option value="3" selected>Top 3</option>
+                            <option value="5">Top 5</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="results-header-right">
+                    <!-- Filter Controls -->
+                    <div class="filter-controls">
+                        <label class="filter-checkbox">
+                            <input type="checkbox" id="filterTopNOnly" onchange="onFilterChange()">
+                            上位のみ表示
+                        </label>
+                        <label class="filter-checkbox">
+                            <input type="checkbox" id="filterBigChange" onchange="onFilterChange()">
+                            変化大きい順
+                        </label>
+                    </div>
+                </div>
             </div>
 
             <div style="overflow-x: auto;">
@@ -729,9 +1064,8 @@
                             <th data-sort="tags">タグ</th>
                             <th data-sort="base_rank">ベース順</th>
                             <th data-sort="adj_rank">補正順</th>
-                            <th data-sort="rank_change">順位変化</th>
-                            <th data-sort="base_p">ベース確率</th>
-                            <th data-sort="adj_p">補正確率</th>
+                            <th data-sort="rank_change">変化</th>
+                            <th data-sort="prob_change">確率変化</th>
                             <th>補正理由</th>
                             <th>詳細</th>
                         </tr>
@@ -759,11 +1093,16 @@
         let currentRaceData = null;
         let adjustedResult = null;
         let currentTab = 'win';
+        let currentMode = 'win';  // v2.2: mode toggle
         let currentSort = { key: 'umaban', order: 'asc' };
         let appliedChips = new Set();
         let memoDebounceTimer = null;
         let selectedDate = '';
         let selectedRaceId = '';
+        let isViewingHistory = false;  // v2.2: history viewing state
+        let topNHighlight = 3;  // v2.2: top-N highlight setting
+        let filterTopNOnly = false;  // v2.2: filter options
+        let filterBigChange = false;
 
         // LocalStorage keys
         const LS_KEY_DATE = 'prerace_last_date';
@@ -1035,7 +1374,7 @@
             }
         }
 
-        // Display suggestion chips
+        // Display suggestion chips (v2.2: organized by category)
         function displayChips(chips) {
             const container = document.getElementById('chipsContainer');
 
@@ -1044,30 +1383,80 @@
                 return;
             }
 
-            container.style.display = 'flex';
-            container.innerHTML = '<span style="color: #666; font-size: 0.85rem; align-self: center;">提案: </span>';
+            container.style.display = 'block';
+            container.innerHTML = '';
 
+            // v2.2: Group chips by category
+            const categoryOrder = ['track_condition', 'lane_bias', 'style_bias', 'pace', 'frame_hint', 'race_flow', 'pedigree', 'advisory', 'other'];
+            const categoryLabels = {
+                'track_condition': '馬場',
+                'lane_bias': 'バイアス(進路)',
+                'style_bias': 'バイアス(脚質)',
+                'pace': 'ペース',
+                'frame_hint': '枠ヒント(注意)',
+                'race_flow': '展開',
+                'pedigree': '血統',
+                'advisory': '注意',
+                'other': 'その他'
+            };
+
+            // Group chips
+            const groups = {};
             chips.forEach(chip => {
-                const chipEl = document.createElement('span');
-                chipEl.className = 'chip';
+                const cat = chip.category || 'other';
+                if (!groups[cat]) groups[cat] = [];
+                groups[cat].push(chip);
+            });
 
-                if (chip.is_warning) {
-                    chipEl.className += ' chip-warning';
-                    chipEl.innerHTML = `<span class="chip-icon">⚠️</span>${chip.label}`;
-                } else if (chip.needs_feature) {
-                    chipEl.className += ' chip-feature';
-                    chipEl.innerHTML = `<span class="chip-icon">📌</span>${chip.label}`;
-                    chipEl.title = '将来特徴量化候補（現在は補正に使用しません）';
-                } else if (appliedChips.has(chip.id)) {
-                    chipEl.className += ' chip-applied';
-                    chipEl.innerHTML = `<span class="chip-icon">✓</span>${chip.label}`;
-                } else {
-                    chipEl.className += ' chip-default';
-                    chipEl.innerHTML = chip.label;
-                    chipEl.onclick = () => applyChip(chip);
-                }
+            // Render by category order
+            categoryOrder.forEach(cat => {
+                if (!groups[cat] || groups[cat].length === 0) return;
 
-                container.appendChild(chipEl);
+                const groupDiv = document.createElement('div');
+                groupDiv.className = 'chip-category-group';
+
+                // Category label
+                const labelDiv = document.createElement('div');
+                labelDiv.className = 'chip-category-label';
+                labelDiv.textContent = categoryLabels[cat] || cat;
+                groupDiv.appendChild(labelDiv);
+
+                // Chips container
+                const chipsDiv = document.createElement('div');
+                chipsDiv.className = 'chip-category-chips';
+
+                groups[cat].forEach(chip => {
+                    const chipEl = document.createElement('span');
+                    chipEl.className = 'chip';
+
+                    // v2.2: Check if this is a negated chip
+                    const isNegated = chip.label && (chip.label.includes('否定') || chip.label.includes('ではない'));
+
+                    if (isNegated) {
+                        chipEl.className += ' chip-negated chip-warning';
+                        chipEl.innerHTML = chip.label;
+                        chipEl.title = '否定表現が検出されました（反対の推論はしません）';
+                    } else if (chip.is_warning) {
+                        chipEl.className += ' chip-warning';
+                        chipEl.innerHTML = `<span class="chip-icon">⚠️</span>${chip.label}`;
+                    } else if (chip.needs_feature) {
+                        chipEl.className += ' chip-feature';
+                        chipEl.innerHTML = `<span class="chip-icon">📌</span>${chip.label}`;
+                        chipEl.title = '将来特徴量化候補（現在は補正に使用しません）';
+                    } else if (appliedChips.has(chip.id)) {
+                        chipEl.className += ' chip-applied';
+                        chipEl.innerHTML = `<span class="chip-icon">✓</span>${chip.label}`;
+                    } else {
+                        chipEl.className += ' chip-default';
+                        chipEl.innerHTML = chip.label;
+                        chipEl.onclick = () => applyChip(chip);
+                    }
+
+                    chipsDiv.appendChild(chipEl);
+                });
+
+                groupDiv.appendChild(chipsDiv);
+                container.appendChild(groupDiv);
             });
         }
 
@@ -1101,6 +1490,8 @@
                 return;
             }
 
+            // v2.2: Reset history viewing state
+            isViewingHistory = false;
             hideError();
 
             // Parse front runners
@@ -1151,45 +1542,140 @@
             }
         }
 
-        // Switch between win/in3 tabs
+        // Switch between win/in3 tabs (v2.1 legacy - redirect to switchMode)
         function switchTab(tab) {
-            currentTab = tab;
-            document.querySelectorAll('.tab-btn').forEach(btn => {
-                btn.classList.toggle('active', btn.dataset.target === tab);
+            switchMode(tab);
+        }
+
+        // v2.2: Switch mode (WIN/IN3)
+        function switchMode(mode) {
+            currentMode = mode;
+            currentTab = mode; // Keep backward compatibility
+            document.querySelectorAll('.mode-toggle button').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.mode === mode);
             });
             if (adjustedResult) {
                 displayResults(adjustedResult);
             }
         }
 
-        // Display results
+        // v2.2: Toggle race comment detail section
+        function toggleRaceCommentDetail() {
+            const detail = document.getElementById('commentDetailSection');
+            const toggleText = document.getElementById('commentToggleText');
+            const isExpanded = detail.classList.contains('expanded');
+
+            detail.classList.toggle('expanded');
+            toggleText.textContent = isExpanded ? '▼ 詳細を表示' : '▲ 詳細を隠す';
+        }
+
+        // v2.2: Top-N highlight change
+        function onTopNChange() {
+            topNHighlight = parseInt(document.getElementById('topNSelect').value) || 0;
+            if (adjustedResult) {
+                displayResults(adjustedResult);
+            }
+        }
+
+        // v2.2: Filter change
+        function onFilterChange() {
+            filterTopNOnly = document.getElementById('filterTopNOnly').checked;
+            filterBigChange = document.getElementById('filterBigChange').checked;
+            if (adjustedResult) {
+                displayResults(adjustedResult);
+            }
+        }
+
+        // Display results (v2.2 updated)
         function displayResults(result) {
             const tbody = document.getElementById('resultsBody');
             tbody.innerHTML = '';
 
-            // Display race comment
-            const commentDiv = document.getElementById('raceComment');
-            if (result.race_comment) {
-                commentDiv.textContent = result.race_comment;
-                commentDiv.style.display = 'block';
+            // v2.2: Display structured race comment
+            const structuredComment = result.race_comment_structured;
+            const structuredDiv = document.getElementById('raceCommentStructured');
+
+            if (structuredComment) {
+                document.getElementById('commentOverview').textContent = structuredComment.overview || '';
+                document.getElementById('commentBias').textContent = structuredComment.bias || '';
+                document.getElementById('commentFocus').textContent = structuredComment.focus || '';
+                document.getElementById('commentHighlight').textContent = structuredComment.highlight || '';
+
+                if (structuredComment.supplement) {
+                    document.getElementById('commentSupplement').textContent = structuredComment.supplement;
+                    document.getElementById('commentSupplementSection').style.display = 'block';
+                } else {
+                    document.getElementById('commentSupplementSection').style.display = 'none';
+                }
+
+                structuredDiv.style.display = 'block';
             } else {
-                commentDiv.style.display = 'none';
+                structuredDiv.style.display = 'none';
+
+                // Fallback to legacy comment
+                const commentDiv = document.getElementById('raceComment');
+                if (result.race_comment) {
+                    commentDiv.textContent = result.race_comment;
+                    commentDiv.style.display = 'block';
+                } else {
+                    commentDiv.style.display = 'none';
+                }
+            }
+
+            // v2.2: Update history viewing badge
+            const badge = document.getElementById('historyViewingBadge');
+            if (isViewingHistory) {
+                badge.classList.remove('hidden');
+            } else {
+                badge.classList.add('hidden');
             }
 
             // Sort entries
-            const entries = [...result.entries];
-            sortEntries(entries);
+            let entries = [...result.entries];
+
+            // v2.2: Apply filters
+            if (filterBigChange) {
+                // Sort by magnitude of rank change
+                entries.sort((a, b) => {
+                    const changeA = Math.abs(currentMode === 'win' ? (a.rank_change_win || 0) : (a.rank_change_in3 || 0));
+                    const changeB = Math.abs(currentMode === 'win' ? (b.rank_change_win || 0) : (b.rank_change_in3 || 0));
+                    return changeB - changeA;
+                });
+            } else {
+                sortEntries(entries);
+            }
+
+            // v2.2: Compute adjusted ranks for highlighting
+            const rankedEntries = [...entries].sort((a, b) => {
+                const rankA = currentMode === 'win' ? (a.adj_rank_win || 99) : (a.adj_rank_in3 || 99);
+                const rankB = currentMode === 'win' ? (b.adj_rank_win || 99) : (b.adj_rank_in3 || 99);
+                return rankA - rankB;
+            });
+            const topNIds = new Set(rankedEntries.slice(0, topNHighlight).map(e => e.horse_id));
+
+            // v2.2: Filter to top-N only if enabled
+            if (filterTopNOnly && topNHighlight > 0) {
+                entries = entries.filter(e => topNIds.has(e.horse_id));
+            }
 
             entries.forEach((entry, idx) => {
                 const row = document.createElement('tr');
+                row.className = 'horse-row';
                 const profileRowId = `profile-row-${entry.umaban}`;
 
-                // Get values based on current tab
-                const baseRank = currentTab === 'win' ? entry.base_rank_win : entry.base_rank_in3;
-                const adjRank = currentTab === 'win' ? entry.adj_rank_win : entry.adj_rank_in3;
-                const rankChange = currentTab === 'win' ? entry.rank_change_win : entry.rank_change_in3;
-                const baseP = currentTab === 'win' ? entry.base_p_win : entry.base_p_in3;
-                const adjP = currentTab === 'win' ? entry.adj_p_win : entry.adj_p_in3;
+                // Get values based on current mode
+                const baseRank = currentMode === 'win' ? entry.base_rank_win : entry.base_rank_in3;
+                const adjRank = currentMode === 'win' ? entry.adj_rank_win : entry.adj_rank_in3;
+                const rankChange = currentMode === 'win' ? entry.rank_change_win : entry.rank_change_in3;
+                const baseP = currentMode === 'win' ? entry.base_p_win : entry.base_p_in3;
+                const adjP = currentMode === 'win' ? entry.adj_p_win : entry.adj_p_in3;
+
+                // v2.2: Top-N highlighting
+                if (topNHighlight > 0 && adjRank <= topNHighlight) {
+                    row.classList.add(`top-${adjRank}`);
+                } else if (filterTopNOnly) {
+                    row.classList.add('dim');
+                }
 
                 // Rank change styling
                 let rankChangeClass = 'rank-neutral';
@@ -1202,26 +1688,65 @@
                     rankChangeText = `↓${Math.abs(rankChange)}`;
                 }
 
-                // Reason tags
-                const reasonTags = (entry.reasons || []).map(r => {
-                    const isPositive = r.includes('有利') || r.includes('逃げ想定');
-                    const isNegative = r.includes('不利') || r.includes('減衰');
-                    let tagClass = 'reason-tag';
-                    if (isPositive) tagClass += ' positive';
-                    if (isNegative) tagClass += ' negative';
-                    return `<span class="${tagClass}">${r}</span>`;
-                }).join('');
+                // v2.2: Probability change display
+                const probDiff = (adjP || 0) - (baseP || 0);
+                let diffClass = 'neutral';
+                let diffSign = '';
+                if (probDiff > 0.001) {
+                    diffClass = 'positive';
+                    diffSign = '+';
+                } else if (probDiff < -0.001) {
+                    diffClass = 'negative';
+                }
 
-                // Horse tags
-                const horseTags = (entry.tags || []).map(t => {
+                const probChangeHtml = `
+                    <div class="prob-change">
+                        <div class="values">
+                            <span class="before">${((baseP || 0) * 100).toFixed(1)}%</span>
+                            <span class="arrow">→</span>
+                            <span class="after">${((adjP || 0) * 100).toFixed(1)}%</span>
+                        </div>
+                        <span class="diff ${diffClass}">${diffSign}${(probDiff * 100).toFixed(2)}%</span>
+                    </div>
+                `;
+
+                // v2.2: Structured reason tags
+                const reasonsStructured = entry.reasons_structured || {};
+                let reasonTagsHtml = '';
+
+                if (Object.keys(reasonsStructured).length > 0) {
+                    reasonTagsHtml = '<div class="reason-structured">';
+                    for (const [cat, data] of Object.entries(reasonsStructured)) {
+                        const effectIcon = data.effect === 'positive' ? '▲' : (data.effect === 'negative' ? '▼' : '');
+                        reasonTagsHtml += `<span class="reason-cat-tag ${cat}">${effectIcon} ${data.text}</span>`;
+                    }
+                    reasonTagsHtml += '</div>';
+                } else {
+                    // Fallback to legacy reasons
+                    reasonTagsHtml = (entry.reasons || []).map(r => {
+                        const isPositive = r.includes('有利') || r.includes('逃げ想定');
+                        const isNegative = r.includes('不利') || r.includes('減衰');
+                        let tagClass = 'reason-tag';
+                        if (isPositive) tagClass += ' positive';
+                        if (isNegative) tagClass += ' negative';
+                        return `<span class="${tagClass}">${r}</span>`;
+                    }).join('');
+                }
+
+                // Horse tags (v2.2: with priority ordering)
+                const tagOrder = ['逃げ想定', '先行想定', '差し想定', '追込想定', '近走好調', '末脚○', '距離◎', 'コース◎'];
+                const sortedTags = [...(entry.tags || [])].sort((a, b) => {
+                    const idxA = tagOrder.findIndex(t => a.includes(t.replace('想定', '')));
+                    const idxB = tagOrder.findIndex(t => b.includes(t.replace('想定', '')));
+                    return (idxA === -1 ? 99 : idxA) - (idxB === -1 ? 99 : idxB);
+                });
+
+                const horseTags = sortedTags.map(t => {
                     let tagClass = 'horse-tag';
                     if (t.includes('逃げ') || t.includes('先行')) tagClass += ' front';
                     if (t.includes('差し') || t.includes('追込')) tagClass += ' closer';
                     return `<span class="${tagClass}">${t}</span>`;
                 }).join('');
-
-                // Probability bar
-                const probPercent = Math.min(100, (adjP || 0) * 100 * 5);
 
                 // Check if profile exists
                 const hasProfile = entry.profile && (entry.profile.overview || entry.profile.comments?.length > 0);
@@ -1235,16 +1760,8 @@
                     <td style="text-align: center;">${baseRank || '-'}</td>
                     <td style="text-align: center; font-weight: bold;">${adjRank || '-'}</td>
                     <td class="rank-change ${rankChangeClass}">${rankChangeText}</td>
-                    <td>${((baseP || 0) * 100).toFixed(1)}%</td>
-                    <td>
-                        <div class="prob-bar">
-                            <div class="prob-bar-bg">
-                                <div class="prob-bar-fill" style="width: ${probPercent}%"></div>
-                            </div>
-                            <span class="prob-value">${((adjP || 0) * 100).toFixed(1)}%</span>
-                        </div>
-                    </td>
-                    <td class="reasons">${reasonTags || '-'}</td>
+                    <td>${probChangeHtml}</td>
+                    <td class="reasons">${reasonTagsHtml || '-'}</td>
                     <td>
                         ${hasProfile
                             ? `<span class="expand-btn" onclick="toggleProfile('${profileRowId}')" id="btn-${profileRowId}">詳細 ▼</span>`
@@ -1255,7 +1772,7 @@
 
                 tbody.appendChild(row);
 
-                // Add profile row (hidden by default)
+                // Add profile row (hidden by default) - v2.2: improved layout
                 if (hasProfile) {
                     const profileRow = document.createElement('tr');
                     profileRow.id = profileRowId;
@@ -1264,8 +1781,15 @@
                     const profile = entry.profile;
                     const evidenceId = `evidence-${entry.umaban}`;
 
-                    // Build comments HTML
-                    const commentsHtml = (profile.comments || []).map(c =>
+                    // v2.2: Sort and prioritize comments
+                    const commentOrder = ['近走好調', '近走安定', '末脚鋭い', '瞬発力あり', '距離◎', 'コース◎', 'G1経験'];
+                    const sortedComments = [...(profile.comments || [])].sort((a, b) => {
+                        const idxA = commentOrder.findIndex(c => a.includes(c));
+                        const idxB = commentOrder.findIndex(c => b.includes(c));
+                        return (idxA === -1 ? 99 : idxA) - (idxB === -1 ? 99 : idxB);
+                    });
+
+                    const commentsHtml = sortedComments.map(c =>
                         `<span class="profile-comment">${c}</span>`
                     ).join('');
 
@@ -1279,7 +1803,7 @@
                     ).join('');
 
                     profileRow.innerHTML = `
-                        <td colspan="12" class="profile-cell">
+                        <td colspan="11" class="profile-cell">
                             <div class="profile-content">
                                 <div class="profile-section">
                                     <div class="profile-section-title">概要</div>
@@ -1512,14 +2036,22 @@
                             scenarioTags.push(`馬場:${scenario.track_condition}`);
                         }
 
+                        // v2.2: Add has_notes badge and mini_summary
+                        const hasNotesBadge = item.has_notes ? '<span class="has-notes-badge">メモあり</span>' : '';
+                        const miniSummary = item.rank_mini_summary ? `<div class="mini-summary">${item.rank_mini_summary}</div>` : '';
+
                         div.innerHTML = `
-                            <div><strong>${item.place || ''} ${item.race_no ? item.race_no + 'R' : ''} ${item.race_name || item.race_id}</strong></div>
+                            <div class="meta">
+                                <strong>${item.place || ''} ${item.race_no ? item.race_no + 'R' : ''} ${item.race_name || item.race_id}</strong>
+                                ${hasNotesBadge}
+                            </div>
                             <div class="history-meta">${item.date} | ${formattedTime}</div>
                             ${scenarioTags.length > 0 ? `
                                 <div class="history-scenario">
                                     ${scenarioTags.map(t => `<span class="tag">${t}</span>`).join('')}
                                 </div>
                             ` : ''}
+                            ${miniSummary}
                         `;
 
                         listEl.appendChild(div);
@@ -1542,6 +2074,9 @@
                     showError('履歴の読み込みに失敗', data.error);
                     return;
                 }
+
+                // v2.2: Set history viewing state
+                isViewingHistory = true;
 
                 // Set as adjusted result and display
                 adjustedResult = data;
