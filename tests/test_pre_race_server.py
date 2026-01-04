@@ -340,12 +340,12 @@ class TestOutputPathStructure:
         race_date = "2024-12-29"
         race_id = "202412290605"
 
-        expected_pattern = f"artifacts/pre_race/outputs/{race_date}/{race_id}/"
-
-        # Verify the pattern is correct
-        from pathlib import Path
+        # Verify the pattern is correct using Path comparison (OS-independent)
         output_dir = Path("artifacts") / "pre_race" / "outputs" / race_date / race_id
-        assert str(output_dir) == f"artifacts/pre_race/outputs/{race_date}/{race_id}"
+        expected_dir = Path("artifacts/pre_race/outputs") / race_date / race_id
+        assert output_dir == expected_dir
+        # Also verify posix representation for readability
+        assert output_dir.as_posix() == f"artifacts/pre_race/outputs/{race_date}/{race_id}"
 
 
 # =============================================================================
