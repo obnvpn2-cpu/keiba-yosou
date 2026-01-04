@@ -1,0 +1,136 @@
+{
+  "race_id": "demo_001",
+  "date": "demo",
+  "place": "東京",
+  "race_no": 11,
+  "name": "デモ記念（G1）",
+  "grade": "G1",
+  "race_class": "G1",
+  "course": "芝",
+  "distance": 2400,
+  "track_condition": "良",
+  "head_count": 6,
+  "start_time": "15:40",
+  "entries": [
+    {
+      "horse_id": "demo_horse_001",
+      "umaban": 1,
+      "name": "デモサンプル",
+      "jockey": "デモ騎手A",
+      "trainer": "デモ厩舎",
+      "sex": "牡",
+      "age": 4,
+      "p_win": 0.25,
+      "p_in3": 0.55,
+      "rank_win": 1,
+      "rank_in3": 1,
+      "run_style": "先行",
+      "profile": {
+        "overview": "距離実績豊富な4歳牡馬。近走安定。",
+        "comments": ["近走安定", "距離◎"],
+        "evidence": [
+          {"key": "n_starts_dist_cat", "value": 8, "reason": "中長距離で8戦経験"}
+        ]
+      }
+    },
+    {
+      "horse_id": "demo_horse_002",
+      "umaban": 2,
+      "name": "テストホース",
+      "jockey": "デモ騎手B",
+      "trainer": "デモ厩舎B",
+      "sex": "牝",
+      "age": 5,
+      "p_win": 0.20,
+      "p_in3": 0.50,
+      "rank_win": 2,
+      "rank_in3": 2,
+      "run_style": "差し",
+      "profile": {
+        "overview": "末脚鋭い差し馬。G1経験あり。",
+        "comments": ["末脚鋭い", "G1経験"],
+        "evidence": []
+      }
+    },
+    {
+      "horse_id": "demo_horse_003",
+      "umaban": 3,
+      "name": "サンプルランナー",
+      "jockey": "デモ騎手C",
+      "trainer": "デモ厩舎C",
+      "sex": "牡",
+      "age": 5,
+      "p_win": 0.18,
+      "p_in3": 0.45,
+      "rank_win": 3,
+      "rank_in3": 3,
+      "run_style": "逃げ",
+      "profile": {
+        "overview": "テンのスピードがあるペースメーカー。",
+        "comments": ["逃げ想定"],
+        "evidence": []
+      }
+    },
+    {
+      "horse_id": "demo_horse_004",
+      "umaban": 4,
+      "name": "モックアップ",
+      "jockey": "デモ騎手D",
+      "trainer": "デモ厩舎D",
+      "sex": "牡",
+      "age": 4,
+      "p_win": 0.15,
+      "p_in3": 0.40,
+      "rank_win": 4,
+      "rank_in3": 4,
+      "run_style": "先行",
+      "profile": {
+        "overview": "安定した先行力。堅実に結果を残す。",
+        "comments": ["先行安定"],
+        "evidence": []
+      }
+    },
+    {
+      "horse_id": "demo_horse_005",
+      "umaban": 5,
+      "name": "ダミーステイヤー",
+      "jockey": "デモ騎手E",
+      "trainer": "デモ厩舎E",
+      "sex": "セ",
+      "age": 6,
+      "p_win": 0.12,
+      "p_in3": 0.35,
+      "rank_win": 5,
+      "rank_in3": 5,
+      "run_style": "追込",
+      "profile": {
+        "overview": "長距離得意のステイヤー。",
+        "comments": ["長距離◎"],
+        "evidence": []
+      }
+    },
+    {
+      "horse_id": "demo_horse_006",
+      "umaban": 6,
+      "name": "サンプルクローザー",
+      "jockey": "デモ騎手F",
+      "trainer": "デモ厩舎F",
+      "sex": "牡",
+      "age": 3,
+      "p_win": 0.10,
+      "p_in3": 0.30,
+      "rank_win": 6,
+      "rank_in3": 6,
+      "run_style": "差し",
+      "profile": {
+        "overview": "3歳馬で上積み期待。末脚に磨きがかかる。",
+        "comments": ["上がり目"],
+        "evidence": []
+      }
+    }
+  ],
+  "features_version": "demo",
+  "mode": "demo",
+  "generated_at": "2024-01-01T00:00:00",
+  "note": "This is demo data for UI testing"
+}

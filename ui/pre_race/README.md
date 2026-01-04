@@ -1,16 +1,87 @@
-# Pre-race Scenario UI v2.0
+# Pre-race Scenario UI v2.3
 
 シナリオを入力してベース予測を補正し、結果を確認・保存するUIです。
 人間の思考を補助するツールとして設計されています。
 
-**v2.0の主な変更点:**
+## クイックスタート（日次運用）
+
+```bash
+# Step 1: 環境チェック（必須）
+python scripts/run_pre_race_day.py --date 2024-12-29
+
+# Step 2: UI起動（チェック通過後）
+python ui/pre_race/server.py
+
+# Step 3: ブラウザで開く
+# http://localhost:8080
+```
+
+**デモモードで試す場合:**
+```bash
+python scripts/run_pre_race_day.py --demo
+```
+
+## 日次運用の流れ（3〜5ステップ）
+
+1. **前日: 素材生成**
+   ```bash
+   python scripts/generate_pre_race_materials.py \
+       --db netkeiba.db --date 2024-12-29 \
+       --out artifacts/pre_race/2024-12-29
+   ```
+
+2. **当日: チェック**
+   ```bash
+   python scripts/run_pre_race_day.py --date 2024-12-29
+   ```
+
+3. **当日: UI起動 → レース選択 → シナリオ入力 → 保存**
+
+## artifacts ディレクトリ規約
+
+```
+artifacts/pre_race/
+├── demo/                      # デモデータ（git管理）
+│   ├── summary_demo.json
+│   └── race_demo_001.json
+├── 2024-12-29/                # 日付ごとの入力素材（gitignore）
+│   ├── summary_2024-12-29.json
+│   └── race_202412290605.json
+└── outputs/                   # ユーザー保存履歴（gitignore）
+    └── 2024-12-29/
+        └── 202412290605/
+            └── 20241229_150000.json
+```
+
+| ディレクトリ | 内容 | git管理 |
+|--------------|------|---------|
+| `demo/` | UI動作確認用のサンプルデータ | ✓ コミット対象 |
+| `YYYY-MM-DD/` | 日付ごとの予測素材（generate_pre_race_materials.py出力） | ✗ gitignore |
+| `outputs/` | UI保存結果（シナリオ履歴） | ✗ gitignore |
+
+## バージョン履歴
+
+**v2.3 (Step A/B):**
+- 確率差分表示の整合（pt表記）
+- エラー時のアクションガイダンス
+- 履歴ミニ要約を◎○▲記号に変更
+- ワンコマンドチェッカー（run_pre_race_day.py）追加
+- デモデータ対応
+
+**v2.2:**
+- 構造化理由タグ（カテゴリ別）
+- 構造化全体コメント（概況/バイアス/展開/注目）
+- WIN/IN3モード切替
+- Top-N強調表示
+
+**v2.0:**
 - トラックバイアスを2軸に分離（進路バイアス + 脚質バイアス）
 - メモからの提案チップ機能（自動反映せず、クリックで反映）
 - テーブルヘッダークリックでソート
 - レース選択にメタ情報表示
 - 全体コメント・馬タグ表示
 
-## 起動方法
+## 起動方法（手動）
 
 ```bash
 # プロジェクトルートから

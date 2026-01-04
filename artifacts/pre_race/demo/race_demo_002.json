@@ -1,0 +1,115 @@
+{
+  "race_id": "demo_002",
+  "date": "demo",
+  "place": "中山",
+  "race_no": 10,
+  "name": "デモステークス",
+  "grade": "OP",
+  "race_class": "OP",
+  "course": "芝",
+  "distance": 1800,
+  "track_condition": "稍重",
+  "head_count": 5,
+  "start_time": "14:50",
+  "entries": [
+    {
+      "horse_id": "demo_horse_101",
+      "umaban": 1,
+      "name": "テストスプリンター",
+      "jockey": "デモ騎手G",
+      "trainer": "デモ厩舎G",
+      "sex": "牡",
+      "age": 4,
+      "p_win": 0.28,
+      "p_in3": 0.60,
+      "rank_win": 1,
+      "rank_in3": 1,
+      "run_style": "逃げ",
+      "profile": {
+        "overview": "テンのスピードが武器。中山コース◎。",
+        "comments": ["逃げ想定", "コース◎"],
+        "evidence": []
+      }
+    },
+    {
+      "horse_id": "demo_horse_102",
+      "umaban": 2,
+      "name": "サンプルマイラー",
+      "jockey": "デモ騎手H",
+      "trainer": "デモ厩舎H",
+      "sex": "牝",
+      "age": 4,
+      "p_win": 0.24,
+      "p_in3": 0.52,
+      "rank_win": 2,
+      "rank_in3": 2,
+      "run_style": "先行",
+      "profile": {
+        "overview": "マイル前後がベスト。道悪もこなす。",
+        "comments": ["距離◎", "道悪○"],
+        "evidence": []
+      }
+    },
+    {
+      "horse_id": "demo_horse_103",
+      "umaban": 3,
+      "name": "デモストライダー",
+      "jockey": "デモ騎手I",
+      "trainer": "デモ厩舎I",
+      "sex": "牡",
+      "age": 5,
+      "p_win": 0.20,
+      "p_in3": 0.48,
+      "rank_win": 3,
+      "rank_in3": 3,
+      "run_style": "差し",
+      "profile": {
+        "overview": "安定感のある差し馬。重馬場得意。",
+        "comments": ["重馬場◎"],
+        "evidence": []
+      }
+    },
+    {
+      "horse_id": "demo_horse_104",
+      "umaban": 4,
+      "name": "モックランナー",
+      "jockey": "デモ騎手J",
+      "trainer": "デモ厩舎J",
+      "sex": "牡",
+      "age": 4,
+      "p_win": 0.16,
+      "p_in3": 0.38,
+      "rank_win": 4,
+      "rank_in3": 4,
+      "run_style": "先行",
+      "profile": {
+        "overview": "先行力はあるが勝ち味が遅い。",
+        "comments": ["先行想定"],
+        "evidence": []
+      }
+    },
+    {
+      "horse_id": "demo_horse_105",
+      "umaban": 5,
+      "name": "テストクローザー",
+      "jockey": "デモ騎手K",
+      "trainer": "デモ厩舎K",
+      "sex": "牡",
+      "age": 5,
+      "p_win": 0.12,
+      "p_in3": 0.30,
+      "rank_win": 5,
+      "rank_in3": 5,
+      "run_style": "追込",
+      "profile": {
+        "overview": "追込一手。展開待ちの一発狙い。",
+        "comments": ["追込想定", "展開待ち"],
+        "evidence": []
+      }
+    }
+  ],
+  "features_version": "demo",
+  "mode": "demo",
+  "generated_at": "2024-01-01T00:00:00",
+  "note": "This is demo data for UI testing"
+}
