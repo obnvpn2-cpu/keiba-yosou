@@ -357,13 +357,18 @@ def generate_race_comment_structured(
     adjusted_entries: List[Dict[str, Any]]
 ) -> Dict[str, Any]:
     """
-    v2.2: 構造化された全体コメントを生成
+    v2.2/A4: 構造化された全体コメントを生成
 
     セクション:
     1) レース概況（頭数/距離/馬場/想定ペース）
     2) バイアス見立て（lane_bias/style_bias の意味と今回の入力）
     3) 展開の焦点（逃げ先行の数/隊列のイメージ：メモ由来 race_flow 反映分のみ）
     4) 注目ポイント（上位入れ替わり要因：理由カテゴリから要約）
+
+    A4: 捏造禁止ルール:
+    - 全ての情報は入力データ（race_data, scenario, entries）からのみ生成
+    - DB/特徴量に存在しない情報（血統等）は含めない
+    - 推測・憶測は含めない（「〜かもしれない」等は書かない）
     """
     race_name = race_data.get("name") or race_data.get("race_name") or ""
     distance = race_data.get("distance", 0)
@@ -479,9 +484,9 @@ def generate_race_comment_structured(
 
 def generate_rank_mini_summary(adjusted_entries: List[Dict[str, Any]]) -> str:
     """
-    v2.2: 履歴用のミニ要約を生成
+    v2.2/A3: 履歴用のミニ要約を生成（直感的な形式）
 
-    例: "1位 3→1, 2位 1→2, 3位 5→3"
+    例: "◎ Horse1 (3→1 ↑2), ○ Horse2 (1→2), ▲ Horse3 (5→3 ↑2)"
     """
     # 補正後ランキングでソート
     sorted_entries = sorted(
@@ -489,18 +494,23 @@ def generate_rank_mini_summary(adjusted_entries: List[Dict[str, Any]]) -> str:
         key=lambda x: x.get("adj_rank_win", 99)
     )
 
+    rank_symbols = ["◎", "○", "▲", "△", "☆"]
     summary_parts = []
-    for i, entry in enumerate(sorted_entries[:3], 1):
-        base_rank = entry.get("base_rank_win", "?")
-        adj_rank = entry.get("adj_rank_win", "?")
+
+    for i, entry in enumerate(sorted_entries[:3], 0):
+        base_rank = entry.get("base_rank_win", 99)
+        adj_rank = entry.get("adj_rank_win", 99)
         name = entry.get("name", "?")
+        symbol = rank_symbols[i] if i < len(rank_symbols) else ""
 
         if base_rank != adj_rank:
-            summary_parts.append(f"{i}位 {name}({base_rank}→{adj_rank})")
+            change = base_rank - adj_rank  # 正=順位上昇
+            arrow = f"↑{change}" if change > 0 else f"↓{abs(change)}"
+            summary_parts.append(f"{symbol}{name}({base_rank}→{adj_rank} {arrow})")
         else:
-            summary_parts.append(f"{i}位 {name}({adj_rank})")
+            summary_parts.append(f"{symbol}{name}({adj_rank})")
 
-    return ", ".join(summary_parts)
+    return " ".join(summary_parts)
 
 
 def apply_scenario_adjustment(
@@ -787,35 +797,50 @@ class ScenarioUIHandler(SimpleHTTPRequestHandler):
         self.wfile.write(response.encode("utf-8"))
 
     def _handle_list_dates(self, parsed):
-        """日付フォルダ一覧を返す"""
+        """日付フォルダ一覧を返す (A2: エラー時のガイダンス付き)"""
         artifacts_dir = PROJECT_ROOT / "artifacts" / "pre_race"
         dates = []
 
-        if artifacts_dir.exists():
-            for date_dir in sorted(artifacts_dir.iterdir(), reverse=True):
-                if date_dir.is_dir() and date_dir.name != "outputs":
-                    # Check for summary file or race files
-                    summary_file = date_dir / f"summary_{date_dir.name}.json"
-                    race_files = list(date_dir.glob("race_*.json"))
+        if not artifacts_dir.exists():
+            self._send_json({
+                "dates": [],
+                "error": "artifacts/pre_race/ ディレクトリが見つかりません",
+                "guidance": "python scripts/generate_pre_race_materials.py --date YYYY-MM-DD を実行してデータを生成してください。",
+            })
+            return
 
-                    if summary_file.exists() or race_files:
-                        n_races = 0
-                        # Try to get race count from summary
-                        if summary_file.exists():
-                            try:
-                                with open(summary_file, "r", encoding="utf-8") as f:
-                                    summary = json.load(f)
-                                n_races = summary.get("n_races", len(summary.get("races", [])))
-                            except Exception:
-                                n_races = len(race_files)
-                        else:
+        for date_dir in sorted(artifacts_dir.iterdir(), reverse=True):
+            if date_dir.is_dir() and date_dir.name != "outputs":
+                # Check for summary file or race files
+                summary_file = date_dir / f"summary_{date_dir.name}.json"
+                race_files = list(date_dir.glob("race_*.json"))
+
+                if summary_file.exists() or race_files:
+                    n_races = 0
+                    # Try to get race count from summary
+                    if summary_file.exists():
+                        try:
+                            with open(summary_file, "r", encoding="utf-8") as f:
+                                summary = json.load(f)
+                            n_races = summary.get("n_races", len(summary.get("races", [])))
+                        except Exception:
                             n_races = len(race_files)
+                    else:
+                        n_races = len(race_files)
 
-                        dates.append({
-                            "date": date_dir.name,
-                            "n_races": n_races,
-                            "has_summary": summary_file.exists(),
-                        })
+                    dates.append({
+                        "date": date_dir.name,
+                        "n_races": n_races,
+                        "has_summary": summary_file.exists(),
+                    })
+
+        if not dates:
+            self._send_json({
+                "dates": [],
+                "warning": "日付フォルダが見つかりません",
+                "guidance": "python scripts/generate_pre_race_materials.py --date YYYY-MM-DD を実行してデータを生成してください。",
+            })
+            return
 
         self._send_json({"dates": dates[:30]})  # Latest 30 dates
 
@@ -981,23 +1006,43 @@ class ScenarioUIHandler(SimpleHTTPRequestHandler):
         return races
 
     def _handle_load_race(self, parsed):
-        """レースデータを読み込む"""
+        """レースデータを読み込む (A2: エラー時のガイダンス付き)"""
         query = parse_qs(parsed.query)
         race_path = query.get("path", [""])[0]
 
         if not race_path:
-            self._send_json({"error": "path parameter required"}, 400)
+            self._send_json({
+                "error": "path parameter required",
+                "guidance": "レースを選択してください。",
+            }, 400)
             return
 
         full_path = PROJECT_ROOT / race_path
         if not full_path.exists():
-            self._send_json({"error": f"File not found: {race_path}"}, 404)
+            self._send_json({
+                "error": f"レースファイルが見つかりません: {race_path}",
+                "guidance": "python scripts/generate_pre_race_materials.py --date YYYY-MM-DD を実行してデータを生成してください。",
+            }, 404)
             return
 
         try:
             with open(full_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
+
+            # A2: 必須フィールドの検証
+            if "entries" not in data or len(data.get("entries", [])) == 0:
+                self._send_json({
+                    "error": "レースデータにentriesがありません",
+                    "guidance": "レースJSONファイルが正しく生成されているか確認してください。",
+                }, 400)
+                return
+
             self._send_json(data)
+        except json.JSONDecodeError as e:
+            self._send_json({
+                "error": f"JSONパースエラー: {e}",
+                "guidance": "レースJSONファイルが破損している可能性があります。再生成してください。",
+            }, 500)
         except Exception as e:
             self._send_json({"error": str(e)}, 500)
 
