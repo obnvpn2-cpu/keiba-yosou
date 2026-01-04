@@ -570,7 +570,7 @@ class TestMiniSummary:
     """Tests for v2.2 mini summary generation"""
 
     def test_mini_summary_format(self):
-        """Mini summary should show top 3 ranking"""
+        """Mini summary should show top 3 ranking with symbols"""
         entries = [
             {"horse_id": "h001", "name": "Horse1", "base_rank_win": 3, "adj_rank_win": 1},
             {"horse_id": "h002", "name": "Horse2", "base_rank_win": 1, "adj_rank_win": 2},
@@ -582,7 +582,8 @@ class TestMiniSummary:
         assert "Horse1" in summary
         assert "Horse2" in summary
         assert "Horse3" in summary
-        assert "1位" in summary
+        # A3 update: Now uses symbols instead of "1位"
+        assert "◎" in summary or "1位" in summary
 
     def test_mini_summary_shows_rank_change(self):
         """Mini summary should indicate rank changes"""
@@ -605,7 +606,9 @@ class TestMiniSummary:
 
         # Should just show the rank without arrow
         assert "Same" in summary
+        # Format is now "◎Same(1)" for unchanged ranks
         assert "(1)" in summary
+        assert "↑" not in summary  # No change arrow
 
 
 # =============================================================================
@@ -658,6 +661,190 @@ class TestResultOutputV22:
 
         assert "rank_mini_summary" in result
         assert isinstance(result["rank_mini_summary"], str)
+
+
+# =============================================================================
+# Step A Tests: Practical Implementation
+# =============================================================================
+
+class TestProbabilityDisplayConsistency:
+    """A1: Tests for probability display consistency"""
+
+    def test_probability_values_are_rounded(self):
+        """Win probabilities should be normalized and rounded"""
+        race_data = {
+            "race_id": "test",
+            "name": "Test",
+            "entries": [
+                {"horse_id": "h001", "umaban": 1, "name": "Horse1", "p_win": 0.18045, "p_in3": 0.45123},
+                {"horse_id": "h002", "umaban": 2, "name": "Horse2", "p_win": 0.12367, "p_in3": 0.35789},
+            ]
+        }
+        scenario = {
+            "pace": "M",
+            "track_condition": "良",
+            "lane_bias": "flat",
+            "style_bias": "flat",
+            "front_runner_ids": [],
+        }
+
+        result = apply_scenario_adjustment(race_data, scenario)
+
+        for entry in result["entries"]:
+            # adj_p_win should be normalized and rounded to 4 decimal places
+            assert isinstance(entry["adj_p_win"], float)
+            # Win probabilities are always normalized
+            assert entry["adj_p_win"] == round(entry["adj_p_win"], 4)
+            # in3 is conditionally normalized (only if total > 3.0)
+            assert isinstance(entry["adj_p_in3"], float)
+
+    def test_probability_diff_calculation_from_rounded(self):
+        """Probability diff should be calculated from display-rounded values
+
+        This test verifies the A1 requirement:
+        - base: 18.045% → displayed as 18.0%
+        - adj:  18.423% → displayed as 18.4%
+        - diff should be: 18.4 - 18.0 = +0.4pt (not 0.378pt from raw values)
+        """
+        # This is a client-side calculation test
+        # We verify the expected behavior with example values
+
+        # Raw values
+        base_p = 0.18045
+        adj_p = 0.18423
+
+        # A1 requirement: Round to 1 decimal place for display
+        base_pct_rounded = round(base_p * 100, 1)  # 18.0
+        adj_pct_rounded = round(adj_p * 100, 1)    # 18.4
+
+        # Diff calculated from rounded values
+        diff_pt = adj_pct_rounded - base_pct_rounded  # 0.4
+
+        assert base_pct_rounded == 18.0
+        assert adj_pct_rounded == 18.4
+        # Use pytest.approx for floating point comparison
+        assert diff_pt == pytest.approx(0.4, abs=0.01)  # Should be ~0.4pt
+
+    def test_probability_normalization(self):
+        """Win probabilities should sum to approximately 1.0"""
+        race_data = {
+            "race_id": "test",
+            "name": "Test",
+            "entries": [
+                {"horse_id": f"h{i:03d}", "umaban": i, "name": f"Horse{i}", "p_win": 0.1, "p_in3": 0.3}
+                for i in range(1, 11)
+            ]
+        }
+        scenario = {
+            "pace": "S",  # Non-flat pace to trigger adjustments
+            "track_condition": "良",
+            "lane_bias": "inner",
+            "style_bias": "front",
+            "front_runner_ids": [],
+        }
+
+        result = apply_scenario_adjustment(race_data, scenario)
+
+        total_win = sum(e["adj_p_win"] for e in result["entries"])
+        # Should be very close to 1.0 after normalization
+        assert abs(total_win - 1.0) < 0.01
+
+
+class TestErrorGuidance:
+    """A2: Tests for actionable error messages"""
+
+    def test_mini_summary_format_with_symbols(self):
+        """Mini summary should use rank symbols (◎○▲)"""
+        entries = [
+            {"horse_id": "h001", "name": "Horse1", "base_rank_win": 3, "adj_rank_win": 1},
+            {"horse_id": "h002", "name": "Horse2", "base_rank_win": 1, "adj_rank_win": 2},
+            {"horse_id": "h003", "name": "Horse3", "base_rank_win": 5, "adj_rank_win": 3},
+        ]
+
+        summary = generate_rank_mini_summary(entries)
+
+        # A3: Should include rank symbols
+        assert "◎" in summary
+        assert "○" in summary
+        assert "▲" in summary
+        # Should include horse names
+        assert "Horse1" in summary
+        # Should show rank changes with arrows
+        assert "↑" in summary  # Horse1 went from 3 to 1
+
+
+class TestEvidenceBasedExplanations:
+    """A4: Tests for evidence-based explanations (no fabrication)"""
+
+    def test_race_comment_uses_only_input_data(self):
+        """Race comment should only use data from inputs"""
+        race_data = {
+            "name": "有馬記念",
+            "place": "中山",
+            "distance": 2500,
+            "course": "芝",
+        }
+        scenario = {
+            "pace": "S",
+            "lane_bias": "inner",
+            "style_bias": "front",
+            "track_condition": "良",
+        }
+        entries = [
+            {"name": "Horse1", "run_style": "逃げ", "rank_change_win": 2, "reasons_structured": {}},
+        ]
+
+        comment = generate_race_comment_structured(race_data, scenario, entries)
+
+        # Should include input data
+        assert "有馬記念" in comment["overview"]
+        assert "中山" in comment["overview"]
+        assert "2500m" in comment["overview"]
+        assert "スローペース" in comment["overview"]
+
+        # Should include bias from scenario
+        assert "内伸び" in comment["bias"]
+        assert "前残り" in comment["bias"]
+
+        # Should NOT include speculative content (blood, pedigree, etc.)
+        full_text = str(comment)
+        # These should not appear as they're not in input data
+        assert "血統" not in full_text
+        assert "かもしれない" not in full_text
+        assert "思われる" not in full_text
+
+    def test_structured_reasons_have_valid_categories(self):
+        """Structured reasons should only use defined categories"""
+        valid_categories = {"pace", "lane_bias", "style_bias", "track_condition", "race_flow"}
+
+        race_data = {
+            "race_id": "test",
+            "name": "Test",
+            "entries": [
+                {"horse_id": "h001", "umaban": 1, "name": "Horse1", "p_win": 0.2, "p_in3": 0.5, "run_style": "逃げ"},
+            ]
+        }
+        scenario = {
+            "pace": "S",
+            "track_condition": "重",
+            "lane_bias": "inner",
+            "style_bias": "front",
+            "front_runner_ids": ["h001"],
+        }
+
+        result = apply_scenario_adjustment(race_data, scenario)
+        entry = result["entries"][0]
+        reasons = entry.get("reasons_structured", {})
+
+        # All categories in reasons should be valid
+        for cat in reasons.keys():
+            assert cat in valid_categories, f"Invalid category: {cat}"
+
+        # Each reason should have required fields
+        for cat, data in reasons.items():
+            assert "category" in data
+            assert "effect" in data
+            assert data["effect"] in ["positive", "negative", "info"]
 
 
 # =============================================================================

@@ -1114,17 +1114,36 @@
             setupTableHeaders();
         });
 
-        // Error handling
+        // Error handling with actionable guidance (A2)
         function showError(message, detail = '') {
             const banner = document.getElementById('errorBanner');
             const detailEl = document.getElementById('errorDetail');
-            detailEl.textContent = detail || message;
+
+            // A2: エラー内容に応じた次のアクションを提示
+            let actionGuide = '';
+            const fullMsg = (detail || message).toLowerCase();
+
+            if (fullMsg.includes('not found') || fullMsg.includes('見つかり')) {
+                if (fullMsg.includes('date') || fullMsg.includes('日付')) {
+                    actionGuide = '\n→ 対処: python scripts/generate_pre_race_materials.py --date YYYY-MM-DD を実行してデータを生成してください。';
+                } else if (fullMsg.includes('race') || fullMsg.includes('レース')) {
+                    actionGuide = '\n→ 対処: artifacts/pre_race/<日付>/ にrace_*.jsonファイルがあるか確認してください。';
+                } else if (fullMsg.includes('model') || fullMsg.includes('モデル')) {
+                    actionGuide = '\n→ 対処: python scripts/train_eval_v4.py を実行してモデルを学習してください。';
+                }
+            } else if (fullMsg.includes('summary')) {
+                actionGuide = '\n→ summary.jsonがなくてもレースファイルがあれば動作します。日付を選択し直してください。';
+            } else if (fullMsg.includes('network') || fullMsg.includes('fetch') || fullMsg.includes('connection')) {
+                actionGuide = '\n→ 対処: サーバーが起動しているか確認してください (python ui/pre_race/server.py)';
+            }
+
+            detailEl.innerHTML = (detail || message) + (actionGuide ? `<br><span style="color: #1565c0; font-weight: 500;">${actionGuide}</span>` : '');
             banner.style.display = 'block';
 
-            // Auto-hide after 10 seconds
+            // Auto-hide after 15 seconds (longer for actionable messages)
             setTimeout(() => {
                 banner.style.display = 'none';
-            }, 10000);
+            }, 15000);
         }
 
         function hideError() {
@@ -1688,25 +1707,30 @@
                     rankChangeText = `↓${Math.abs(rankChange)}`;
                 }
 
-                // v2.2: Probability change display
-                const probDiff = (adjP || 0) - (baseP || 0);
+                // v2.2/A1: Probability change display with consistent rounding
+                // 重要: 差分は表示値（丸め後）同士から計算し、桁ズレを防止
+                const basePctRounded = Math.round((baseP || 0) * 1000) / 10;  // 1桁に丸め (例: 18.0)
+                const adjPctRounded = Math.round((adjP || 0) * 1000) / 10;    // 1桁に丸め (例: 18.4)
+                const diffPt = adjPctRounded - basePctRounded;  // 差分を丸め後から計算 (例: +0.4)
+
                 let diffClass = 'neutral';
                 let diffSign = '';
-                if (probDiff > 0.001) {
+                if (diffPt > 0.05) {
                     diffClass = 'positive';
                     diffSign = '+';
-                } else if (probDiff < -0.001) {
+                } else if (diffPt < -0.05) {
                     diffClass = 'negative';
                 }
 
+                // 表示: before → after / ±X.X pt (ptで統一)
                 const probChangeHtml = `
                     <div class="prob-change">
                         <div class="values">
-                            <span class="before">${((baseP || 0) * 100).toFixed(1)}%</span>
+                            <span class="before">${basePctRounded.toFixed(1)}%</span>
                             <span class="arrow">→</span>
-                            <span class="after">${((adjP || 0) * 100).toFixed(1)}%</span>
+                            <span class="after">${adjPctRounded.toFixed(1)}%</span>
                         </div>
-                        <span class="diff ${diffClass}">${diffSign}${(probDiff * 100).toFixed(2)}%</span>
+                        <span class="diff ${diffClass}">${diffSign}${diffPt.toFixed(1)}pt</span>
                     </div>
                 `;
 
