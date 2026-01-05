@@ -1,0 +1,30 @@
+{
+  "date": "demo",
+  "n_races": 2,
+  "races": [
+    {
+      "race_id": "demo_001",
+      "place": "東京",
+      "race_no": 11,
+      "name": "デモ記念（G1）",
+      "grade": "G1",
+      "distance": 2400,
+      "n_entries": 6
+    },
+    {
+      "race_id": "demo_002",
+      "place": "中山",
+      "race_no": 10,
+      "name": "デモステークス",
+      "grade": "OP",
+      "distance": 1800,
+      "n_entries": 5
+    }
+  ],
+  "n_features_used": 0,
+  "models_used": [],
+  "mode": "demo",
+  "features_version": "demo",
+  "generated_at": "2024-01-01T00:00:00",
+  "note": "This is demo data for UI testing without database"
+}
