@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-audit_featurepacks.py - Feature Audit Runner (Step C)
+audit_featurepacks.py - Feature Audit Runner (Step C/D)
 
 全バージョン横断の特徴量棚卸しを実行するスクリプト。
 各バージョン × target × mode を回して、同一フォーマットで成果物を出力する。
@@ -23,11 +23,17 @@ Usage:
     # 特定バージョンのみ
     python scripts/audit_featurepacks.py --db netkeiba.db --versions v4
 
+    # v3/v2/v1も含める
+    python scripts/audit_featurepacks.py --db netkeiba.db --versions v4,v3,v2,v1
+
     # dry-run（検出と計画表示のみ）
     python scripts/audit_featurepacks.py --db netkeiba.db --dry-run
 
     # 詳細統計あり（遅い）
     python scripts/audit_featurepacks.py --db netkeiba.db --no-fast
+
+    # モデルがない場合は自動学習
+    python scripts/audit_featurepacks.py --db netkeiba.db --auto-train
 """
 
 import argparse
@@ -35,6 +41,7 @@ import json
 import logging
 import os
 import sqlite3
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -105,6 +112,74 @@ def print_fail(text: str):
 
 def print_info(text: str):
     print(f"  {Colors.CYAN}→{Colors.RESET} {text}")
+
+
+# =============================================================================
+# Auto-Training
+# =============================================================================
+
+LEGACY_VERSIONS = {"v3", "v2", "v1"}
+
+
+def check_model_exists(models_dir: Path, version: str, target: str) -> bool:
+    """Check if model file exists for given version and target."""
+    model_patterns = [
+        models_dir / f"lgbm_{target}_{version}.txt",
+        models_dir / f"feature_columns_{target}_{version}.json",
+    ]
+    return all(p.exists() for p in model_patterns)
+
+
+def auto_train_legacy(
+    db_path: Path,
+    models_dir: Path,
+    version: str,
+    targets: List[str],
+) -> bool:
+    """
+    Run train_eval_legacy.py for missing models.
+
+    Returns:
+        True if training succeeded
+    """
+    script_path = Path(__file__).parent / "train_eval_legacy.py"
+
+    if not script_path.exists():
+        logger.error(f"Training script not found: {script_path}")
+        return False
+
+    print_info(f"Training models for {version}...")
+
+    cmd = [
+        sys.executable,
+        str(script_path),
+        "--db", str(db_path),
+        "--version", version,
+        "--out", str(models_dir),
+        "--targets", *targets,
+    ]
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            cwd=str(Path(__file__).parent.parent),
+        )
+
+        if result.returncode != 0:
+            logger.error(f"Training failed for {version}")
+            logger.error(f"STDERR: {result.stderr}")
+            print_fail(f"Training failed for {version}")
+            return False
+
+        print_ok(f"Training completed for {version}")
+        return True
+
+    except Exception as e:
+        logger.exception(f"Error running training for {version}")
+        print_fail(f"Training error: {e}")
+        return False
 
 
 # =============================================================================
@@ -278,6 +353,7 @@ def run_audit(
     modes: Optional[List[str]] = None,
     fast: bool = True,
     dry_run: bool = False,
+    auto_train: bool = False,
 ) -> int:
     """
     棚卸しを実行
@@ -288,7 +364,7 @@ def run_audit(
     targets = targets or DEFAULT_TARGETS
     modes = modes or DEFAULT_MODES
 
-    print_header("Feature Audit Runner (Step C)")
+    print_header("Feature Audit Runner (Step C/D)")
     print(f"  Database:   {db_path}")
     print(f"  Models:     {models_dir}")
     print(f"  Output:     {output_dir}")
@@ -296,6 +372,7 @@ def run_audit(
     print(f"  Modes:      {', '.join(modes)}")
     print(f"  Fast mode:  {fast}")
     print(f"  Dry run:    {dry_run}")
+    print(f"  Auto-train: {auto_train}")
 
     # ==========================================================================
     # 1. バージョン検出
@@ -319,6 +396,25 @@ def run_audit(
     if not available_versions:
         print_fail("No available versions to audit")
         return 2
+
+    # ==========================================================================
+    # 1.5. Auto-Training (if requested)
+    # ==========================================================================
+    if auto_train and not dry_run:
+        print_header("1.5. Auto-Training Check")
+
+        for version, _ in available_versions:
+            if version in LEGACY_VERSIONS:
+                missing_targets = []
+                for target in targets:
+                    if not check_model_exists(models_dir, version, target):
+                        missing_targets.append(target)
+
+                if missing_targets:
+                    print_info(f"{version}: Missing models for {missing_targets}")
+                    auto_train_legacy(db_path, models_dir, version, missing_targets)
+                else:
+                    print_ok(f"{version}: All models exist")
 
     # ==========================================================================
     # 2. 実行計画
@@ -572,6 +668,11 @@ Examples:
         help="Detection and planning only, no file output",
     )
     parser.add_argument(
+        "--auto-train",
+        action="store_true",
+        help="Auto-train missing models for legacy versions (v3/v2/v1)",
+    )
+    parser.add_argument(
         "--no-color",
         action="store_true",
         help="Disable colored output",
@@ -612,6 +713,7 @@ Examples:
         modes=modes,
         fast=fast,
         dry_run=args.dry_run,
+        auto_train=args.auto_train,
     )
 
     sys.exit(exit_code)

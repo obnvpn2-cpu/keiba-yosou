@@ -34,6 +34,7 @@ UNSAFE_EXACT = {
     "horse_weight_diff",
     "body_weight",
     "body_weight_diff",
+    "avg_horse_weight",  # Legacy: 当日平均体重
     # 市場情報（オッズ・人気）
     "market_win_odds",
     "market_popularity",
@@ -45,6 +46,11 @@ UNSAFE_EXACT = {
     "finish_position",
     "time_sec",
     "last_3f",
+    # Legacy: 払戻・着順関連
+    "fukusho_payout",
+    "payout_count",
+    "paid_places",
+    "should_have_payout",
 }
 
 # プレフィックス・パターンで unsafe 判定
@@ -52,6 +58,8 @@ UNSAFE_PATTERNS = [
     (r"^market_", "market information (odds/popularity)"),
     (r"^h_body_weight", "race-day body weight information"),
     (r"^odds_", "odds information"),
+    (r"_weight_diff$", "weight difference (race-day info)"),
+    (r"^paid_", "payout/paid information"),
 ]
 
 # warn 判定用パターン（結果情報っぽい名前）
@@ -67,6 +75,14 @@ WARN_PATTERNS = [
     (r"outcome", "contains 'outcome'"),
     (r"target_", "contains 'target_' (label column)"),
     (r"^y_", "starts with 'y_' (possible label)"),
+    # Legacy: 馬場・コンディション（シナリオレイヤーで処理）
+    (r"^track_condition", "track condition (handled by scenario layer)"),
+    (r"^baba_", "track condition (baba, handled by scenario layer)"),
+    # Legacy: ID列（特徴量としては不適切）
+    (r"_id$", "ID column (should not be feature)"),
+    (r"^horse_no$", "horse number (post-draw information)"),
+    (r"^umaban$", "horse number (post-draw information)"),
+    (r"^waku$", "frame number (post-draw information)"),
 ]
 
 
@@ -128,6 +144,12 @@ def _get_unsafe_reason(feature_name: str) -> str:
         return "market popularity information"
     if "finish" in name_lower:
         return "finish result information"
+    if "fukusho" in name_lower or "payout" in name_lower:
+        return "payout information (post-race)"
+    if "paid_" in name_lower:
+        return "paid/payout information (post-race)"
+    if "avg_horse_weight" in name_lower:
+        return "average horse weight (race-day)"
 
     return "pre_race unsafe feature"
 
