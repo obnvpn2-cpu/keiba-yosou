@@ -135,18 +135,19 @@ def auto_train_legacy(
     models_dir: Path,
     version: str,
     targets: List[str],
-) -> bool:
+) -> Tuple[bool, str]:
     """
     Run train_eval_legacy.py for missing models.
 
     Returns:
-        True if training succeeded
+        (success, error_message) tuple
     """
     script_path = Path(__file__).parent / "train_eval_legacy.py"
 
     if not script_path.exists():
-        logger.error(f"Training script not found: {script_path}")
-        return False
+        msg = f"Training script not found: {script_path}"
+        logger.error(msg)
+        return False, msg
 
     print_info(f"Training models for {version}...")
 
@@ -159,27 +160,37 @@ def auto_train_legacy(
         "--targets", *targets,
     ]
 
+    # Windows環境でのencoding問題を回避
+    env = os.environ.copy()
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+
     try:
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",  # デコード失敗時は置換
             cwd=str(Path(__file__).parent.parent),
+            env=env,
         )
 
         if result.returncode != 0:
+            stderr = result.stderr or "(no stderr)"
             logger.error(f"Training failed for {version}")
-            logger.error(f"STDERR: {result.stderr}")
+            logger.error(f"STDERR: {stderr}")
             print_fail(f"Training failed for {version}")
-            return False
+            return False, stderr
 
         print_ok(f"Training completed for {version}")
-        return True
+        return True, ""
 
     except Exception as e:
+        msg = str(e)
         logger.exception(f"Error running training for {version}")
         print_fail(f"Training error: {e}")
-        return False
+        return False, msg
 
 
 # =============================================================================
@@ -400,6 +411,8 @@ def run_audit(
     # ==========================================================================
     # 1.5. Auto-Training (if requested)
     # ==========================================================================
+    train_errors: Dict[str, str] = {}  # version -> error message
+
     if auto_train and not dry_run:
         print_header("1.5. Auto-Training Check")
 
@@ -412,7 +425,9 @@ def run_audit(
 
                 if missing_targets:
                     print_info(f"{version}: Missing models for {missing_targets}")
-                    auto_train_legacy(db_path, models_dir, version, missing_targets)
+                    success, error_msg = auto_train_legacy(db_path, models_dir, version, missing_targets)
+                    if not success:
+                        train_errors[version] = error_msg
                 else:
                     print_ok(f"{version}: All models exist")
 
