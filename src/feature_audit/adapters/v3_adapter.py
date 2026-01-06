@@ -138,21 +138,29 @@ class V3Adapter(BaseFeatureAdapter):
     ) -> List[str]:
         """
         実際に使用される特徴量リストを取得
-        """
-        # 1. feature_columns JSONファイルを探す
-        if self.models_dir:
-            json_paths = [
-                self.models_dir / f"feature_columns_{target}_v3.json",
-                self.models_dir / f"feature_columns_{target}.json",
-            ]
-            for json_path in json_paths:
-                if json_path.exists():
-                    with open(json_path, "r") as f:
-                        features = json.load(f)
-                    logger.info(f"Loaded feature columns from: {json_path}")
-                    return features
 
-        # 2. テーブルから特徴量を取得
+        Note: version無しファイルへのfallbackは禁止。
+        必ずversion付きファイル (feature_columns_{target}_v3.json) を参照する。
+        """
+        # 1. version付きfeature_columns JSONファイルを探す（fallback禁止）
+        if self.models_dir:
+            json_path = self.models_dir / f"feature_columns_{target}_v3.json"
+            if json_path.exists():
+                with open(json_path, "r", encoding="utf-8") as f:
+                    features = json.load(f)
+                logger.info(f"Loaded feature columns from: {json_path}")
+                return features
+            else:
+                # version無しファイルがあっても使わない
+                fallback_path = self.models_dir / f"feature_columns_{target}.json"
+                if fallback_path.exists():
+                    logger.warning(
+                        f"[v3] Found version-less file {fallback_path.name} but NOT using it. "
+                        f"Please run train_eval_legacy.py --version v3 to generate v3-specific files."
+                    )
+
+        # 2. テーブルから特徴量を取得（モデルファイルがない場合のみ）
+        logger.warning(f"[v3] No feature_columns_{target}_v3.json found, using table columns")
         return self.list_feature_columns(conn, mode, target)
 
     def get_feature_matrix_sample(

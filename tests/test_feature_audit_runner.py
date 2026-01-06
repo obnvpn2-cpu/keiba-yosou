@@ -623,6 +623,156 @@ class TestAutoTraining:
         assert "v1" in LEGACY_VERSIONS
         assert "v4" not in LEGACY_VERSIONS
 
+    def test_auto_train_legacy_returns_tuple(self, tmp_path):
+        """auto_train_legacy should return (success, error_message) tuple"""
+        from scripts.audit_featurepacks import auto_train_legacy
+
+        # Call with non-existent script should return tuple
+        result = auto_train_legacy(
+            db_path=tmp_path / "nonexistent.db",
+            models_dir=tmp_path,
+            version="v3",
+            targets=["target_win"],
+        )
+
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+        success, error_msg = result
+        assert isinstance(success, bool)
+        assert isinstance(error_msg, str)
+
+
+# =============================================================================
+# Test: Version-less Fallback Prohibition (P0-3)
+# =============================================================================
+
+class TestVersionLessFallbackProhibition:
+    """Tests to ensure version-less file fallback is prohibited"""
+
+    def test_v3_adapter_no_fallback(self, tmp_path):
+        """V3 adapter should NOT use version-less feature_columns"""
+        from src.feature_audit.adapters.v3_adapter import V3Adapter
+        import sqlite3
+
+        # Create a mock models directory with ONLY version-less file
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+
+        # Create version-less file (should NOT be used)
+        version_less = models_dir / "feature_columns_target_win.json"
+        version_less.write_text('["old_feature1", "old_feature2"]')
+
+        # Create a mock database with feature_table_v3
+        db_path = tmp_path / "test.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("""
+            CREATE TABLE feature_table_v3 (
+                race_id TEXT,
+                horse_id TEXT,
+                new_feature1 REAL,
+                new_feature2 REAL
+            )
+        """)
+        conn.commit()
+
+        adapter = V3Adapter(db_path=db_path, models_dir=models_dir)
+        features = adapter.get_used_features(conn, mode="pre_race", target="target_win")
+
+        conn.close()
+
+        # Should NOT contain old_feature1/2 from version-less file
+        assert "old_feature1" not in features
+        assert "old_feature2" not in features
+        # Should contain table columns instead
+        assert "new_feature1" in features or "new_feature2" in features
+
+    def test_v2_adapter_no_fallback(self, tmp_path):
+        """V2 adapter should NOT use version-less feature_columns"""
+        from src.feature_audit.adapters.v2_adapter import V2Adapter
+        import sqlite3
+
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+
+        version_less = models_dir / "feature_columns_target_win.json"
+        version_less.write_text('["fallback_feature"]')
+
+        db_path = tmp_path / "test.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("""
+            CREATE TABLE feature_table_v2 (
+                race_id TEXT,
+                horse_id TEXT,
+                v2_feature REAL
+            )
+        """)
+        conn.commit()
+
+        adapter = V2Adapter(db_path=db_path, models_dir=models_dir)
+        features = adapter.get_used_features(conn, mode="pre_race", target="target_win")
+
+        conn.close()
+
+        assert "fallback_feature" not in features
+
+    def test_v1_adapter_no_fallback(self, tmp_path):
+        """V1 adapter should NOT use version-less feature_columns"""
+        from src.feature_audit.adapters.v1_adapter import V1Adapter
+        import sqlite3
+
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+
+        version_less = models_dir / "feature_columns_target_win.json"
+        version_less.write_text('["fallback_feature"]')
+
+        db_path = tmp_path / "test.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("""
+            CREATE TABLE feature_table (
+                race_id TEXT,
+                horse_id TEXT,
+                v1_feature REAL
+            )
+        """)
+        conn.commit()
+
+        adapter = V1Adapter(db_path=db_path, models_dir=models_dir)
+        features = adapter.get_used_features(conn, mode="pre_race", target="target_win")
+
+        conn.close()
+
+        assert "fallback_feature" not in features
+
+    def test_v3_adapter_uses_versioned_file(self, tmp_path):
+        """V3 adapter should use version-specific feature_columns when available"""
+        from src.feature_audit.adapters.v3_adapter import V3Adapter
+        import sqlite3
+
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+
+        # Create BOTH version-less and versioned files
+        version_less = models_dir / "feature_columns_target_win.json"
+        version_less.write_text('["wrong_feature"]')
+
+        versioned = models_dir / "feature_columns_target_win_v3.json"
+        versioned.write_text('["correct_feature_v3"]')
+
+        db_path = tmp_path / "test.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("CREATE TABLE feature_table_v3 (race_id TEXT)")
+        conn.commit()
+
+        adapter = V3Adapter(db_path=db_path, models_dir=models_dir)
+        features = adapter.get_used_features(conn, mode="pre_race", target="target_win")
+
+        conn.close()
+
+        # Should use versioned file
+        assert features == ["correct_feature_v3"]
+        assert "wrong_feature" not in features
+
 
 # =============================================================================
 # Run Tests
