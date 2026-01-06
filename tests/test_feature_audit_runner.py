@@ -90,11 +90,54 @@ class TestSafetyClassification:
             "j_win_rate",
             "t_recent_form",
             "race_distance",
-            "surface_id",
+            "surface",  # Note: surface_id is warn due to _id$ pattern
         ]
         for feat in safe_features:
             label, notes = classify_feature_safety(feat)
             assert label == "safe", f"{feat} should be safe, got {label}"
+
+    def test_unsafe_legacy_payout_features(self):
+        """Legacy payout features should be unsafe"""
+        unsafe_features = [
+            "fukusho_payout",
+            "payout_count",
+            "paid_places",
+            "should_have_payout",
+        ]
+        for feat in unsafe_features:
+            label, notes = classify_feature_safety(feat)
+            assert label == "unsafe", f"{feat} should be unsafe, got {label}"
+
+    def test_warn_track_condition_features(self):
+        """Track condition features should be warn"""
+        warn_features = [
+            "track_condition",
+            "track_condition_id",
+        ]
+        for feat in warn_features:
+            label, notes = classify_feature_safety(feat)
+            assert label == "warn", f"{feat} should be warn, got {label}"
+
+    def test_warn_id_columns(self):
+        """ID columns should be warn"""
+        warn_features = [
+            "race_id",
+            "horse_id",
+        ]
+        for feat in warn_features:
+            label, notes = classify_feature_safety(feat)
+            assert label == "warn", f"{feat} should be warn, got {label}"
+
+    def test_warn_position_columns(self):
+        """Position columns should be warn"""
+        warn_features = [
+            "horse_no",
+            "umaban",
+            "waku",
+        ]
+        for feat in warn_features:
+            label, notes = classify_feature_safety(feat)
+            assert label == "warn", f"{feat} should be warn, got {label}"
 
     def test_batch_classification(self):
         """Batch classification should work correctly"""
@@ -140,7 +183,7 @@ class TestSafetyClassification:
             "market_win_odds",    # unsafe
             "result_time",        # warn
             "race_distance",      # safe
-            "surface_id",         # safe
+            "surface",            # safe (Note: surface_id would be warn due to _id$ pattern)
         ]
         summary = summarize_safety(features)
 
@@ -172,6 +215,18 @@ class TestAdapterRegistry:
         """Legacy adapter should be registered"""
         assert "legacy" in ADAPTER_REGISTRY, "legacy should be registered"
 
+    def test_v3_registered(self):
+        """V3 adapter should be registered"""
+        assert "v3" in ADAPTER_REGISTRY, "v3 should be registered"
+
+    def test_v2_registered(self):
+        """V2 adapter should be registered"""
+        assert "v2" in ADAPTER_REGISTRY, "v2 should be registered"
+
+    def test_v1_registered(self):
+        """V1 adapter should be registered"""
+        assert "v1" in ADAPTER_REGISTRY, "v1 should be registered"
+
     def test_get_adapter_v4(self):
         """get_adapter should return V4 adapter"""
         adapter = get_adapter("v4")
@@ -183,6 +238,24 @@ class TestAdapterRegistry:
         adapter = get_adapter("legacy")
         assert adapter is not None
         assert adapter.VERSION_NAME == "legacy"
+
+    def test_get_adapter_v3(self):
+        """get_adapter should return V3 adapter"""
+        adapter = get_adapter("v3")
+        assert adapter is not None
+        assert adapter.VERSION_NAME == "v3"
+
+    def test_get_adapter_v2(self):
+        """get_adapter should return V2 adapter"""
+        adapter = get_adapter("v2")
+        assert adapter is not None
+        assert adapter.VERSION_NAME == "v2"
+
+    def test_get_adapter_v1(self):
+        """get_adapter should return V1 adapter"""
+        adapter = get_adapter("v1")
+        assert adapter is not None
+        assert adapter.VERSION_NAME == "v1"
 
     def test_get_adapter_unknown(self):
         """get_adapter should return None for unknown version"""
@@ -455,6 +528,100 @@ class TestPathHandling:
 
         output_path = index["runs"][0]["output_path"]
         assert "\\" not in output_path
+
+
+# =============================================================================
+# Test: V3/V2/V1 Adapters (D2-3)
+# =============================================================================
+
+class TestLegacyVersionAdapters:
+    """Tests for v3/v2/v1 specific adapters"""
+
+    def test_v3_adapter_table_name(self):
+        """V3 adapter should target feature_table_v3"""
+        adapter = get_adapter("v3")
+        assert adapter is not None
+        assert adapter.TABLE_NAME == "feature_table_v3"
+
+    def test_v2_adapter_table_name(self):
+        """V2 adapter should target feature_table_v2"""
+        adapter = get_adapter("v2")
+        assert adapter is not None
+        assert adapter.TABLE_NAME == "feature_table_v2"
+
+    def test_v1_adapter_table_name(self):
+        """V1 adapter should target feature_table"""
+        adapter = get_adapter("v1")
+        assert adapter is not None
+        assert adapter.TABLE_NAME == "feature_table"
+
+    def test_v3_adapter_detect_without_db(self):
+        """V3 adapter should fail without DB"""
+        adapter = get_adapter("v3")
+        assert adapter is not None
+        can_run, reason = adapter.detect()
+        assert can_run is False
+        assert "not specified" in reason.lower() or "exist" in reason.lower()
+
+    def test_v2_adapter_detect_without_db(self):
+        """V2 adapter should fail without DB"""
+        adapter = get_adapter("v2")
+        assert adapter is not None
+        can_run, reason = adapter.detect()
+        assert can_run is False
+        assert "not specified" in reason.lower() or "exist" in reason.lower()
+
+    def test_v1_adapter_detect_without_db(self):
+        """V1 adapter should fail without DB"""
+        adapter = get_adapter("v1")
+        assert adapter is not None
+        can_run, reason = adapter.detect()
+        assert can_run is False
+        assert "not specified" in reason.lower() or "exist" in reason.lower()
+
+    def test_all_legacy_adapters_have_required_methods(self):
+        """All legacy adapters should have required methods"""
+        for version in ["v3", "v2", "v1"]:
+            adapter = get_adapter(version)
+            assert adapter is not None, f"{version} adapter not found"
+            assert hasattr(adapter, "detect")
+            assert hasattr(adapter, "list_feature_columns")
+            assert hasattr(adapter, "get_used_features")
+            assert hasattr(adapter, "get_feature_matrix_sample")
+            assert hasattr(adapter, "get_importance")
+            assert hasattr(adapter, "run_audit")
+
+
+# =============================================================================
+# Test: Auto-Training (D2-4)
+# =============================================================================
+
+class TestAutoTraining:
+    """Tests for auto-training functionality"""
+
+    def test_check_model_exists(self, tmp_path):
+        """check_model_exists should detect model files"""
+        from scripts.audit_featurepacks import check_model_exists
+
+        # No files - should return False
+        assert check_model_exists(tmp_path, "v3", "target_win") is False
+
+        # Create model file only - should return False (needs JSON too)
+        (tmp_path / "lgbm_target_win_v3.txt").write_text("model")
+        assert check_model_exists(tmp_path, "v3", "target_win") is False
+
+        # Create JSON file - should return True
+        (tmp_path / "feature_columns_target_win_v3.json").write_text("[]")
+        assert check_model_exists(tmp_path, "v3", "target_win") is True
+
+    def test_legacy_versions_set(self):
+        """LEGACY_VERSIONS should contain v3, v2, v1"""
+        from scripts.audit_featurepacks import LEGACY_VERSIONS
+
+        assert "v3" in LEGACY_VERSIONS
+        assert "v2" in LEGACY_VERSIONS
+        assert "v1" in LEGACY_VERSIONS
+        assert "v4" not in LEGACY_VERSIONS
 
 
 # =============================================================================

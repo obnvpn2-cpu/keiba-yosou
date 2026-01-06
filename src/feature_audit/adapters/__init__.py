@@ -14,6 +14,14 @@ from .registry import (
     ADAPTER_REGISTRY,
 )
 
+# Import adapters to trigger registration
+# Note: These imports have side effects (registration via decorator)
+from .v4_adapter import V4Adapter
+from .v3_adapter import V3Adapter
+from .v2_adapter import V2Adapter
+from .v1_adapter import V1Adapter
+from .legacy_adapter import LegacyAdapter
+
 __all__ = [
     "BaseFeatureAdapter",
     "AdapterResult",
@@ -22,4 +30,10 @@ __all__ = [
     "register_adapter",
     "detect_all_versions",
     "ADAPTER_REGISTRY",
+    # Adapter classes
+    "V4Adapter",
+    "V3Adapter",
+    "V2Adapter",
+    "V1Adapter",
+    "LegacyAdapter",
 ]
