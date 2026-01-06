@@ -353,11 +353,27 @@ def save_model_artifacts(
     # Model filename pattern: lgbm_target_win_v3.txt
     base_name = f"lgbm_{target}_{version}"
 
-    # 1. Save model (text format)
+    # 1. Save model (text format) - with fallback for Windows path issues
     model_path = out_dir / f"{base_name}.txt"
-    model.save_model(str(model_path))
+    try:
+        # Try LightGBM's native save_model first
+        model.save_model(str(model_path))
+        logger.info(f"Saved model (native): {model_path}")
+    except Exception as e:
+        # Fallback: use model_to_string() and write with Python
+        logger.warning(f"save_model failed: {e}")
+        logger.info("Falling back to model_to_string() + Python write")
+        try:
+            model_str = model.model_to_string()
+            model_path.write_text(model_str, encoding="utf-8")
+            logger.info(f"Saved model (fallback): {model_path}")
+        except Exception as e2:
+            logger.error(f"Fallback save also failed: {e2}")
+            raise RuntimeError(
+                f"Failed to save model to {model_path}: "
+                f"native error={e}, fallback error={e2}"
+            )
     saved_files["model"] = model_path
-    logger.info(f"Saved model: {model_path}")
 
     # 2. Save feature columns (JSON)
     features_json = out_dir / f"feature_columns_{target}_{version}.json"
@@ -377,7 +393,7 @@ def save_model_artifacts(
     }).sort_values('gain', ascending=False)
 
     importance_csv = out_dir / f"feature_importance_{target}_{version}.csv"
-    importance_df.to_csv(importance_csv, index=False)
+    importance_df.to_csv(importance_csv, index=False, encoding="utf-8")
     saved_files["importance"] = importance_csv
     logger.info(f"Saved importance: {importance_csv}")
 
