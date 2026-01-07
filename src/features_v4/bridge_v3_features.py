@@ -89,16 +89,99 @@ class BridgeConfig:
 
 
 @dataclass
+class FeatureSafetyInfo:
+    """Safety information for a single feature"""
+    original_name: str
+    bridged_name: str
+    safety_label: str  # "safe", "warn", "unsafe"
+    safety_notes: str
+    origin: str = "v3_bridged"  # "v4_native" or "v3_bridged"
+
+
+@dataclass
 class BridgeResult:
-    """Result of applying bridge"""
+    """Result of applying bridge (F-2 enhanced)"""
+    # Counts
     n_features_requested: int
     n_features_applied: int
     n_features_skipped_unsafe: int
     n_features_skipped_missing: int
-    n_features_warn: int
+    n_features_skipped_warn: int  # Renamed for clarity
+    n_features_warn: int  # warn features that WERE included
+
+    # Feature lists (bridged names)
     applied_features: List[str]
     skipped_features: List[str]
     warn_features: List[str]
+
+    # F-2: Enhanced tracking
+    # Mapping: bridged_name -> original_name
+    feature_map: Dict[str, str] = field(default_factory=dict)
+
+    # Mapping: bridged_name -> FeatureSafetyInfo
+    safety_info: Dict[str, FeatureSafetyInfo] = field(default_factory=dict)
+
+    # Detailed exclusion lists (original names)
+    excluded_unsafe: List[str] = field(default_factory=list)
+    excluded_warn: List[str] = field(default_factory=list)
+    excluded_missing: List[str] = field(default_factory=list)
+
+    # Included features with both names: [(original_name, bridged_name), ...]
+    included_features: List[Tuple[str, str]] = field(default_factory=list)
+
+    def to_summary_dict(self) -> Dict[str, Any]:
+        """Convert to summary dictionary for JSON serialization"""
+        return {
+            "n_features_applied": self.n_features_applied,
+            "n_features_skipped_unsafe": self.n_features_skipped_unsafe,
+            "n_features_skipped_warn": self.n_features_skipped_warn,
+            "n_features_skipped_missing": self.n_features_skipped_missing,
+            "n_features_warn_included": self.n_features_warn,
+            "applied_features": self.applied_features,
+            "excluded_unsafe": self.excluded_unsafe,
+            "excluded_warn": self.excluded_warn,
+            "excluded_missing": self.excluded_missing,
+            "feature_map": self.feature_map,
+        }
+
+    def log_summary(self, logger_func=None) -> None:
+        """Log a formatted summary of bridge results"""
+        if logger_func is None:
+            logger_func = logger.info
+
+        logger_func("=" * 60)
+        logger_func("Bridge Summary (v3 -> v4)")
+        logger_func("=" * 60)
+        logger_func(f"  Included:        {self.n_features_applied}")
+        logger_func(f"    - safe:        {self.n_features_applied - self.n_features_warn}")
+        logger_func(f"    - warn:        {self.n_features_warn}")
+        logger_func(f"  Excluded:")
+        logger_func(f"    - unsafe:      {self.n_features_skipped_unsafe}")
+        logger_func(f"    - warn:        {self.n_features_skipped_warn}")
+        logger_func(f"    - missing:     {self.n_features_skipped_missing}")
+
+        if self.excluded_unsafe:
+            logger_func("  Unsafe features excluded:")
+            for f in self.excluded_unsafe[:5]:  # Show first 5
+                logger_func(f"    - {f}")
+            if len(self.excluded_unsafe) > 5:
+                logger_func(f"    ... and {len(self.excluded_unsafe) - 5} more")
+
+        if self.excluded_warn:
+            logger_func("  Warn features excluded (--bridge-no-warn):")
+            for f in self.excluded_warn[:5]:
+                logger_func(f"    - {f}")
+            if len(self.excluded_warn) > 5:
+                logger_func(f"    ... and {len(self.excluded_warn) - 5} more")
+
+        if self.warn_features:
+            logger_func("  Warn features INCLUDED (use --bridge-no-warn to exclude):")
+            for f in self.warn_features[:5]:
+                logger_func(f"    - {f}")
+            if len(self.warn_features) > 5:
+                logger_func(f"    ... and {len(self.warn_features) - 5} more")
+
+        logger_func("=" * 60)
 
 
 # =============================================================================
@@ -199,55 +282,73 @@ class BridgeV3Features:
         self,
         target: str,
         candidates_path: Optional[Path] = None,
-    ) -> Tuple[List[str], List[str], List[str]]:
+    ) -> Tuple[List[str], List[str], List[str], List[str], Dict[str, MigrationCandidate]]:
         """
-        Get list of features to bridge, with safety filtering
+        Get list of features to bridge, with safety filtering (F-2 enhanced)
 
         Args:
             target: Target column
             candidates_path: Override path to candidates CSV
 
         Returns:
-            (features_to_bridge, skipped_unsafe, warn_features)
+            (features_to_bridge, excluded_unsafe, excluded_warn, warn_included, candidate_map)
+            - features_to_bridge: features that will be bridged
+            - excluded_unsafe: features excluded due to unsafe label (ALWAYS excluded)
+            - excluded_warn: features excluded due to warn label (when include_warn=False)
+            - warn_included: warn features that are included (when include_warn=True)
+            - candidate_map: feature -> MigrationCandidate for tracking safety info
         """
-        # If explicit features are provided, use them
+        # If explicit features are provided, use them (no safety info available)
         if self.config.explicit_features:
-            return self.config.explicit_features, [], []
+            return self.config.explicit_features, [], [], [], {}
 
         # Load candidates
         candidates = self.load_candidates(target, candidates_path)
 
         features_to_bridge = []
-        skipped_unsafe = []
-        warn_features = []
+        excluded_unsafe = []
+        excluded_warn = []
+        warn_included = []
+        candidate_map: Dict[str, MigrationCandidate] = {}
 
         for candidate in candidates:
-            # Check suggested action
-            if candidate.suggested_action == "skip":
-                skipped_unsafe.append(candidate.feature)
-                continue
+            feature = candidate.feature
 
-            # Check safety label
+            # F-2 SAFETY GATE: unsafe is ALWAYS excluded (no config option)
+            # This is a hard guarantee - unsafe features can NEVER be included
             if candidate.safety_label in SAFETY_SKIP:
-                skipped_unsafe.append(candidate.feature)
+                excluded_unsafe.append(feature)
+                logger.debug(f"[SAFETY] Excluded unsafe feature: {feature}")
                 continue
 
+            # suggested_action == "skip" also triggers exclusion (usually unsafe)
+            if candidate.suggested_action == "skip":
+                excluded_unsafe.append(feature)
+                logger.debug(f"[SAFETY] Excluded by suggested_action=skip: {feature}")
+                continue
+
+            # F-2 SAFETY GATE: warn features controlled by include_warn
             if candidate.safety_label in SAFETY_WARN:
                 if self.config.include_warn:
-                    warn_features.append(candidate.feature)
-                    features_to_bridge.append(candidate.feature)
+                    warn_included.append(feature)
+                    features_to_bridge.append(feature)
+                    candidate_map[feature] = candidate
+                    logger.debug(f"[SAFETY] Including warn feature: {feature}")
                 else:
-                    skipped_unsafe.append(candidate.feature)
+                    excluded_warn.append(feature)
+                    logger.debug(f"[SAFETY] Excluded warn feature (--bridge-no-warn): {feature}")
                 continue
 
-            # Safe feature
-            features_to_bridge.append(candidate.feature)
+            # Safe feature - include it
+            features_to_bridge.append(feature)
+            candidate_map[feature] = candidate
 
             # Check max features limit
             if len(features_to_bridge) >= self.config.max_features:
+                logger.info(f"Reached max_features limit ({self.config.max_features})")
                 break
 
-        return features_to_bridge, skipped_unsafe, warn_features
+        return features_to_bridge, excluded_unsafe, excluded_warn, warn_included, candidate_map
 
     def load_v3_features(
         self,
@@ -307,7 +408,7 @@ class BridgeV3Features:
         candidates_path: Optional[Path] = None,
     ) -> Tuple[pd.DataFrame, BridgeResult]:
         """
-        Apply bridge: add v3 features to v4 DataFrame
+        Apply bridge: add v3 features to v4 DataFrame (F-2 enhanced)
 
         Args:
             v4_df: Original v4 feature DataFrame
@@ -317,20 +418,32 @@ class BridgeV3Features:
         Returns:
             (bridged_df, BridgeResult)
         """
-        # Get features to bridge
-        features_to_bridge, skipped_unsafe, warn_features = self.get_bridge_features(
-            target, candidates_path
-        )
+        # Get features to bridge with enhanced safety tracking
+        (
+            features_to_bridge,
+            excluded_unsafe,
+            excluded_warn,
+            warn_included,
+            candidate_map,
+        ) = self.get_bridge_features(target, candidates_path)
 
+        # Initialize result with F-2 enhanced tracking
         result = BridgeResult(
-            n_features_requested=len(features_to_bridge) + len(skipped_unsafe),
+            n_features_requested=len(features_to_bridge) + len(excluded_unsafe) + len(excluded_warn),
             n_features_applied=0,
-            n_features_skipped_unsafe=len(skipped_unsafe),
+            n_features_skipped_unsafe=len(excluded_unsafe),
             n_features_skipped_missing=0,
-            n_features_warn=len(warn_features),
+            n_features_skipped_warn=len(excluded_warn),
+            n_features_warn=len(warn_included),
             applied_features=[],
-            skipped_features=list(skipped_unsafe),
-            warn_features=list(warn_features),
+            skipped_features=[],
+            warn_features=[],
+            feature_map={},
+            safety_info={},
+            excluded_unsafe=list(excluded_unsafe),
+            excluded_warn=list(excluded_warn),
+            excluded_missing=[],
+            included_features=[],
         )
 
         if not features_to_bridge:
@@ -338,7 +451,7 @@ class BridgeV3Features:
             return v4_df, result
 
         # Log warnings for warn features
-        for feat in warn_features:
+        for feat in warn_included:
             logger.warning(f"Including 'warn' safety feature: {feat}")
 
         # Get race_ids from v4_df
@@ -363,7 +476,8 @@ class BridgeV3Features:
         loaded_features = [f for f in features_to_bridge if f in rename_map]
         missing_features = [f for f in features_to_bridge if f not in rename_map]
         result.n_features_skipped_missing = len(missing_features)
-        result.skipped_features.extend(missing_features)
+        result.excluded_missing = list(missing_features)
+        result.skipped_features = list(excluded_unsafe) + list(excluded_warn) + missing_features
 
         # Merge with v4_df
         bridge_cols = ["race_id", "horse_id"] + list(rename_map.values())
@@ -375,17 +489,105 @@ class BridgeV3Features:
             how="left",
         )
 
-        # Update result
+        # Update result with F-2 enhanced tracking
         result.n_features_applied = len(loaded_features)
         result.applied_features = [f"{BRIDGE_PREFIX}{f}" for f in loaded_features]
+        result.warn_features = [f"{BRIDGE_PREFIX}{f}" for f in warn_included if f in loaded_features]
 
-        logger.info(
-            f"Bridge applied: {result.n_features_applied} features added, "
-            f"{result.n_features_skipped_unsafe} unsafe skipped, "
-            f"{result.n_features_skipped_missing} missing skipped"
-        )
+        # Build feature map and safety info
+        for original_name in loaded_features:
+            bridged_name = f"{BRIDGE_PREFIX}{original_name}"
+            result.feature_map[bridged_name] = original_name
+            result.included_features.append((original_name, bridged_name))
+
+            # Get safety info from candidate map
+            if original_name in candidate_map:
+                candidate = candidate_map[original_name]
+                result.safety_info[bridged_name] = FeatureSafetyInfo(
+                    original_name=original_name,
+                    bridged_name=bridged_name,
+                    safety_label=candidate.safety_label,
+                    safety_notes=candidate.safety_notes,
+                    origin="v3_bridged",
+                )
+            else:
+                # Explicit feature or unknown - assume safe
+                result.safety_info[bridged_name] = FeatureSafetyInfo(
+                    original_name=original_name,
+                    bridged_name=bridged_name,
+                    safety_label="safe",
+                    safety_notes="(explicit or unknown)",
+                    origin="v3_bridged",
+                )
+
+        # Log summary
+        result.log_summary()
 
         return bridged_df, result
+
+    def save_feature_map(
+        self,
+        result: BridgeResult,
+        output_dir: Path,
+        target: str,
+    ) -> Path:
+        """
+        Save bridge feature map to JSON file (F-2 explainability)
+
+        Args:
+            result: BridgeResult from apply_bridge
+            output_dir: Directory to save the map
+            target: Target column name
+
+        Returns:
+            Path to saved file
+        """
+        import json
+
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        output_path = output_dir / f"bridge_feature_map_{target}.json"
+
+        # Build comprehensive feature map
+        feature_map_data = {
+            "metadata": {
+                "source_version": self.config.source_version,
+                "target": target,
+                "n_features_applied": result.n_features_applied,
+                "n_features_warn": result.n_features_warn,
+                "n_excluded_unsafe": result.n_features_skipped_unsafe,
+                "n_excluded_warn": result.n_features_skipped_warn,
+                "n_excluded_missing": result.n_features_skipped_missing,
+            },
+            "feature_map": result.feature_map,  # bridged_name -> original_name
+            "features": {},
+        }
+
+        # Add detailed info for each feature
+        for bridged_name, safety_info in result.safety_info.items():
+            feature_map_data["features"][bridged_name] = {
+                "original_name": safety_info.original_name,
+                "display_name": safety_info.original_name,  # For UI display
+                "bridged_name": safety_info.bridged_name,
+                "safety_label": safety_info.safety_label,
+                "safety_notes": safety_info.safety_notes,
+                "origin": safety_info.origin,
+            }
+
+        # Add excluded features for reference
+        feature_map_data["excluded"] = {
+            "unsafe": result.excluded_unsafe,
+            "warn": result.excluded_warn,
+            "missing": result.excluded_missing,
+        }
+
+        # Write with UTF-8 encoding (Windows compatible)
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(feature_map_data, f, ensure_ascii=False, indent=2)
+
+        logger.info(f"Saved bridge feature map to: {output_path}")
+        return output_path
 
 
 # =============================================================================
@@ -409,8 +611,84 @@ def get_bridge_feature_columns(
         List of feature column names with BRIDGE_PREFIX
     """
     bridge = BridgeV3Features(conn, config)
-    features, _, _ = bridge.get_bridge_features(target)
+    features, _, _, _, _ = bridge.get_bridge_features(target)
     return [f"{BRIDGE_PREFIX}{f}" for f in features]
+
+
+def load_bridge_feature_map(map_path: Path) -> Dict[str, Any]:
+    """
+    Load bridge feature map from JSON file
+
+    Args:
+        map_path: Path to bridge_feature_map_{target}.json
+
+    Returns:
+        Feature map data dictionary
+    """
+    import json
+
+    if not map_path.exists():
+        logger.warning(f"Bridge feature map not found: {map_path}")
+        return {}
+
+    with open(map_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def get_original_feature_name(bridged_name: str, feature_map: Dict[str, str]) -> str:
+    """
+    Get original v3 feature name from bridged name
+
+    Args:
+        bridged_name: Bridged feature name (v4_bridge_*)
+        feature_map: Mapping from bridged_name -> original_name
+
+    Returns:
+        Original feature name, or bridged_name if not found
+    """
+    if bridged_name in feature_map:
+        return feature_map[bridged_name]
+
+    # Fallback: strip prefix
+    if bridged_name.startswith(BRIDGE_PREFIX):
+        return bridged_name[len(BRIDGE_PREFIX):]
+
+    return bridged_name
+
+
+def get_feature_safety_for_bridge(
+    feature_name: str,
+    bridge_map_data: Dict[str, Any],
+) -> Tuple[str, str, str]:
+    """
+    Get safety information for a feature (works for both bridged and native)
+
+    Args:
+        feature_name: Feature name (may or may not have bridge prefix)
+        bridge_map_data: Loaded bridge feature map data
+
+    Returns:
+        (safety_label, safety_notes, origin)
+        - safety_label: "safe", "warn", "unsafe", or "unknown"
+        - safety_notes: Human-readable notes
+        - origin: "v4_native" or "v3_bridged"
+    """
+    features = bridge_map_data.get("features", {})
+
+    if feature_name in features:
+        info = features[feature_name]
+        return (
+            info.get("safety_label", "unknown"),
+            info.get("safety_notes", ""),
+            info.get("origin", "v3_bridged"),
+        )
+
+    # Not in bridge map - check if it's a v4 native feature
+    if not feature_name.startswith(BRIDGE_PREFIX):
+        return ("safe", "v4 native feature", "v4_native")
+
+    # Unknown bridged feature
+    return ("unknown", "Not found in bridge map", "v3_bridged")
 
 
 def apply_bridge_to_dataframe(
