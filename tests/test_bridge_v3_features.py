@@ -746,5 +746,200 @@ class TestF2UnsafeGate:
         assert "h_body_weight" in features or "hr_recent_win_rate" in features
 
 
+# =============================================================================
+# Test F-3 Explain Runner
+# =============================================================================
+
+from src.features_v4.explain_runner import (
+    FeatureExplanation,
+    ExplainResult,
+    resolve_feature_name,
+    build_feature_explanation,
+    generate_explain_result,
+)
+
+
+class TestF3ExplainRunner:
+    """Tests for F-3 Explain Runner functionality"""
+
+    def test_resolve_feature_name_bridged(self):
+        """Test that bridged features resolve to original names"""
+        bridge_map = {
+            "feature_map": {
+                "v4_bridge_hr_test_feat": "hr_test_feat",
+            },
+            "features": {
+                "v4_bridge_hr_test_feat": {
+                    "safety_label": "safe",
+                    "safety_notes": "",
+                    "origin": "v3_bridged",
+                }
+            },
+        }
+
+        display_name, origin, safety_label, safety_notes = resolve_feature_name(
+            "v4_bridge_hr_test_feat", bridge_map
+        )
+
+        assert display_name == "hr_test_feat"  # Resolved to original
+        assert origin == "v3_bridged"
+        assert safety_label == "safe"
+
+    def test_resolve_feature_name_native(self):
+        """Test that native v4 features are recognized correctly"""
+        bridge_map = {"feature_map": {}, "features": {}}
+
+        display_name, origin, safety_label, safety_notes = resolve_feature_name(
+            "h_recent3_avg_finish", bridge_map
+        )
+
+        assert display_name == "h_recent3_avg_finish"  # Unchanged
+        assert origin == "v4_native"
+        assert safety_label == "safe"
+
+    def test_build_feature_explanation(self):
+        """Test building a single feature explanation"""
+        bridge_map = {
+            "feature_map": {
+                "v4_bridge_hr_test_feat": "hr_test_feat",
+            },
+            "features": {
+                "v4_bridge_hr_test_feat": {
+                    "safety_label": "warn",
+                    "safety_notes": "Potential time leak",
+                    "origin": "v3_bridged",
+                }
+            },
+        }
+
+        explanation = build_feature_explanation(
+            "v4_bridge_hr_test_feat",
+            bridge_map,
+            importance_gain=10.5,
+            importance_split=100,
+        )
+
+        assert explanation.feature_name == "v4_bridge_hr_test_feat"
+        assert explanation.display_name == "hr_test_feat"
+        assert explanation.origin == "v3_bridged"
+        assert explanation.safety_label == "warn"
+        assert explanation.importance_gain == 10.5
+        assert explanation.importance_split == 100
+
+    def test_generate_explain_result(self):
+        """Test generating complete explain result"""
+        bridge_map = {
+            "feature_map": {
+                "v4_bridge_feat1": "feat1",
+                "v4_bridge_feat2": "feat2",
+            },
+            "features": {
+                "v4_bridge_feat1": {
+                    "safety_label": "safe",
+                    "safety_notes": "",
+                    "origin": "v3_bridged",
+                },
+                "v4_bridge_feat2": {
+                    "safety_label": "warn",
+                    "safety_notes": "Review needed",
+                    "origin": "v3_bridged",
+                },
+            },
+        }
+
+        feature_names = [
+            "v4_bridge_feat1",
+            "v4_bridge_feat2",
+            "native_feat",
+        ]
+
+        result = generate_explain_result(
+            feature_names=feature_names,
+            target="target_win",
+            bridge_map_data=bridge_map,
+        )
+
+        assert result.n_features == 3
+        assert result.n_bridged == 2
+        assert result.n_native == 1
+
+    def test_generate_explain_result_exclude_warn(self):
+        """Test that warn features are excluded when exclude_warn=True"""
+        bridge_map = {
+            "feature_map": {
+                "v4_bridge_safe_feat": "safe_feat",
+                "v4_bridge_warn_feat": "warn_feat",
+            },
+            "features": {
+                "v4_bridge_safe_feat": {
+                    "safety_label": "safe",
+                    "safety_notes": "",
+                    "origin": "v3_bridged",
+                },
+                "v4_bridge_warn_feat": {
+                    "safety_label": "warn",
+                    "safety_notes": "Review needed",
+                    "origin": "v3_bridged",
+                },
+            },
+        }
+
+        feature_names = ["v4_bridge_safe_feat", "v4_bridge_warn_feat"]
+
+        # Without exclude_warn
+        result_all = generate_explain_result(
+            feature_names=feature_names,
+            target="target_win",
+            bridge_map_data=bridge_map,
+            exclude_warn=False,
+        )
+        assert result_all.n_features == 2
+
+        # With exclude_warn
+        result_no_warn = generate_explain_result(
+            feature_names=feature_names,
+            target="target_win",
+            bridge_map_data=bridge_map,
+            exclude_warn=True,
+        )
+        assert result_no_warn.n_features == 1
+        assert result_no_warn.features[0].safety_label == "safe"
+
+    def test_explain_result_to_dict(self):
+        """Test ExplainResult.to_dict() for JSON serialization"""
+        result = ExplainResult(
+            target="target_win",
+            n_features=2,
+            n_bridged=1,
+            n_native=1,
+            features=[
+                FeatureExplanation(
+                    feature_name="v4_bridge_test",
+                    display_name="test",
+                    origin="v3_bridged",
+                    safety_label="safe",
+                    safety_notes="",
+                    importance_gain=10.0,
+                ),
+                FeatureExplanation(
+                    feature_name="native_feat",
+                    display_name="native_feat",
+                    origin="v4_native",
+                    safety_label="safe",
+                    safety_notes="v4 native feature",
+                    importance_gain=5.0,
+                ),
+            ],
+        )
+
+        d = result.to_dict()
+
+        assert d["target"] == "target_win"
+        assert d["n_features"] == 2
+        assert d["n_bridged"] == 1
+        assert len(d["features"]) == 2
+        assert d["features"][0]["display_name"] == "test"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

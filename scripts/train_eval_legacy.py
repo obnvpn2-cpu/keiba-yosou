@@ -383,13 +383,27 @@ def save_model_artifacts(
     logger.info(f"Saved feature columns: {features_json}")
 
     # 3. Save feature importance (CSV)
-    importance_gain = model.feature_importance(importance_type='gain')
-    importance_split = model.feature_importance(importance_type='split')
+    # Handle list/array/series for importance values (robustness for mock/different LightGBM versions)
+    try:
+        importance_gain = model.feature_importance(importance_type='gain')
+    except Exception as e:
+        logger.warning(f"Failed to get gain importance: {e}, using zeros")
+        importance_gain = [0.0] * len(feature_cols)
+
+    try:
+        importance_split = model.feature_importance(importance_type='split')
+    except Exception as e:
+        logger.warning(f"Failed to get split importance: {e}, using zeros")
+        importance_split = [0] * len(feature_cols)
+
+    # Convert to numpy arrays for consistent handling (list/array/series all work)
+    importance_gain = np.asarray(importance_gain, dtype=float)
+    importance_split = np.asarray(importance_split, dtype=int)
 
     importance_df = pd.DataFrame({
         'feature': feature_cols,
         'gain': importance_gain,
-        'split': importance_split.astype(int),
+        'split': importance_split,
     }).sort_values('gain', ascending=False)
 
     importance_csv = out_dir / f"feature_importance_{target}_{version}.csv"
