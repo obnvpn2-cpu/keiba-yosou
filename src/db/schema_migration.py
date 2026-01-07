@@ -323,6 +323,14 @@ def run_migration(conn: sqlite3.Connection, migration: Dict[str, Any]) -> bool:
             return False
         create_unique_index_safe(conn, "feature_table_v3", "idx_feature_table_v3_pk", ["race_id", "horse_id"])
 
+    elif migration_id == "003_indexes_horse_results":
+        if not table_exists(conn, "horse_results"):
+            logger.info("horse_results does not exist, skipping migration")
+            return False
+        # Run the index creation SQL
+        conn.executescript(migration["up"])
+        conn.commit()
+
     elif migration_id == "004_migration_tracking_table":
         # This one creates the tracking table itself
         conn.executescript(migration["up"])
