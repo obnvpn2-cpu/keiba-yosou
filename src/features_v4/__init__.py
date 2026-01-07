@@ -114,10 +114,16 @@ try:
         BridgeConfig,
         BridgeResult,
         MigrationCandidate,
+        FeatureSafetyInfo,
         BRIDGE_PREFIX,
+        SAFETY_SKIP,
+        SAFETY_WARN,
         apply_bridge_to_dataframe,
         get_bridge_feature_columns,
         list_available_v3_features,
+        load_bridge_feature_map,
+        get_original_feature_name,
+        get_feature_safety_for_bridge,
     )
     HAS_BRIDGE = True
 except ImportError:
@@ -200,8 +206,14 @@ if HAS_BRIDGE:
         "BridgeConfig",
         "BridgeResult",
         "MigrationCandidate",
+        "FeatureSafetyInfo",
         "BRIDGE_PREFIX",
+        "SAFETY_SKIP",
+        "SAFETY_WARN",
         "apply_bridge_to_dataframe",
         "get_bridge_feature_columns",
         "list_available_v3_features",
+        "load_bridge_feature_map",
+        "get_original_feature_name",
+        "get_feature_safety_for_bridge",
     ])

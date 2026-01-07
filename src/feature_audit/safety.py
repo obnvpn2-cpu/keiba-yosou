@@ -21,6 +21,14 @@ import re
 from typing import Tuple, List, Optional
 
 # =============================================================================
+# Bridge Feature Prefix (F-2)
+# =============================================================================
+
+# Bridge features from v3 have this prefix
+BRIDGE_PREFIX = "v4_bridge_"
+
+
+# =============================================================================
 # Safety Rules Definition
 # =============================================================================
 
@@ -86,6 +94,23 @@ WARN_PATTERNS = [
 ]
 
 
+def strip_bridge_prefix(feature_name: str) -> Tuple[str, bool]:
+    """
+    Bridge prefix を除去して元の特徴量名を返す
+
+    Args:
+        feature_name: 特徴量名（v4_bridge_* or native）
+
+    Returns:
+        (original_name, is_bridged)
+        - original_name: prefix を除去した名前
+        - is_bridged: bridge 特徴量だった場合 True
+    """
+    if feature_name.startswith(BRIDGE_PREFIX):
+        return feature_name[len(BRIDGE_PREFIX):], True
+    return feature_name, False
+
+
 def classify_feature_safety(
     feature_name: str,
     additional_unsafe: Optional[List[str]] = None,
@@ -103,20 +128,31 @@ def classify_feature_safety(
         (label, notes) のタプル
         - label: "unsafe", "warn", "safe" のいずれか
         - notes: 判定理由（空文字列の場合もある）
+
+    Note:
+        F-2: v4_bridge_* 特徴量は prefix を除去してから元の v3 名で判定する。
+        これにより bridge 特徴量の safety が元の v3 特徴量から継承される。
     """
-    name_lower = feature_name.lower()
+    # F-2: Strip bridge prefix if present to classify based on original name
+    original_name, is_bridged = strip_bridge_prefix(feature_name)
+    name_lower = original_name.lower()
 
     # 1. 完全一致でunsafe判定
     unsafe_set = UNSAFE_EXACT.copy()
     if additional_unsafe:
         unsafe_set.update(additional_unsafe)
 
-    if feature_name in unsafe_set or name_lower in unsafe_set:
-        return "unsafe", _get_unsafe_reason(feature_name)
+    if original_name in unsafe_set or name_lower in unsafe_set:
+        reason = _get_unsafe_reason(original_name)
+        if is_bridged:
+            reason = f"[bridged from v3] {reason}"
+        return "unsafe", reason
 
     # 2. パターンでunsafe判定
     for pattern, reason in UNSAFE_PATTERNS:
         if re.search(pattern, name_lower, re.IGNORECASE):
+            if is_bridged:
+                reason = f"[bridged from v3] {reason}"
             return "unsafe", reason
 
     # 3. パターンでwarn判定
@@ -126,10 +162,15 @@ def classify_feature_safety(
 
     for pattern, reason in warn_patterns:
         if re.search(pattern, name_lower, re.IGNORECASE):
+            if is_bridged:
+                reason = f"[bridged from v3] {reason}"
             return "warn", reason
 
     # 4. それ以外はsafe
-    return "safe", ""
+    notes = ""
+    if is_bridged:
+        notes = "[bridged from v3]"
+    return "safe", notes
 
 
 def _get_unsafe_reason(feature_name: str) -> str:

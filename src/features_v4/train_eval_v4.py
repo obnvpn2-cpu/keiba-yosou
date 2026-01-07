@@ -62,6 +62,7 @@ try:
         BridgeV3Features,
         BridgeConfig,
         BridgeResult,
+        FeatureSafetyInfo,
         BRIDGE_PREFIX,
         apply_bridge_to_dataframe,
     )
@@ -71,6 +72,7 @@ except ImportError:
     BridgeV3Features = None  # type: ignore
     BridgeConfig = None  # type: ignore
     BridgeResult = None  # type: ignore
+    FeatureSafetyInfo = None  # type: ignore
     BRIDGE_PREFIX = "v4_bridge_"
 
 logger = logging.getLogger(__name__)
@@ -2236,9 +2238,10 @@ def run_full_pipeline(
     logger.info("Loaded %d rows", len(df))
 
     # ========================================================================
-    # Bridge v3 features (optional)
+    # Bridge v3 features (optional) - F-2 enhanced
     # ========================================================================
     bridge_result = None
+    bridge_feature_map_path = None
     if bridge_v3:
         if not HAS_BRIDGE:
             logger.error("Bridge module not available. Install bridge_v3_features.py")
@@ -2250,16 +2253,15 @@ def run_full_pipeline(
             bridge = BridgeV3Features(conn, bridge_config)
             df, bridge_result = bridge.apply_bridge(df, target=config.target_col)
 
-            logger.info("Bridge result:")
-            logger.info("  Features applied: %d", bridge_result.n_features_applied)
-            logger.info("  Features skipped (unsafe): %d", bridge_result.n_features_skipped_unsafe)
-            logger.info("  Features skipped (missing): %d", bridge_result.n_features_skipped_missing)
-            logger.info("  Features with warnings: %d", bridge_result.n_features_warn)
+            # F-2: Save bridge feature map for explainability
+            if output_dir and bridge_result.n_features_applied > 0:
+                bridge_feature_map_path = bridge.save_feature_map(
+                    bridge_result,
+                    Path(output_dir),
+                    config.target_col,
+                )
 
-            if bridge_result.applied_features:
-                logger.info("  Applied features:")
-                for f in bridge_result.applied_features:
-                    logger.info("    - %s", f)
+            # Note: log_summary is called automatically in apply_bridge
 
     # 時系列分割
     train_df, val_df, test_df = split_time_series(df, train_end, val_end, split_mode)
@@ -2314,17 +2316,11 @@ def run_full_pipeline(
         "bridge_v3_enabled": bridge_v3,
     }
 
-    # Bridge result
+    # Bridge result (F-2 enhanced)
     if bridge_result:
-        results["bridge_result"] = {
-            "n_features_applied": bridge_result.n_features_applied,
-            "n_features_skipped_unsafe": bridge_result.n_features_skipped_unsafe,
-            "n_features_skipped_missing": bridge_result.n_features_skipped_missing,
-            "n_features_warn": bridge_result.n_features_warn,
-            "applied_features": bridge_result.applied_features,
-            "skipped_features": bridge_result.skipped_features,
-            "warn_features": bridge_result.warn_features,
-        }
+        results["bridge_result"] = bridge_result.to_summary_dict()
+        if bridge_feature_map_path:
+            results["bridge_result"]["feature_map_path"] = str(bridge_feature_map_path)
 
     # 結果を保存
     if output_dir:
