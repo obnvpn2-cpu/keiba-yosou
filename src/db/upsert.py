@@ -138,6 +138,67 @@ def get_table_columns(conn: sqlite3.Connection, table_name: str) -> List[str]:
     return [row[1] for row in cursor.fetchall()]
 
 
+def get_table_primary_key(conn: sqlite3.Connection, table_name: str) -> List[str]:
+    """
+    Get primary key columns for a table.
+
+    Returns columns that are part of the PRIMARY KEY constraint.
+    """
+    cursor = conn.execute(f"PRAGMA table_info({table_name})")
+    pk_columns = []
+    for row in cursor.fetchall():
+        # row: (cid, name, type, notnull, dflt_value, pk)
+        # pk is 0 for non-PK, 1+ for PK (position in composite key)
+        if row[5] > 0:  # pk > 0 means this column is part of primary key
+            pk_columns.append((row[5], row[1]))  # (pk_position, column_name)
+
+    # Sort by pk position and return column names
+    pk_columns.sort(key=lambda x: x[0])
+    return [col[1] for col in pk_columns]
+
+
+def infer_table_config(conn: sqlite3.Connection, table_name: str, rows: List[Dict[str, Any]]) -> TableConfig:
+    """
+    Infer TableConfig for an unknown table from its schema.
+
+    Fallback priority:
+    1. Use PRIMARY KEY from PRAGMA table_info
+    2. Try common key patterns (race_id + horse_id)
+    3. Raise ValueError if no suitable key found
+    """
+    # Try to get primary key from table schema
+    pk_cols = get_table_primary_key(conn, table_name)
+    if pk_cols:
+        logger.debug(f"Inferred primary key for {table_name}: {pk_cols}")
+        return TableConfig(
+            table_name=table_name,
+            primary_key=pk_cols,
+        )
+
+    # Fallback: try common key patterns based on row columns
+    if rows:
+        row_cols = set(rows[0].keys())
+        # Common patterns in keiba-yosou
+        if "race_id" in row_cols and "horse_id" in row_cols:
+            logger.debug(f"Using common key pattern (race_id, horse_id) for {table_name}")
+            return TableConfig(
+                table_name=table_name,
+                primary_key=["race_id", "horse_id"],
+            )
+        if "race_id" in row_cols:
+            logger.debug(f"Using single key (race_id) for {table_name}")
+            return TableConfig(
+                table_name=table_name,
+                primary_key=["race_id"],
+            )
+
+    raise ValueError(
+        f"Cannot infer configuration for table '{table_name}': "
+        f"no PRIMARY KEY found and no common key pattern matches. "
+        f"Please add explicit config to TABLE_CONFIGS or ensure table has PRIMARY KEY."
+    )
+
+
 def safe_value(v: Any) -> Any:
     """Convert a value to a SQLite-compatible type."""
     if v is None:
@@ -266,7 +327,8 @@ class UpsertHelper:
 
         config = config or TABLE_CONFIGS.get(table_name)
         if config is None:
-            raise ValueError(f"No configuration found for table: {table_name}")
+            # Try to infer config from table schema
+            config = infer_table_config(self.conn, table_name, rows)
 
         # Get actual table columns
         table_columns = get_table_columns(self.conn, table_name)
