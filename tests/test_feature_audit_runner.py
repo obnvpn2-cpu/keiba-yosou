@@ -775,6 +775,229 @@ class TestVersionLessFallbackProhibition:
 
 
 # =============================================================================
+# Test: Model Save Fallback (P0-1)
+# =============================================================================
+
+# Check if lightgbm is available
+try:
+    import lightgbm  # noqa: F401
+    HAS_LIGHTGBM = True
+except ImportError:
+    HAS_LIGHTGBM = False
+
+
+@pytest.mark.skipif(not HAS_LIGHTGBM, reason="lightgbm not installed")
+class TestModelSaveFallback:
+    """Tests for model save fallback mechanism"""
+
+    def test_save_model_artifacts_fallback(self, tmp_path):
+        """save_model_artifacts should use fallback when native save fails"""
+        from scripts.train_eval_legacy import save_model_artifacts
+
+        # Create a mock LightGBM model
+        class MockModel:
+            def __init__(self, fail_save=False):
+                self.fail_save = fail_save
+                self.save_model_called = False
+                self.model_to_string_called = False
+
+            def save_model(self, path):
+                self.save_model_called = True
+                if self.fail_save:
+                    raise OSError("Mock save_model failure (simulating Windows path issue)")
+
+            def model_to_string(self):
+                self.model_to_string_called = True
+                return "mock_model_content\n"
+
+            def feature_importance(self, importance_type='gain'):
+                return [1.0, 2.0]
+
+        # Test normal save (no fallback needed)
+        model_normal = MockModel(fail_save=False)
+        feature_cols = ["feature_a", "feature_b"]
+
+        result = save_model_artifacts(
+            model=model_normal,
+            feature_cols=feature_cols,
+            out_dir=tmp_path,
+            target="target_win",
+            version="v3",
+        )
+
+        assert model_normal.save_model_called
+        assert not model_normal.model_to_string_called
+        assert (tmp_path / "lgbm_target_win_v3.txt").exists()
+
+        # Test fallback save (native save fails)
+        fallback_dir = tmp_path / "fallback"
+        fallback_dir.mkdir()
+
+        model_fallback = MockModel(fail_save=True)
+
+        result = save_model_artifacts(
+            model=model_fallback,
+            feature_cols=feature_cols,
+            out_dir=fallback_dir,
+            target="target_in3",
+            version="v2",
+        )
+
+        assert model_fallback.save_model_called
+        assert model_fallback.model_to_string_called  # Fallback was used
+        assert (fallback_dir / "lgbm_target_in3_v2.txt").exists()
+
+        # Verify content was written via fallback
+        content = (fallback_dir / "lgbm_target_in3_v2.txt").read_text()
+        assert "mock_model_content" in content
+
+    def test_save_model_artifacts_creates_all_files(self, tmp_path):
+        """save_model_artifacts should create model, JSON, and CSV files"""
+        from scripts.train_eval_legacy import save_model_artifacts
+
+        class MockModel:
+            def save_model(self, path):
+                Path(path).write_text("model_content")
+
+            def feature_importance(self, importance_type='gain'):
+                return [10.0, 20.0, 30.0]
+
+        model = MockModel()
+        feature_cols = ["feat_a", "feat_b", "feat_c"]
+
+        result = save_model_artifacts(
+            model=model,
+            feature_cols=feature_cols,
+            out_dir=tmp_path,
+            target="target_win",
+            version="v1",
+        )
+
+        # Check all files created
+        assert "model" in result
+        assert "feature_columns" in result
+        assert "importance" in result
+
+        assert (tmp_path / "lgbm_target_win_v1.txt").exists()
+        assert (tmp_path / "feature_columns_target_win_v1.json").exists()
+        assert (tmp_path / "feature_importance_target_win_v1.csv").exists()
+
+        # Verify JSON content
+        with open(tmp_path / "feature_columns_target_win_v1.json") as f:
+            cols = json.load(f)
+        assert cols == ["feat_a", "feat_b", "feat_c"]
+
+
+# =============================================================================
+# Test: Legacy Models Dir Option (P0-3)
+# =============================================================================
+
+class TestLegacyModelsDirOption:
+    """Tests for --legacy-models-dir option"""
+
+    def test_run_audit_accepts_legacy_models_dir(self, tmp_path):
+        """run_audit should accept legacy_models_dir parameter"""
+        from scripts.audit_featurepacks import run_audit
+        import inspect
+
+        # Check that run_audit has legacy_models_dir parameter
+        sig = inspect.signature(run_audit)
+        params = list(sig.parameters.keys())
+
+        assert "legacy_models_dir" in params
+
+    def test_run_audit_uses_legacy_models_dir_for_training(self, tmp_path, monkeypatch):
+        """run_audit should pass legacy_models_dir to auto_train_legacy"""
+        from scripts import audit_featurepacks
+
+        # Track what arguments are passed to auto_train_legacy
+        called_with = {}
+
+        def mock_auto_train_legacy(db_path, models_dir, version, targets):
+            called_with["models_dir"] = models_dir
+            called_with["version"] = version
+            return (True, "")
+
+        def mock_detect_all_versions(db_path=None, models_dir=None):
+            return [("v3", True, "OK")]
+
+        def mock_get_adapter(version, db_path=None, models_dir=None):
+            return None  # Skip actual audit
+
+        def mock_check_model_exists(models_dir, version, target):
+            return False  # Trigger auto-training
+
+        monkeypatch.setattr(audit_featurepacks, "auto_train_legacy", mock_auto_train_legacy)
+        monkeypatch.setattr(audit_featurepacks, "detect_all_versions", mock_detect_all_versions)
+        monkeypatch.setattr(audit_featurepacks, "get_adapter", mock_get_adapter)
+        monkeypatch.setattr(audit_featurepacks, "check_model_exists", mock_check_model_exists)
+
+        db_path = tmp_path / "test.db"
+        db_path.touch()
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        legacy_dir = tmp_path / "legacy_models"
+        legacy_dir.mkdir()
+        output_dir = tmp_path / "output"
+
+        # Run with legacy_models_dir
+        audit_featurepacks.run_audit(
+            db_path=db_path,
+            models_dir=models_dir,
+            output_dir=output_dir,
+            versions=["v3"],
+            auto_train=True,
+            legacy_models_dir=legacy_dir,
+        )
+
+        # Verify auto_train_legacy was called with legacy_dir, not models_dir
+        assert called_with.get("models_dir") == legacy_dir
+
+    def test_run_audit_defaults_to_models_dir(self, tmp_path, monkeypatch):
+        """run_audit should use models_dir when legacy_models_dir is None"""
+        from scripts import audit_featurepacks
+
+        called_with = {}
+
+        def mock_auto_train_legacy(db_path, models_dir, version, targets):
+            called_with["models_dir"] = models_dir
+            return (True, "")
+
+        def mock_detect_all_versions(db_path=None, models_dir=None):
+            return [("v3", True, "OK")]
+
+        def mock_get_adapter(version, db_path=None, models_dir=None):
+            return None
+
+        def mock_check_model_exists(models_dir, version, target):
+            return False
+
+        monkeypatch.setattr(audit_featurepacks, "auto_train_legacy", mock_auto_train_legacy)
+        monkeypatch.setattr(audit_featurepacks, "detect_all_versions", mock_detect_all_versions)
+        monkeypatch.setattr(audit_featurepacks, "get_adapter", mock_get_adapter)
+        monkeypatch.setattr(audit_featurepacks, "check_model_exists", mock_check_model_exists)
+
+        db_path = tmp_path / "test.db"
+        db_path.touch()
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        output_dir = tmp_path / "output"
+
+        # Run WITHOUT legacy_models_dir
+        audit_featurepacks.run_audit(
+            db_path=db_path,
+            models_dir=models_dir,
+            output_dir=output_dir,
+            versions=["v3"],
+            auto_train=True,
+            # legacy_models_dir not specified
+        )
+
+        # Verify auto_train_legacy was called with models_dir
+        assert called_with.get("models_dir") == models_dir
+
+
+# =============================================================================
 # Run Tests
 # =============================================================================
 

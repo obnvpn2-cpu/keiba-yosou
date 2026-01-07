@@ -365,6 +365,7 @@ def run_audit(
     fast: bool = True,
     dry_run: bool = False,
     auto_train: bool = False,
+    legacy_models_dir: Optional[Path] = None,
 ) -> int:
     """
     棚卸しを実行
@@ -375,6 +376,9 @@ def run_audit(
     targets = targets or DEFAULT_TARGETS
     modes = modes or DEFAULT_MODES
 
+    # Resolve legacy_models_dir (default to models_dir if not specified)
+    effective_legacy_models_dir = legacy_models_dir if legacy_models_dir else models_dir
+
     print_header("Feature Audit Runner (Step C/D)")
     print(f"  Database:   {db_path}")
     print(f"  Models:     {models_dir}")
@@ -384,6 +388,8 @@ def run_audit(
     print(f"  Fast mode:  {fast}")
     print(f"  Dry run:    {dry_run}")
     print(f"  Auto-train: {auto_train}")
+    if auto_train and legacy_models_dir:
+        print(f"  Legacy out: {legacy_models_dir}")
 
     # ==========================================================================
     # 1. バージョン検出
@@ -425,7 +431,9 @@ def run_audit(
 
                 if missing_targets:
                     print_info(f"{version}: Missing models for {missing_targets}")
-                    success, error_msg = auto_train_legacy(db_path, models_dir, version, missing_targets)
+                    success, error_msg = auto_train_legacy(
+                        db_path, effective_legacy_models_dir, version, missing_targets
+                    )
                     if not success:
                         train_errors[version] = error_msg
                 else:
@@ -688,6 +696,12 @@ Examples:
         help="Auto-train missing models for legacy versions (v3/v2/v1)",
     )
     parser.add_argument(
+        "--legacy-models-dir",
+        type=str,
+        default=None,
+        help="Output directory for legacy models when auto-training (default: same as --models)",
+    )
+    parser.add_argument(
         "--no-color",
         action="store_true",
         help="Disable colored output",
@@ -718,6 +732,13 @@ Examples:
     # Fast mode
     fast = args.fast and not args.no_fast
 
+    # Parse legacy_models_dir
+    legacy_models_dir = (
+        Path(args.legacy_models_dir).absolute()
+        if args.legacy_models_dir
+        else None
+    )
+
     # Run
     exit_code = run_audit(
         db_path=Path(args.db).absolute(),
@@ -729,6 +750,7 @@ Examples:
         fast=fast,
         dry_run=args.dry_run,
         auto_train=args.auto_train,
+        legacy_models_dir=legacy_models_dir,
     )
 
     sys.exit(exit_code)
