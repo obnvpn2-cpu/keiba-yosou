@@ -107,6 +107,22 @@ from .diagnostics import (
     SEGMENT_DEFINITIONS,
 )
 
+# Bridge layer for v3 feature migration (optional)
+try:
+    from .bridge_v3_features import (
+        BridgeV3Features,
+        BridgeConfig,
+        BridgeResult,
+        MigrationCandidate,
+        BRIDGE_PREFIX,
+        apply_bridge_to_dataframe,
+        get_bridge_feature_columns,
+        list_available_v3_features,
+    )
+    HAS_BRIDGE = True
+except ImportError:
+    HAS_BRIDGE = False
+
 __all__ = [
     # DDL
     "CREATE_FEATURE_TABLE_V4",
@@ -173,4 +189,19 @@ __all__ = [
     "get_feature_group",
     "FEATURE_GROUP_PREFIXES",
     "SEGMENT_DEFINITIONS",
+    # Bridge (v3 feature migration)
+    "HAS_BRIDGE",
 ]
+
+# Add bridge exports if available
+if HAS_BRIDGE:
+    __all__.extend([
+        "BridgeV3Features",
+        "BridgeConfig",
+        "BridgeResult",
+        "MigrationCandidate",
+        "BRIDGE_PREFIX",
+        "apply_bridge_to_dataframe",
+        "get_bridge_feature_columns",
+        "list_available_v3_features",
+    ])

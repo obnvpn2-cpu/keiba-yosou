@@ -56,6 +56,23 @@ from sklearn.metrics import (
 
 from .feature_table_v4 import get_feature_v4_columns
 
+# Bridge layer for v3 features (optional)
+try:
+    from .bridge_v3_features import (
+        BridgeV3Features,
+        BridgeConfig,
+        BridgeResult,
+        BRIDGE_PREFIX,
+        apply_bridge_to_dataframe,
+    )
+    HAS_BRIDGE = True
+except ImportError:
+    HAS_BRIDGE = False
+    BridgeV3Features = None  # type: ignore
+    BridgeConfig = None  # type: ignore
+    BridgeResult = None  # type: ignore
+    BRIDGE_PREFIX = "v4_bridge_"
+
 logger = logging.getLogger(__name__)
 
 
@@ -356,6 +373,7 @@ def get_train_feature_columns(
     df: pd.DataFrame,
     include_pedigree: bool = True,
     include_market: bool = False,
+    include_bridge: bool = False,
 ) -> List[str]:
     """
     学習に使用する特徴量カラムを取得
@@ -364,6 +382,12 @@ def get_train_feature_columns(
     - race_id, horse_id, race_date (identity)
     - target_* (targets)
     - place, surface, track_condition, etc. (text columns)
+
+    Args:
+        df: データフレーム
+        include_pedigree: 血統ハッシュを含めるか
+        include_market: 市場情報を含めるか
+        include_bridge: v3ブリッジ特徴量を含めるか
     """
     # 定義済み特徴量カラムを取得
     feature_cols = get_feature_v4_columns(
@@ -378,6 +402,15 @@ def get_train_feature_columns(
     for c in available_cols[:]:
         if df[c].dtype == "object":
             available_cols.remove(c)
+
+    # Bridge features (v4_bridge_* prefix)
+    if include_bridge:
+        bridge_cols = [c for c in df.columns if c.startswith(BRIDGE_PREFIX)]
+        # object 型を除外
+        bridge_cols = [c for c in bridge_cols if df[c].dtype != "object"]
+        available_cols.extend(bridge_cols)
+        if bridge_cols:
+            logger.info("Including %d bridge features", len(bridge_cols))
 
     return available_cols
 
@@ -488,6 +521,7 @@ def train_model(
     output_dir: Optional[str] = None,
     exclude_features: Optional[Set[str]] = None,
     mode: str = "default",
+    include_bridge: bool = False,
 ) -> Tuple[Any, List[str]]:
     """
     LightGBM モデルを学習
@@ -499,6 +533,7 @@ def train_model(
         output_dir: モデル保存先 (None の場合は保存しない)
         exclude_features: 除外する特徴量名のセット
         mode: 実行モード ("default" or "pre_race")
+        include_bridge: v3ブリッジ特徴量を含めるか
 
     Returns:
         (model, feature_cols)
@@ -513,6 +548,7 @@ def train_model(
         train_df,
         include_pedigree=config.include_pedigree,
         include_market=config.include_market,
+        include_bridge=include_bridge,
     )
 
     # Apply feature exclusion
@@ -2154,6 +2190,8 @@ def run_full_pipeline(
     use_snapshots: bool = True,
     exclude_features: Optional[Set[str]] = None,
     mode: str = "default",
+    bridge_v3: bool = False,
+    bridge_config: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     完全なパイプラインを実行
@@ -2172,6 +2210,8 @@ def run_full_pipeline(
         use_snapshots: オッズスナップショットを使用するか
         exclude_features: 除外する特徴量名のセット (pre_race モード等)
         mode: 実行モード ("default" or "pre_race")
+        bridge_v3: v3 特徴量ブリッジを有効化するか
+        bridge_config: BridgeConfig インスタンス (None=デフォルト設定)
 
     Returns:
         結果の辞書
@@ -2183,6 +2223,7 @@ def run_full_pipeline(
     logger.info("Running Full Train/Eval/ROI Pipeline")
     logger.info("  Mode: %s", mode)
     logger.info("  Split mode: %s", split_mode)
+    logger.info("  Bridge v3: %s", bridge_v3)
     logger.info("=" * 80)
 
     # データロード
@@ -2194,6 +2235,32 @@ def run_full_pipeline(
     )
     logger.info("Loaded %d rows", len(df))
 
+    # ========================================================================
+    # Bridge v3 features (optional)
+    # ========================================================================
+    bridge_result = None
+    if bridge_v3:
+        if not HAS_BRIDGE:
+            logger.error("Bridge module not available. Install bridge_v3_features.py")
+        else:
+            logger.info("-" * 40)
+            logger.info("Applying v3 feature bridge...")
+            logger.info("-" * 40)
+
+            bridge = BridgeV3Features(conn, bridge_config)
+            df, bridge_result = bridge.apply_bridge(df, target=config.target_col)
+
+            logger.info("Bridge result:")
+            logger.info("  Features applied: %d", bridge_result.n_features_applied)
+            logger.info("  Features skipped (unsafe): %d", bridge_result.n_features_skipped_unsafe)
+            logger.info("  Features skipped (missing): %d", bridge_result.n_features_skipped_missing)
+            logger.info("  Features with warnings: %d", bridge_result.n_features_warn)
+
+            if bridge_result.applied_features:
+                logger.info("  Applied features:")
+                for f in bridge_result.applied_features:
+                    logger.info("    - %s", f)
+
     # 時系列分割
     train_df, val_df, test_df = split_time_series(df, train_end, val_end, split_mode)
 
@@ -2202,6 +2269,7 @@ def run_full_pipeline(
         train_df, val_df, config, output_dir,
         exclude_features=exclude_features,
         mode=mode,
+        include_bridge=bridge_v3,
     )
 
     # 評価
@@ -2243,7 +2311,20 @@ def run_full_pipeline(
         "train_size": len(train_df),
         "val_size": len(val_df),
         "test_size": len(test_df),
+        "bridge_v3_enabled": bridge_v3,
     }
+
+    # Bridge result
+    if bridge_result:
+        results["bridge_result"] = {
+            "n_features_applied": bridge_result.n_features_applied,
+            "n_features_skipped_unsafe": bridge_result.n_features_skipped_unsafe,
+            "n_features_skipped_missing": bridge_result.n_features_skipped_missing,
+            "n_features_warn": bridge_result.n_features_warn,
+            "applied_features": bridge_result.applied_features,
+            "skipped_features": bridge_result.skipped_features,
+            "warn_features": bridge_result.warn_features,
+        }
 
     # 結果を保存
     if output_dir:
@@ -2364,6 +2445,24 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=0.05, help="Learning rate")
     parser.add_argument("--num-leaves", type=int, default=63, help="Number of leaves")
 
+    # Bridge v3 features
+    parser.add_argument(
+        "--bridge-v3",
+        action="store_true",
+        help="Enable v3 feature bridge (inject v3 features with v4_bridge_ prefix)",
+    )
+    parser.add_argument(
+        "--bridge-max-features",
+        type=int,
+        default=20,
+        help="Maximum number of v3 features to bridge (default: 20)",
+    )
+    parser.add_argument(
+        "--bridge-no-warn",
+        action="store_true",
+        help="Exclude 'warn' safety features from bridge",
+    )
+
     args = parser.parse_args()
 
     if not Path(args.db).exists():
@@ -2378,6 +2477,14 @@ if __name__ == "__main__":
         num_leaves=args.num_leaves,
     )
 
+    # Configure bridge
+    bridge_config = None
+    if args.bridge_v3 and HAS_BRIDGE:
+        bridge_config = BridgeConfig(
+            max_features=args.bridge_max_features,
+            include_warn=not args.bridge_no_warn,
+        )
+
     conn = sqlite3.connect(args.db)
     try:
         results = run_full_pipeline(
@@ -2387,7 +2494,11 @@ if __name__ == "__main__":
             train_end=args.train_end,
             val_end=args.val_end,
             split_mode=args.split_mode,
+            bridge_v3=args.bridge_v3,
+            bridge_config=bridge_config,
         )
-        print(json.dumps(results, indent=2))
+        # Filter out non-serializable keys for JSON output
+        json_results = {k: v for k, v in results.items() if not k.startswith("_")}
+        print(json.dumps(json_results, indent=2))
     finally:
         conn.close()

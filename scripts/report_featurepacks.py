@@ -108,9 +108,17 @@ def load_audit_data(
     versions: List[str],
     targets: List[str],
     mode: str = DEFAULT_MODE,
+    models_dir: Optional[Path] = None,
 ) -> Dict[str, Dict[str, VersionAuditData]]:
     """
-    Load audit data from artifacts directory.
+    Load audit data from artifacts directory with fallback to models directory.
+
+    Args:
+        input_dir: Audit artifacts directory (artifacts/feature_audit/)
+        versions: List of versions to load
+        targets: List of targets to load
+        mode: Mode (pre_race, etc.)
+        models_dir: Models directory for fallback loading
 
     Returns:
         {version: {target: VersionAuditData}}
@@ -121,49 +129,173 @@ def load_audit_data(
         result[version] = {}
         for target in targets:
             audit_dir = input_dir / version / mode / target
-
-            if not audit_dir.exists():
-                logger.warning(f"Audit directory not found: {audit_dir}")
-                continue
-
             data = VersionAuditData(version=version, target=target, mode=mode)
 
-            # Load used_features.txt
-            features_file = audit_dir / "used_features.txt"
-            if features_file.exists():
-                with open(features_file, "r", encoding="utf-8") as f:
-                    data.features = [line.strip() for line in f if line.strip()]
+            if audit_dir.exists():
+                # Load from audit artifacts
+                _load_from_audit_artifacts(audit_dir, data)
+            else:
+                logger.warning(f"Audit directory not found: {audit_dir}")
 
-            # Load importance_gain.csv
-            gain_file = audit_dir / "importance_gain.csv"
-            if gain_file.exists():
-                data.importance_gain = _load_importance_csv(gain_file)
+            # Fallback: load from models directory if importance is missing
+            if models_dir and not data.importance_gain:
+                logger.info(f"Trying fallback load from models/ for {version}/{target}")
+                _load_from_models_fallback(models_dir, version, target, data)
 
-            # Load importance_split.csv
-            split_file = audit_dir / "importance_split.csv"
-            if split_file.exists():
-                data.importance_split = _load_importance_csv(split_file)
+            # Only add if we have some data
+            if data.features or data.importance_gain:
+                result[version][target] = data
+                logger.info(
+                    f"Loaded {version}/{target}: "
+                    f"{len(data.features)} features, "
+                    f"{len(data.importance_gain)} importance entries"
+                )
 
-            # Load group_importance.csv
-            group_file = audit_dir / "group_importance.csv"
-            if group_file.exists():
-                data.group_importance = _load_group_importance_csv(group_file)
+    return result
 
-            # Load summary.json
-            summary_file = audit_dir / "summary.json"
-            if summary_file.exists():
-                with open(summary_file, "r", encoding="utf-8") as f:
-                    data.summary = json.load(f)
 
-            # Load feature_inventory.json
-            inventory_file = audit_dir / "feature_inventory.json"
-            if inventory_file.exists():
-                with open(inventory_file, "r", encoding="utf-8") as f:
-                    data.feature_inventory = json.load(f)
+def _load_from_audit_artifacts(audit_dir: Path, data: VersionAuditData) -> None:
+    """Load data from audit artifacts directory."""
+    # Load used_features.txt
+    features_file = audit_dir / "used_features.txt"
+    if features_file.exists():
+        with open(features_file, "r", encoding="utf-8") as f:
+            data.features = [line.strip() for line in f if line.strip()]
 
-            result[version][target] = data
-            logger.info(f"Loaded {version}/{target}: {len(data.features)} features")
+    # Load importance_gain.csv
+    gain_file = audit_dir / "importance_gain.csv"
+    if gain_file.exists():
+        data.importance_gain = _load_importance_csv(gain_file)
 
+    # Load importance_split.csv
+    split_file = audit_dir / "importance_split.csv"
+    if split_file.exists():
+        data.importance_split = _load_importance_csv(split_file)
+
+    # Load group_importance.csv
+    group_file = audit_dir / "group_importance.csv"
+    if group_file.exists():
+        data.group_importance = _load_group_importance_csv(group_file)
+
+    # Load summary.json
+    summary_file = audit_dir / "summary.json"
+    if summary_file.exists():
+        with open(summary_file, "r", encoding="utf-8") as f:
+            data.summary = json.load(f)
+
+    # Load feature_inventory.json
+    inventory_file = audit_dir / "feature_inventory.json"
+    if inventory_file.exists():
+        with open(inventory_file, "r", encoding="utf-8") as f:
+            data.feature_inventory = json.load(f)
+
+
+def _load_from_models_fallback(
+    models_dir: Path,
+    version: str,
+    target: str,
+    data: VersionAuditData,
+) -> None:
+    """
+    Fallback: load directly from models directory.
+
+    Tries versioned files first, then version-less files.
+    """
+    # Try versioned files first, then version-less
+    suffixes = [f"_{version}", ""]
+
+    # Load feature columns
+    if not data.features:
+        for suffix in suffixes:
+            json_path = models_dir / f"feature_columns_{target}{suffix}.json"
+            if json_path.exists():
+                try:
+                    with open(json_path, "r", encoding="utf-8") as f:
+                        data.features = json.load(f)
+                    logger.info(f"Loaded features from: {json_path}")
+                    break
+                except Exception as e:
+                    logger.warning(f"Failed to load {json_path}: {e}")
+
+    # Load importance from CSV
+    if not data.importance_gain:
+        for suffix in suffixes:
+            csv_path = models_dir / f"feature_importance_{target}{suffix}.csv"
+            if csv_path.exists():
+                try:
+                    data.importance_gain = _load_importance_csv_flexible(csv_path)
+                    logger.info(f"Loaded importance from: {csv_path}")
+                    break
+                except Exception as e:
+                    logger.warning(f"Failed to load {csv_path}: {e}")
+
+    # Fallback: load from model file directly using lightgbm
+    if not data.importance_gain:
+        for suffix in suffixes:
+            model_path = models_dir / f"lgbm_{target}{suffix}.txt"
+            if model_path.exists():
+                try:
+                    gain, split = _load_importance_from_model(model_path)
+                    if gain:
+                        data.importance_gain = gain
+                        data.importance_split = split
+                        # Use model's features as feature list if not loaded
+                        if not data.features:
+                            data.features = list(gain.keys())
+                        logger.info(f"Loaded importance from model: {model_path}")
+                        break
+                except Exception as e:
+                    logger.warning(f"Failed to load model {model_path}: {e}")
+
+
+def _load_importance_from_model(model_path: Path) -> Tuple[Dict[str, float], Dict[str, int]]:
+    """Load importance directly from LightGBM model file."""
+    try:
+        import lightgbm as lgb
+    except ImportError:
+        logger.warning("lightgbm not available for model loading")
+        return {}, {}
+
+    try:
+        # Try loading model file
+        try:
+            model = lgb.Booster(model_file=str(model_path))
+        except Exception:
+            # Fallback: read as string
+            model_str = model_path.read_text(encoding="utf-8")
+            model = lgb.Booster(model_str=model_str)
+
+        feature_names = model.feature_name()
+        gain_values = model.feature_importance(importance_type="gain")
+        split_values = model.feature_importance(importance_type="split")
+
+        gain_dict = dict(zip(feature_names, gain_values.tolist()))
+        split_dict = dict(zip(feature_names, split_values.astype(int).tolist()))
+
+        return gain_dict, split_dict
+    except Exception as e:
+        logger.warning(f"Failed to load importance from model: {e}")
+        return {}, {}
+
+
+def _load_importance_csv_flexible(path: Path) -> Dict[str, float]:
+    """Load importance CSV with flexible column names (gain/importance/split)."""
+    result = {}
+    with open(path, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            feature = row.get("feature", "")
+            # Try different column names
+            importance = None
+            for col in ["gain", "importance", "split"]:
+                if col in row and row[col]:
+                    try:
+                        importance = float(row[col])
+                        break
+                    except (ValueError, TypeError):
+                        continue
+            if feature and importance is not None:
+                result[feature] = importance
     return result
 
 
@@ -555,6 +687,178 @@ def generate_safety_summary(
     return rows
 
 
+# =============================================================================
+# Step F-0: Migration Candidates
+# =============================================================================
+
+def generate_migration_candidates(
+    audit_data: Dict[str, Dict[str, VersionAuditData]],
+    target: str,
+    source_version: str = "v3",
+    target_version: str = "v4",
+    top_k: int = 30,
+) -> List[Dict[str, Any]]:
+    """
+    Generate migration candidates: features in source's top-K but not in target.
+
+    Args:
+        audit_data: Audit data
+        target: Target column (target_win, target_in3)
+        source_version: Source version to pull candidates from
+        target_version: Target version that should receive features
+        top_k: Top K features from source to consider
+
+    Returns:
+        List of candidate dicts with suggested actions based on safety
+    """
+    if source_version not in audit_data or target not in audit_data[source_version]:
+        return []
+    if target_version not in audit_data or target not in audit_data[target_version]:
+        # Still return candidates but mark target as missing
+        pass
+
+    source_data = audit_data[source_version][target]
+    source_gain = source_data.importance_gain
+
+    # Get target features (may be empty if target version is missing)
+    target_features = set()
+    if target_version in audit_data and target in audit_data[target_version]:
+        target_features = set(audit_data[target_version][target].features)
+
+    # Get top-K from source
+    sorted_source = sorted(source_gain.items(), key=lambda x: -x[1])[:top_k]
+
+    rows = []
+    for rank, (feature, gain) in enumerate(sorted_source, 1):
+        # Only include features NOT in target
+        if feature in target_features:
+            continue
+
+        safety_label, safety_notes = classify_feature_safety(feature)
+
+        # Get group/prefix
+        if "_" in feature:
+            group = feature.split("_")[0] + "_"
+        else:
+            group = "other"
+
+        # Determine suggested action based on safety
+        if safety_label == "unsafe":
+            suggested_action = "skip"
+            blocked_reason = f"unsafe: {safety_notes}"
+        elif safety_label == "warn":
+            suggested_action = "needs_review"
+            blocked_reason = f"warn: {safety_notes}"
+        else:
+            suggested_action = "port"
+            blocked_reason = ""
+
+        rows.append({
+            "feature": feature,
+            f"{source_version}_gain": gain,
+            f"{source_version}_rank": rank,
+            "safety_label": safety_label,
+            "safety_notes": safety_notes,
+            "reason_tag": group,
+            "blocked_reason": blocked_reason,
+            "suggested_action": suggested_action,
+        })
+
+    # Sort by source rank
+    rows.sort(key=lambda x: x.get(f"{source_version}_rank", 999))
+
+    return rows
+
+
+def generate_candidate_summary(
+    audit_data: Dict[str, Dict[str, VersionAuditData]],
+    targets: List[str],
+    source_version: str = "v3",
+    target_version: str = "v4",
+    top_k: int = 30,
+) -> str:
+    """
+    Generate candidate summary markdown content.
+
+    Returns:
+        Markdown string with summary of migration candidates
+    """
+    lines = []
+    lines.append("# Migration Candidate Summary (Step F-0)")
+    lines.append("")
+    lines.append(f"Source: {source_version} → Target: {target_version}")
+    lines.append(f"Candidates: Top {top_k} features in {source_version} not present in {target_version}")
+    lines.append("")
+
+    for target in targets:
+        lines.append(f"## {target}")
+        lines.append("")
+
+        candidates = generate_migration_candidates(
+            audit_data, target, source_version, target_version, top_k
+        )
+
+        if not candidates:
+            lines.append("No migration candidates found.")
+            lines.append("")
+            continue
+
+        # Count by action
+        n_port = sum(1 for c in candidates if c["suggested_action"] == "port")
+        n_review = sum(1 for c in candidates if c["suggested_action"] == "needs_review")
+        n_skip = sum(1 for c in candidates if c["suggested_action"] == "skip")
+
+        lines.append("### Summary")
+        lines.append("")
+        lines.append(f"- **Port** (safe): {n_port}")
+        lines.append(f"- **Needs Review** (warn): {n_review}")
+        lines.append(f"- **Skip** (unsafe): {n_skip}")
+        lines.append("")
+
+        # Show port candidates
+        port_candidates = [c for c in candidates if c["suggested_action"] == "port"]
+        if port_candidates:
+            lines.append("### Port Candidates (Safe)")
+            lines.append("")
+            lines.append(f"| Rank | Feature | {source_version} Gain | Group |")
+            lines.append("|------|---------|-------|-------|")
+            for c in port_candidates[:15]:
+                lines.append(
+                    f"| {c[f'{source_version}_rank']} | {c['feature']} | "
+                    f"{c[f'{source_version}_gain']:.2f} | {c['reason_tag']} |"
+                )
+            lines.append("")
+
+        # Show review candidates (warn)
+        review_candidates = [c for c in candidates if c["suggested_action"] == "needs_review"]
+        if review_candidates:
+            lines.append("### Needs Review (Warn)")
+            lines.append("")
+            lines.append(f"| Rank | Feature | {source_version} Gain | Reason |")
+            lines.append("|------|---------|-------|--------|")
+            for c in review_candidates[:10]:
+                lines.append(
+                    f"| {c[f'{source_version}_rank']} | {c['feature']} | "
+                    f"{c[f'{source_version}_gain']:.2f} | {c['blocked_reason']} |"
+                )
+            lines.append("")
+
+        # Show skip candidates (unsafe)
+        skip_candidates = [c for c in candidates if c["suggested_action"] == "skip"]
+        if skip_candidates:
+            lines.append("### Blocked (Unsafe)")
+            lines.append("")
+            lines.append(f"| Rank | Feature | Reason |")
+            lines.append("|------|---------|--------|")
+            for c in skip_candidates[:5]:
+                lines.append(
+                    f"| {c[f'{source_version}_rank']} | {c['feature']} | {c['blocked_reason']} |"
+                )
+            lines.append("")
+
+    return "\n".join(lines)
+
+
 def _get_rank(gain_dict: Dict[str, float], feature: str) -> Optional[int]:
     """Get rank of feature in gain dict."""
     if feature not in gain_dict:
@@ -805,9 +1109,19 @@ def run_report(
     targets: List[str],
     mode: str = DEFAULT_MODE,
     dry_run: bool = False,
+    models_dir: Optional[Path] = None,
 ) -> int:
     """
     Generate comparison reports.
+
+    Args:
+        input_dir: Audit artifacts directory
+        output_dir: Output directory for reports
+        versions: List of versions to include
+        targets: List of targets to include
+        mode: Mode (pre_race, etc.)
+        dry_run: Only show what would be generated
+        models_dir: Models directory for fallback loading
 
     Returns:
         Exit code (0=success, 1=error)
@@ -816,15 +1130,16 @@ def run_report(
     print(f"=" * 60)
     print(f"  Input:    {input_dir}")
     print(f"  Output:   {output_dir}")
+    print(f"  Models:   {models_dir or '(not specified)'}")
     print(f"  Versions: {', '.join(versions)}")
     print(f"  Targets:  {', '.join(targets)}")
     print(f"  Mode:     {mode}")
     print(f"  Dry run:  {dry_run}")
     print()
 
-    # Load audit data
+    # Load audit data with fallback to models directory
     print("Loading audit data...")
-    audit_data = load_audit_data(input_dir, versions, targets, mode)
+    audit_data = load_audit_data(input_dir, versions, targets, mode, models_dir)
 
     # Check if we have any data
     has_data = False
@@ -843,12 +1158,14 @@ def run_report(
         print(f"  {output_dir / 'index.md'}")
         print(f"  {output_dir / 'feature_compare.csv'}")
         print(f"  {output_dir / 'feature_compare.json'}")
+        print(f"  {output_dir / 'candidate_summary.md'}")
         for target in targets:
             for version in versions:
                 print(f"  {output_dir / f'top_features_{target}_{version}.csv'}")
             print(f"  {output_dir / f'common_top_features_{target}.csv'}")
             print(f"  {output_dir / f'diff_v4_vs_v3_{target}.csv'}")
             print(f"  {output_dir / f'safety_summary_{target}.csv'}")
+            print(f"  {output_dir / f'migration_candidates_{target}.csv'}")
         return 0
 
     # Generate reports
@@ -917,6 +1234,28 @@ def run_report(
                 safety_data
             )
 
+    # Migration candidates (Step F-0)
+    for target in targets:
+        candidates = generate_migration_candidates(audit_data, target, "v3", "v4", 30)
+        if candidates:
+            # Define column order for CSV
+            fieldnames = [
+                "feature", "v3_gain", "v3_rank", "safety_label", "safety_notes",
+                "reason_tag", "blocked_reason", "suggested_action"
+            ]
+            write_csv(
+                output_dir / f"migration_candidates_{target}.csv",
+                candidates,
+                fieldnames
+            )
+
+    # Candidate summary markdown (Step F-0)
+    candidate_md = generate_candidate_summary(audit_data, targets, "v3", "v4", 30)
+    candidate_path = output_dir / "candidate_summary.md"
+    with open(candidate_path, "w", encoding="utf-8") as f:
+        f.write(candidate_md)
+    print(f"Wrote candidate_summary.md to {candidate_path}")
+
     # Index markdown
     index_md = generate_index_md(audit_data, targets, versions, output_dir)
     index_path = output_dir / "index.md"
@@ -982,6 +1321,12 @@ Examples:
         help=f"Mode (default: {DEFAULT_MODE})",
     )
     parser.add_argument(
+        "--models",
+        type=str,
+        default=str(PROJECT_ROOT / "models"),
+        help="Models directory for fallback loading (default: models/)",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Show files that would be generated without writing",
@@ -1004,6 +1349,9 @@ Examples:
     versions = args.versions.split(",") if args.versions else DEFAULT_VERSIONS
     targets = args.targets.split(",") if args.targets else DEFAULT_TARGETS
 
+    # Parse models_dir
+    models_dir = Path(args.models).absolute() if args.models else None
+
     # Run
     exit_code = run_report(
         input_dir=Path(args.input).absolute(),
@@ -1012,6 +1360,7 @@ Examples:
         targets=targets,
         mode=args.mode,
         dry_run=args.dry_run,
+        models_dir=models_dir,
     )
 
     sys.exit(exit_code)
