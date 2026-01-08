@@ -1093,5 +1093,81 @@ class TestExplainFromPipeline:
         assert result.n_features == 1
 
 
+class TestExplainJSONSchema:
+    """Tests for Explain JSON schema validation"""
+
+    def test_explain_json_has_required_top_level_keys(self, tmp_path):
+        """Test that generated explain JSON has all required top-level keys"""
+        from src.features_v4.explain_runner import generate_explain_from_pipeline
+
+        feature_cols = ["feat1", "feat2"]
+        result = generate_explain_from_pipeline(
+            feature_cols=feature_cols,
+            target="target_win",
+            output_dir=tmp_path,
+            model_version="v4",
+        )
+
+        # Load the generated JSON
+        output_path = tmp_path / "explain_target_win_v4.json"
+        assert output_path.exists()
+
+        with open(output_path) as f:
+            data = json.load(f)
+
+        # Check required top-level keys
+        required_keys = [
+            "schema_version",
+            "generated_at",
+            "model_version",
+            "target",
+            "n_features",
+            "n_bridged",
+            "n_native",
+            "features",
+        ]
+        for key in required_keys:
+            assert key in data, f"Missing required key: {key}"
+
+        # Check features is array
+        assert isinstance(data["features"], list)
+        assert len(data["features"]) == 2
+
+    def test_explain_json_feature_structure(self, tmp_path):
+        """Test that each feature in the array has required fields"""
+        from src.features_v4.explain_runner import generate_explain_from_pipeline
+
+        feature_cols = ["test_feature"]
+        result = generate_explain_from_pipeline(
+            feature_cols=feature_cols,
+            target="target_win",
+            output_dir=tmp_path,
+            model_version="v4",
+        )
+
+        output_path = tmp_path / "explain_target_win_v4.json"
+        with open(output_path) as f:
+            data = json.load(f)
+
+        assert len(data["features"]) == 1
+        feature = data["features"][0]
+
+        # Check required feature fields
+        required_feature_keys = [
+            "feature_name",
+            "display_name",
+            "origin",
+            "safety_label",
+            "importance_gain",
+            "importance_split",
+        ]
+        for key in required_feature_keys:
+            assert key in feature, f"Missing required feature key: {key}"
+
+        assert feature["feature_name"] == "test_feature"
+        assert feature["origin"] in ["v4_native", "v3_bridged"]
+        assert feature["safety_label"] in ["safe", "warn", "unsafe", "unknown"]
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
