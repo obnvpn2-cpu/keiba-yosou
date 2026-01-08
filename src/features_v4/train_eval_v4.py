@@ -75,6 +75,14 @@ except ImportError:
     FeatureSafetyInfo = None  # type: ignore
     BRIDGE_PREFIX = "v4_bridge_"
 
+# Explain runner for F-3 (optional - non-fatal if unavailable)
+try:
+    from .explain_runner import generate_explain_from_pipeline
+    HAS_EXPLAIN = True
+except ImportError:
+    HAS_EXPLAIN = False
+    generate_explain_from_pipeline = None  # type: ignore
+
 logger = logging.getLogger(__name__)
 
 
@@ -2365,6 +2373,23 @@ def run_full_pipeline(
         with open(results_path, "w", encoding="utf-8") as f:
             json.dump(results, f, ensure_ascii=False, indent=2)
         logger.info("Saved results to %s", results_path)
+
+    # F-3: Explain JSON 生成 (train後の一気通貫)
+    explain_result = None
+    if output_dir and HAS_EXPLAIN:
+        output_path = Path(output_dir)
+        importance_csv_path = output_path / f"feature_importance_{config.target_col}_v4.csv"
+        bridge_map_path = Path(bridge_feature_map_path) if bridge_feature_map_path else None
+        explain_result = generate_explain_from_pipeline(
+            feature_cols=feature_cols,
+            target=config.target_col,
+            output_dir=output_path,
+            bridge_map_path=bridge_map_path,
+            importance_csv_path=importance_csv_path,
+            model_version="v4",
+        )
+        if explain_result:
+            results["explain_path"] = str(output_path / f"explain_{config.target_col}_v4.json")
 
     # artifacts/ に保存
     artifacts_dir = Path("artifacts")
