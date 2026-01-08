@@ -114,6 +114,7 @@ from .explain_runner import (
     resolve_feature_name,
     build_feature_explanation,
     generate_explain_result,
+    generate_explain_from_pipeline,
     run_explain,
 )
 
@@ -211,6 +212,7 @@ __all__ = [
     "resolve_feature_name",
     "build_feature_explanation",
     "generate_explain_result",
+    "generate_explain_from_pipeline",
     "run_explain",
     # Bridge (v3 feature migration)
     "HAS_BRIDGE",

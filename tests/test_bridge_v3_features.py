@@ -940,6 +940,158 @@ class TestF3ExplainRunner:
         assert len(d["features"]) == 2
         assert d["features"][0]["display_name"] == "test"
 
+    def test_explain_result_schema_version(self):
+        """Test that ExplainResult includes schema_version, generated_at, model_version"""
+        result = ExplainResult(
+            target="target_win",
+            n_features=1,
+            n_bridged=0,
+            n_native=1,
+            model_version="v4",
+        )
+
+        d = result.to_dict()
+
+        # Check schema fields at top level
+        assert "schema_version" in d
+        assert d["schema_version"] == "1.0"
+        assert "generated_at" in d
+        assert d["generated_at"] != ""  # Should be auto-set
+        assert "model_version" in d
+        assert d["model_version"] == "v4"
+
+        # Check order: schema fields should come before target
+        keys = list(d.keys())
+        assert keys.index("schema_version") < keys.index("target")
+        assert keys.index("generated_at") < keys.index("target")
+        assert keys.index("model_version") < keys.index("target")
+
+    def test_generate_explain_result_sorting(self):
+        """Test that features are sorted by gain then split descending"""
+        bridge_map = {"feature_map": {}, "features": {}}
+
+        feature_names = ["feat_low", "feat_high", "feat_mid"]
+        importance_df = pd.DataFrame([
+            {"feature": "feat_low", "gain": 1.0, "split": 10},
+            {"feature": "feat_high", "gain": 100.0, "split": 5},
+            {"feature": "feat_mid", "gain": 50.0, "split": 20},
+        ])
+
+        result = generate_explain_result(
+            feature_names=feature_names,
+            target="target_win",
+            bridge_map_data=bridge_map,
+            importance_df=importance_df,
+        )
+
+        # Should be sorted by gain descending
+        assert result.features[0].feature_name == "feat_high"
+        assert result.features[1].feature_name == "feat_mid"
+        assert result.features[2].feature_name == "feat_low"
+
+
+class TestExplainFromPipeline:
+    """Tests for generate_explain_from_pipeline function"""
+
+    def test_generate_explain_from_pipeline_with_bridge_map(self, tmp_path):
+        """Test explain generation with bridge map present"""
+        from src.features_v4.explain_runner import generate_explain_from_pipeline
+
+        # Create test bridge map
+        bridge_map = {
+            "feature_map": {
+                "v4_bridge_test": "original_test",
+            },
+            "features": {
+                "v4_bridge_test": {
+                    "safety_label": "safe",
+                    "safety_notes": "",
+                    "origin": "v3_bridged",
+                },
+            },
+        }
+        bridge_map_path = tmp_path / "bridge_feature_map_target_win.json"
+        with open(bridge_map_path, "w") as f:
+            json.dump(bridge_map, f)
+
+        # Create test importance CSV
+        importance_df = pd.DataFrame([
+            {"feature": "v4_bridge_test", "gain": 50.0, "split": 100},
+            {"feature": "native_feat", "gain": 25.0, "split": 50},
+        ])
+        importance_path = tmp_path / "feature_importance_target_win_v4.csv"
+        importance_df.to_csv(importance_path, index=False)
+
+        feature_cols = ["v4_bridge_test", "native_feat"]
+
+        result = generate_explain_from_pipeline(
+            feature_cols=feature_cols,
+            target="target_win",
+            output_dir=tmp_path,
+            bridge_map_path=bridge_map_path,
+            importance_csv_path=importance_path,
+            model_version="v4",
+        )
+
+        assert result is not None
+        assert result.n_features == 2
+        assert result.n_bridged == 1
+        assert result.n_native == 1
+        assert result.model_version == "v4"
+
+        # Check output file exists
+        output_path = tmp_path / "explain_target_win_v4.json"
+        assert output_path.exists()
+
+        # Verify JSON content
+        with open(output_path) as f:
+            data = json.load(f)
+        assert data["schema_version"] == "1.0"
+        assert data["model_version"] == "v4"
+        assert len(data["features"]) == 2
+
+    def test_generate_explain_from_pipeline_without_bridge_map(self, tmp_path):
+        """Test explain generation without bridge map (v4 native only)"""
+        from src.features_v4.explain_runner import generate_explain_from_pipeline
+
+        feature_cols = ["native_feat1", "native_feat2", "native_feat3"]
+
+        result = generate_explain_from_pipeline(
+            feature_cols=feature_cols,
+            target="target_win",
+            output_dir=tmp_path,
+            bridge_map_path=None,  # No bridge map
+            importance_csv_path=None,  # No importance
+            model_version="v4",
+        )
+
+        assert result is not None
+        assert result.n_features == 3
+        assert result.n_bridged == 0  # No bridged features
+        assert result.n_native == 3  # All native
+
+        # Check output file
+        output_path = tmp_path / "explain_target_win_v4.json"
+        assert output_path.exists()
+
+    def test_generate_explain_from_pipeline_error_handling(self, tmp_path):
+        """Test that explain generation handles errors gracefully"""
+        from src.features_v4.explain_runner import generate_explain_from_pipeline
+
+        # Point to non-existent bridge map path
+        result = generate_explain_from_pipeline(
+            feature_cols=["feat1"],
+            target="target_win",
+            output_dir=tmp_path,
+            bridge_map_path=Path("/nonexistent/path.json"),
+            importance_csv_path=Path("/nonexistent/importance.csv"),
+            model_version="v4",
+        )
+
+        # Should still succeed (non-fatal error for missing files)
+        assert result is not None
+        assert result.n_features == 1
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

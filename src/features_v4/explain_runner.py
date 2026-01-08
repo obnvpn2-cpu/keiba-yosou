@@ -64,10 +64,23 @@ class ExplainResult:
     n_native: int
     features: List[FeatureExplanation] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # MVP schema extensions
+    schema_version: str = "1.0"
+    generated_at: str = ""
+    model_version: str = "v4"
+
+    def __post_init__(self):
+        """Set generated_at if not provided"""
+        if not self.generated_at:
+            from datetime import datetime
+            self.generated_at = datetime.now().isoformat()
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
         return {
+            "schema_version": self.schema_version,
+            "generated_at": self.generated_at,
+            "model_version": self.model_version,
             "target": self.target,
             "n_features": self.n_features,
             "n_bridged": self.n_bridged,
@@ -161,6 +174,7 @@ def generate_explain_result(
     bridge_map_data: Dict[str, Any],
     importance_df: Optional["pd.DataFrame"] = None,
     exclude_warn: bool = False,
+    model_version: str = "v4",
 ) -> ExplainResult:
     """
     Generate complete explanation result for features
@@ -171,6 +185,7 @@ def generate_explain_result(
         bridge_map_data: Loaded bridge feature map data
         importance_df: DataFrame with feature importance (optional)
         exclude_warn: If True, exclude warn features from output
+        model_version: Model version string (e.g. "v4")
 
     Returns:
         ExplainResult object
@@ -222,8 +237,8 @@ def generate_explain_result(
         else:
             n_native += 1
 
-    # Sort by importance (descending)
-    features.sort(key=lambda x: x.importance_gain, reverse=True)
+    # Sort by importance: gain descending, then split descending
+    features.sort(key=lambda x: (x.importance_gain, x.importance_split), reverse=True)
 
     return ExplainResult(
         target=target,
@@ -235,6 +250,7 @@ def generate_explain_result(
             "exclude_warn": exclude_warn,
             "bridge_map_loaded": bool(bridge_map_data),
         },
+        model_version=model_version,
     )
 
 
@@ -356,6 +372,78 @@ def run_explain(
         logger.info(f"Saved explain JSON to: {output_path}")
 
     return result
+
+
+def generate_explain_from_pipeline(
+    feature_cols: List[str],
+    target: str,
+    output_dir: Path,
+    bridge_map_path: Optional[Path] = None,
+    importance_csv_path: Optional[Path] = None,
+    model_version: str = "v4",
+) -> Optional[ExplainResult]:
+    """
+    Generate explain JSON from pipeline context (called by train_eval_v4)
+
+    This is a convenience wrapper for run_full_pipeline integration.
+    Errors are logged but not raised (explain failure shouldn't affect training).
+
+    Args:
+        feature_cols: List of feature column names used in model
+        target: Target column name
+        output_dir: Output directory for explain JSON
+        bridge_map_path: Path to bridge feature map JSON (optional)
+        importance_csv_path: Path to feature importance CSV (optional)
+        model_version: Model version string (e.g. "v4")
+
+    Returns:
+        ExplainResult if successful, None if failed
+    """
+    import pandas as pd
+
+    try:
+        logger.info("-" * 40)
+        logger.info("Generating Explain JSON (F-3)")
+        logger.info("-" * 40)
+
+        # Load bridge map if available
+        bridge_map_data = {}
+        if bridge_map_path and bridge_map_path.exists():
+            bridge_map_data = load_bridge_feature_map(bridge_map_path)
+            logger.info(f"Loaded bridge map: {bridge_map_path}")
+        else:
+            logger.info("No bridge map available (v4 native features only)")
+
+        # Load importance if available
+        importance_df = None
+        if importance_csv_path and importance_csv_path.exists():
+            importance_df = pd.read_csv(importance_csv_path, encoding="utf-8")
+            logger.info(f"Loaded importance: {importance_csv_path}")
+
+        # Generate explain result
+        result = generate_explain_result(
+            feature_names=feature_cols,
+            target=target,
+            bridge_map_data=bridge_map_data,
+            importance_df=importance_df,
+            exclude_warn=False,
+            model_version=model_version,
+        )
+
+        # Save to output directory
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / f"explain_{target}_{model_version}.json"
+        result.to_json(output_path)
+
+        logger.info(f"Explain JSON generated: {output_path}")
+        logger.info(f"  Features: {result.n_features} (native: {result.n_native}, bridged: {result.n_bridged})")
+
+        return result
+
+    except Exception as e:
+        logger.warning(f"Explain generation failed (non-fatal): {e}")
+        return None
 
 
 def main():
