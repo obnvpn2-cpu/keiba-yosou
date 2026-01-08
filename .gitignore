@@ -117,3 +117,4 @@ artifacts/pre_race/outputs/
 # =============================================================================
 # 棚卸し結果（ユーザーローカル）
 artifacts/feature_audit/
+models/explain_*.json
