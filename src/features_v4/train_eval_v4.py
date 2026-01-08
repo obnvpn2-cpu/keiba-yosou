@@ -332,26 +332,27 @@ def split_time_series(
         train_end: 学習データの終了日
         val_end: 検証データの終了日
         split_mode: 分割モード
-            - "year_based": train=2021-2023, val=2023後半, test=2024
+            - "year_based": train=2021-2023Q3, val=2023Q4, test=2024
             - "date_based": train_end, val_end を明示指定
 
     Returns:
         (train_df, val_df, test_df)
     """
     if split_mode == "year_based":
-        # Year-based split: train=2021-2023, test=2024
-        # val は train の末尾 (2023-10-01~2023-12-31) を流用
-        train_end = "2023-12-31"
+        # Year-based split: train=~2023-09-30, val=2023-10-01~2023-12-31, test=2024~
+        # IMPORTANT: train と val は race_id 非重複でなければならない
+        train_end_actual = "2023-09-30"  # val開始前日まで
         val_start = "2023-10-01"
+        val_end_actual = "2023-12-31"
         test_start = "2024-01-01"
 
-        train_df = df[df["race_date"] <= train_end].copy()
-        val_df = df[(df["race_date"] >= val_start) & (df["race_date"] <= train_end)].copy()
+        train_df = df[df["race_date"] <= train_end_actual].copy()
+        val_df = df[(df["race_date"] >= val_start) & (df["race_date"] <= val_end_actual)].copy()
         test_df = df[df["race_date"] >= test_start].copy()
 
         logger.info("Time series split (year_based):")
-        logger.info("  Train: %d rows (~ %s)", len(train_df), train_end)
-        logger.info("  Val:   %d rows (%s ~ %s, subset of train)", len(val_df), val_start, train_end)
+        logger.info("  Train: %d rows (~ %s)", len(train_df), train_end_actual)
+        logger.info("  Val:   %d rows (%s ~ %s)", len(val_df), val_start, val_end_actual)
         logger.info("  Test:  %d rows (%s ~)", len(test_df), test_start)
     else:
         # Date-based split (original behavior)
@@ -363,6 +364,42 @@ def split_time_series(
         logger.info("  Train: %d rows (<= %s)", len(train_df), train_end)
         logger.info("  Val:   %d rows (%s ~ %s)", len(val_df), train_end, val_end)
         logger.info("  Test:  %d rows (> %s)", len(test_df), val_end)
+
+    # ==========================================================================
+    # race_id 重複検知ロギング（リーク防止）
+    # ==========================================================================
+    train_races = set(train_df["race_id"].unique()) if "race_id" in train_df.columns else set()
+    val_races = set(val_df["race_id"].unique()) if "race_id" in val_df.columns else set()
+    test_races = set(test_df["race_id"].unique()) if "race_id" in test_df.columns else set()
+
+    overlap_train_val = train_races & val_races
+    overlap_val_test = val_races & test_races
+    overlap_train_test = train_races & test_races
+
+    logger.info("Split stats - unique race_ids:")
+    logger.info("  Train: %d races", len(train_races))
+    logger.info("  Val:   %d races", len(val_races))
+    logger.info("  Test:  %d races", len(test_races))
+
+    # 重複検知
+    if overlap_train_val:
+        logger.error("DATA LEAK DETECTED: train/val overlap = %d races", len(overlap_train_val))
+        logger.error("  Sample overlapping race_ids: %s", list(overlap_train_val)[:5])
+        raise ValueError(
+            f"train と val に {len(overlap_train_val)} 件の race_id 重複があります。"
+            "これはデータリークです。split_mode または日付範囲を確認してください。"
+        )
+    if overlap_val_test:
+        logger.warning("val/test overlap = %d races (not ideal but acceptable)", len(overlap_val_test))
+    if overlap_train_test:
+        logger.warning("train/test overlap = %d races (should be 0)", len(overlap_train_test))
+
+    # Date range logging
+    for name, split_df in [("Train", train_df), ("Val", val_df), ("Test", test_df)]:
+        if len(split_df) > 0 and "race_date" in split_df.columns:
+            date_min = split_df["race_date"].min()
+            date_max = split_df["race_date"].max()
+            logger.info("  %s date range: %s ~ %s", name, date_min, date_max)
 
     return train_df, val_df, test_df
 

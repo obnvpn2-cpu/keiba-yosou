@@ -107,6 +107,16 @@ from .diagnostics import (
     SEGMENT_DEFINITIONS,
 )
 
+# Explain runner (F-3: bridge name resolution for UI)
+from .explain_runner import (
+    FeatureExplanation,
+    ExplainResult,
+    resolve_feature_name,
+    build_feature_explanation,
+    generate_explain_result,
+    run_explain,
+)
+
 # Bridge layer for v3 feature migration (optional)
 try:
     from .bridge_v3_features import (
@@ -195,6 +205,13 @@ __all__ = [
     "get_feature_group",
     "FEATURE_GROUP_PREFIXES",
     "SEGMENT_DEFINITIONS",
+    # Explain runner (F-3)
+    "FeatureExplanation",
+    "ExplainResult",
+    "resolve_feature_name",
+    "build_feature_explanation",
+    "generate_explain_result",
+    "run_explain",
     # Bridge (v3 feature migration)
     "HAS_BRIDGE",
 ]
