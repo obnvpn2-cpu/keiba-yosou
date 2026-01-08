@@ -355,12 +355,16 @@ def save_model_artifacts(
 
     # 1. Save model (text format) - with fallback for Windows path issues
     model_path = out_dir / f"{base_name}.txt"
+    native_error = None
     try:
         # Try LightGBM's native save_model first
         model.save_model(str(model_path))
+        if not model_path.exists():
+            raise FileNotFoundError("save_model succeeded but file not created")
         logger.info(f"Saved model (native): {model_path}")
     except Exception as e:
         # Fallback: use model_to_string() and write with Python
+        native_error = e
         logger.warning(f"save_model failed: {e}")
         logger.info("Falling back to model_to_string() + Python write")
         try:
@@ -371,7 +375,7 @@ def save_model_artifacts(
             logger.error(f"Fallback save also failed: {e2}")
             raise RuntimeError(
                 f"Failed to save model to {model_path}: "
-                f"native error={e}, fallback error={e2}"
+                f"native error={native_error}, fallback error={e2}"
             )
     saved_files["model"] = model_path
 
