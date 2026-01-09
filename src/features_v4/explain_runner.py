@@ -34,6 +34,39 @@ from .bridge_v3_features import (
 
 
 # =============================================================================
+# JSON Sanitization
+# =============================================================================
+
+
+def sanitize_for_json(obj: Any) -> Any:
+    """
+    Recursively sanitize object for JSON serialization.
+    Converts NaN/Infinity floats to None.
+    """
+    import math
+
+    if isinstance(obj, dict):
+        return {k: sanitize_for_json(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [sanitize_for_json(v) for v in obj]
+    elif isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    elif obj is None or isinstance(obj, (str, int, bool)):
+        return obj
+    else:
+        # Handle pandas NaN or other types
+        try:
+            import pandas as pd
+            if pd.isna(obj):
+                return None
+        except (ImportError, TypeError):
+            pass
+        return obj
+
+
+# =============================================================================
 # Data Classes
 # =============================================================================
 
@@ -92,7 +125,7 @@ class ExplainResult:
     def to_json(self, path: Path) -> None:
         """Save to JSON file"""
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(self.to_dict(), f, indent=2, ensure_ascii=False)
+            json.dump(sanitize_for_json(self.to_dict()), f, indent=2, ensure_ascii=False)
 
 
 # =============================================================================
