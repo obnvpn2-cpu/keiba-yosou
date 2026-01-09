@@ -1168,6 +1168,30 @@ class TestExplainJSONSchema:
         assert feature["origin"] in ["v4_native", "v3_bridged"]
         assert feature["safety_label"] in ["safe", "warn", "unsafe", "unknown"]
 
+    def test_explain_json_no_nan_values(self, tmp_path):
+        """Test that generated explain JSON contains no NaN values"""
+        from src.features_v4.explain_runner import generate_explain_from_pipeline
+
+        feature_cols = ["feat1", "feat2"]
+        result = generate_explain_from_pipeline(
+            feature_cols=feature_cols,
+            target="target_win",
+            output_dir=tmp_path,
+            model_version="v4",
+        )
+
+        output_path = tmp_path / "explain_target_win_v4.json"
+        assert output_path.exists()
+
+        # Read raw file content and check for NaN
+        content = output_path.read_text(encoding="utf-8")
+        assert "NaN" not in content, "JSON contains invalid NaN value"
+        assert "Infinity" not in content, "JSON contains invalid Infinity value"
+
+        # Also verify it parses as valid JSON
+        data = json.loads(content)
+        assert data is not None
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

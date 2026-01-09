@@ -39,8 +39,27 @@ export async function GET(request: NextRequest) {
     }
 
     // Read and parse JSON
-    const content = await fs.readFile(filePath, "utf-8");
-    const data = JSON.parse(content);
+    let content = await fs.readFile(filePath, "utf-8");
+
+    // Sanitize legacy files with NaN values (invalid JSON)
+    if (content.includes(": NaN")) {
+      content = content.replace(/: NaN([,\n\r\}])/g, ": null$1");
+    }
+
+    let data;
+    try {
+      data = JSON.parse(content);
+    } catch (parseError) {
+      const parseMessage = parseError instanceof Error ? parseError.message : "Unknown parse error";
+      return NextResponse.json(
+        {
+          error: "Invalid JSON",
+          message: `Failed to parse ${filename}: ${parseMessage}`,
+          hint: "Regenerate with: python -m src.features_v4.explain_runner --model-dir models --target " + target,
+        },
+        { status: 500 }
+      );
+    }
 
     return NextResponse.json(data);
   } catch (error) {
