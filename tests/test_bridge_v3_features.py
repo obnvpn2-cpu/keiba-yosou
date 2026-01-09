@@ -1192,6 +1192,47 @@ class TestExplainJSONSchema:
         data = json.loads(content)
         assert data is not None
 
+    def test_explain_importance_from_csv_with_importance_prefix(self, tmp_path):
+        """Test that importance values are loaded from CSV with importance_gain/importance_split columns"""
+        from src.features_v4.explain_runner import generate_explain_from_pipeline
+
+        # Create CSV with importance_gain/importance_split columns (train_eval_v4 format)
+        feature_cols = ["h_recent3_avg_finish", "v4_bridge_ax8_jockey_in3_rate_total_asof", "some_other_feat"]
+        importance_df = pd.DataFrame([
+            {"feature": "h_recent3_avg_finish", "importance_gain": 15357.5, "importance_split": 120},
+            {"feature": "v4_bridge_ax8_jockey_in3_rate_total_asof", "importance_gain": 10002.3, "importance_split": 85},
+            {"feature": "some_other_feat", "importance_gain": 500.0, "importance_split": 10},
+        ])
+        importance_path = tmp_path / "feature_importance_target_win_v4.csv"
+        importance_df.to_csv(importance_path, index=False)
+
+        result = generate_explain_from_pipeline(
+            feature_cols=feature_cols,
+            target="target_win",
+            output_dir=tmp_path,
+            importance_csv_path=importance_path,
+            model_version="v4",
+        )
+
+        assert result is not None
+        assert result.n_features == 3
+
+        # Verify importance values are correctly loaded (not zero)
+        output_path = tmp_path / "explain_target_win_v4.json"
+        with open(output_path) as f:
+            data = json.load(f)
+
+        # Find the two key features and verify non-zero importance
+        feat_map = {f["feature_name"]: f for f in data["features"]}
+
+        assert "h_recent3_avg_finish" in feat_map
+        assert feat_map["h_recent3_avg_finish"]["importance_gain"] > 0, "h_recent3_avg_finish should have non-zero gain"
+        assert abs(feat_map["h_recent3_avg_finish"]["importance_gain"] - 15357.5) < 0.1
+
+        assert "v4_bridge_ax8_jockey_in3_rate_total_asof" in feat_map
+        assert feat_map["v4_bridge_ax8_jockey_in3_rate_total_asof"]["importance_gain"] > 0, "bridged feature should have non-zero gain"
+        assert abs(feat_map["v4_bridge_ax8_jockey_in3_rate_total_asof"]["importance_gain"] - 10002.3) < 0.1
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
