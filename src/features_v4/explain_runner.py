@@ -234,9 +234,12 @@ def generate_explain_result(
     if importance_df is not None:
         for _, row in importance_df.iterrows():
             feat = row.get("feature", "")
+            # Support both column naming conventions: gain/split and importance_gain/importance_split
+            gain_val = row.get("importance_gain", row.get("gain", 0.0))
+            split_val = row.get("importance_split", row.get("split", 0))
             importance_lookup[feat] = {
-                "gain": row.get("gain", 0.0),
-                "split": int(row.get("split", 0)),
+                "gain": gain_val if gain_val is not None else 0.0,
+                "split": int(split_val) if split_val is not None else 0,
             }
 
     for feature_name in feature_names:
