@@ -5,6 +5,7 @@ import type { Horse, ScenarioCondition, RaceInfo, ScenarioData } from "@/app/lib
 import ScenarioControl from "@/app/components/ScenarioControl";
 import HorseTable from "@/app/components/HorseTable";
 import HorseDetailModal from "@/app/components/HorseDetailModal";
+import ExplainSummary from "@/app/components/ExplainSummary";
 
 /**
  * デフォルトのシナリオ条件
@@ -221,6 +222,11 @@ export default function ScenarioPage() {
         {/* テーブル */}
         {!loading && !error && (
           <HorseTable horses={horses} onSelectHorse={handleSelectHorse} />
+        )}
+
+        {/* Explain（特徴量重要度）セクション */}
+        {!loading && !error && (
+          <ExplainSummary target="target_win" topN={10} />
         )}
       </main>
 
