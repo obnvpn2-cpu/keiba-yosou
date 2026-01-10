@@ -447,7 +447,7 @@ class ExplainResult:
     def to_json(self, path: Path) -> None:
         """Save to JSON file"""
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(sanitize_for_json(self.to_dict()), f, indent=2, ensure_ascii=False)
+            json.dump(sanitize_for_json(self.to_dict()), f, indent=2, ensure_ascii=True)
 
 
 # =============================================================================
