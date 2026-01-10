@@ -33,7 +33,7 @@ interface ExplainSummaryProps {
 }
 
 /**
- * Origin badge
+ * Origin badge with user-friendly labels
  */
 function OriginBadge({ origin }: { origin: string }) {
   const isNative = origin === "v4_native";
@@ -42,8 +42,9 @@ function OriginBadge({ origin }: { origin: string }) {
       className={`px-1.5 py-0.5 rounded text-xs font-medium ${
         isNative ? "bg-blue-100 text-blue-700" : "bg-purple-100 text-purple-700"
       }`}
+      title={isNative ? "v4 native feature" : "v3 bridged feature (旧版由来)"}
     >
-      {isNative ? "v4" : "v3"}
+      {isNative ? "v4" : "v3由来"}
     </span>
   );
 }

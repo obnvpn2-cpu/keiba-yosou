@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 
@@ -96,11 +96,51 @@ function OriginBadge({ origin }: { origin: string }) {
 /**
  * Explain Viewer Page
  */
+/**
+ * Filter state type
+ */
+type OriginFilter = "all" | "v4_native" | "v3_bridged";
+type SafetyFilter = "all" | "safe" | "warn" | "unsafe" | "unknown";
+
 export default function ExplainPage() {
   const searchParams = useSearchParams();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<ExplainData | null>(null);
+
+  // Filter state
+  const [searchQuery, setSearchQuery] = useState("");
+  const [originFilter, setOriginFilter] = useState<OriginFilter>("all");
+  const [safetyFilter, setSafetyFilter] = useState<SafetyFilter>("all");
+
+  // Filtered features
+  const filteredFeatures = useMemo(() => {
+    if (!data) return [];
+
+    return data.features.filter((feature) => {
+      // Search filter (feature_name, display_name, desc)
+      if (searchQuery) {
+        const q = searchQuery.toLowerCase();
+        const matchesSearch =
+          feature.feature_name.toLowerCase().includes(q) ||
+          feature.display_name.toLowerCase().includes(q) ||
+          (feature.desc && feature.desc.toLowerCase().includes(q));
+        if (!matchesSearch) return false;
+      }
+
+      // Origin filter
+      if (originFilter !== "all" && feature.origin !== originFilter) {
+        return false;
+      }
+
+      // Safety filter
+      if (safetyFilter !== "all" && feature.safety_label !== safetyFilter) {
+        return false;
+      }
+
+      return true;
+    });
+  }, [data, searchQuery, originFilter, safetyFilter]);
 
   useEffect(() => {
     const loadData = async () => {
@@ -227,6 +267,64 @@ export default function ExplainPage() {
               </div>
             </div>
 
+            {/* Filter Controls */}
+            <div className="bg-white rounded-lg shadow p-4 mb-6">
+              <div className="flex flex-wrap gap-4 items-center">
+                {/* Search */}
+                <div className="flex-1 min-w-[200px]">
+                  <label className="block text-xs font-medium text-gray-500 mb-1">
+                    検索
+                  </label>
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="特徴量名・説明で検索..."
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-green-500 focus:border-green-500"
+                  />
+                </div>
+
+                {/* Origin Filter */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">
+                    Origin
+                  </label>
+                  <select
+                    value={originFilter}
+                    onChange={(e) => setOriginFilter(e.target.value as OriginFilter)}
+                    className="px-3 py-2 border border-gray-300 rounded-md text-sm bg-white focus:ring-2 focus:ring-green-500 focus:border-green-500"
+                  >
+                    <option value="all">すべて</option>
+                    <option value="v4_native">v4 Native</option>
+                    <option value="v3_bridged">v3 Bridged</option>
+                  </select>
+                </div>
+
+                {/* Safety Filter */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">
+                    Safety
+                  </label>
+                  <select
+                    value={safetyFilter}
+                    onChange={(e) => setSafetyFilter(e.target.value as SafetyFilter)}
+                    className="px-3 py-2 border border-gray-300 rounded-md text-sm bg-white focus:ring-2 focus:ring-green-500 focus:border-green-500"
+                  >
+                    <option value="all">すべて</option>
+                    <option value="safe">safe</option>
+                    <option value="warn">warn</option>
+                    <option value="unsafe">unsafe</option>
+                    <option value="unknown">unknown</option>
+                  </select>
+                </div>
+
+                {/* Result count */}
+                <div className="text-sm text-gray-500">
+                  {filteredFeatures.length} / {data.n_features} 件
+                </div>
+              </div>
+            </div>
+
             {/* Features Table */}
             <div className="bg-white rounded-lg shadow overflow-hidden">
               <div className="px-6 py-4 border-b border-gray-200">
@@ -263,7 +361,7 @@ export default function ExplainPage() {
                     </tr>
                   </thead>
                   <tbody className="bg-white divide-y divide-gray-200">
-                    {data.features.map((feature, index) => (
+                    {filteredFeatures.map((feature, index) => (
                       <tr key={feature.feature_name} className="hover:bg-gray-50">
                         <td className="px-4 py-3 text-sm text-gray-500">{index + 1}</td>
                         <td className="px-4 py-3 text-sm font-medium text-gray-900">
@@ -292,6 +390,11 @@ export default function ExplainPage() {
                   </tbody>
                 </table>
               </div>
+              {filteredFeatures.length === 0 && (
+                <div className="p-8 text-center text-gray-500">
+                  条件に一致する特徴量がありません
+                </div>
+              )}
             </div>
           </>
         )}
