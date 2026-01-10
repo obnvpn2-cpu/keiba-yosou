@@ -1234,5 +1234,110 @@ class TestExplainJSONSchema:
         assert abs(feat_map["v4_bridge_ax8_jockey_in3_rate_total_asof"]["importance_gain"] - 10002.3) < 0.1
 
 
+class TestDescriptionCoverage:
+    """Tests for feature description coverage"""
+
+    def test_explain_json_has_desc_field(self, tmp_path):
+        """Test that each feature has a desc field"""
+        from src.features_v4.explain_runner import generate_explain_from_pipeline
+
+        feature_cols = ["h_recent3_avg_finish", "field_size", "test_unknown"]
+        result = generate_explain_from_pipeline(
+            feature_cols=feature_cols,
+            target="target_win",
+            output_dir=tmp_path,
+            model_version="v4",
+        )
+
+        output_path = tmp_path / "explain_target_win_v4.json"
+        with open(output_path) as f:
+            data = json.load(f)
+
+        for feature in data["features"]:
+            assert "desc" in feature, f"Missing desc field in feature: {feature['feature_name']}"
+            assert isinstance(feature["desc"], str), f"desc should be string: {feature['feature_name']}"
+
+    def test_desc_coverage_above_threshold(self, tmp_path):
+        """Test that desc coverage is above minimum threshold (>=75%)"""
+        from src.features_v4.explain_runner import generate_explain_from_pipeline
+
+        # Test with a mix of known and unknown features
+        feature_cols = [
+            # Known v4 native features (should have desc from dict or infer)
+            "h_recent3_avg_finish",
+            "h_win_rate_total",
+            "field_size",
+            "distance",
+            "age",
+            "h_days_since_last",
+            # Features that should be inferred
+            "h_starts_total",
+            "j_win_rate_total",
+            "t_in3_rate_total",
+            # Unknown feature (may have empty desc)
+            "xyz_unknown_feature",
+        ]
+        result = generate_explain_from_pipeline(
+            feature_cols=feature_cols,
+            target="target_win",
+            output_dir=tmp_path,
+            model_version="v4",
+        )
+
+        output_path = tmp_path / "explain_target_win_v4.json"
+        with open(output_path) as f:
+            data = json.load(f)
+
+        # Count non-empty desc
+        total = len(data["features"])
+        with_desc = sum(1 for f in data["features"] if f.get("desc", "").strip())
+        coverage = with_desc / total if total > 0 else 0
+
+        assert coverage >= 0.75, f"Desc coverage {coverage:.1%} is below 75% threshold"
+
+    def test_infer_desc_from_name_basic(self):
+        """Test basic inference from naming conventions"""
+        from src.features_v4.explain_runner import infer_desc_from_name
+
+        # Test horse prefix + stat
+        desc = infer_desc_from_name("h_win_rate_total", "h_win_rate_total", "v4_native")
+        assert "馬" in desc
+        assert "勝率" in desc
+
+        # Test jockey prefix
+        desc = infer_desc_from_name("j_in3_rate_total", "j_in3_rate_total", "v4_native")
+        assert "騎手" in desc
+        assert "複勝率" in desc
+
+        # Test recent window
+        desc = infer_desc_from_name("h_recent3_avg_finish", "h_recent3_avg_finish", "v4_native")
+        assert "直近3走" in desc or "馬" in desc
+
+    def test_infer_desc_from_name_suffixes(self):
+        """Test condition suffix inference"""
+        from src.features_v4.explain_runner import infer_desc_from_name
+
+        # Test _dist_cat suffix
+        desc = infer_desc_from_name("h_win_rate_dist_cat", "h_win_rate_dist_cat", "v4_native")
+        assert "距離" in desc
+
+        # Test _course suffix
+        desc = infer_desc_from_name("h_win_rate_course", "h_win_rate_course", "v4_native")
+        assert "コース" in desc
+
+    def test_get_feature_desc_priority(self):
+        """Test that dictionary takes priority over inference"""
+        from src.features_v4.explain_runner import get_feature_desc, FEATURE_DESC_MAP
+
+        # Feature in dictionary should use dictionary value
+        desc = get_feature_desc("field_size", "field_size", "v4_native")
+        assert desc == FEATURE_DESC_MAP["field_size"]
+
+        # Feature not in dictionary should use inference
+        desc = get_feature_desc("h_some_custom_win_rate_total", "h_some_custom_win_rate_total", "v4_native")
+        # Should have inferred something
+        assert "馬" in desc or "勝率" in desc or desc == ""
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

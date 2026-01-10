@@ -71,6 +71,10 @@ def sanitize_for_json(obj: Any) -> Any:
 # =============================================================================
 
 
+# =============================================================================
+# Feature Description Dictionaries
+# =============================================================================
+
 # Feature description mapping (v4 native features)
 FEATURE_DESC_MAP: Dict[str, str] = {
     # Race attributes
@@ -82,6 +86,8 @@ FEATURE_DESC_MAP: Dict[str, str] = {
     "race_year": "開催年",
     "race_month": "開催月",
     "place_id": "開催場ID",
+    "race_class": "レースクラス",
+    "race_grade": "レースグレード",
     # Horse attributes
     "waku": "枠番",
     "umaban": "馬番",
@@ -89,66 +95,300 @@ FEATURE_DESC_MAP: Dict[str, str] = {
     "horse_weight_diff": "馬体重増減",
     "sex_id": "性別",
     "age": "馬齢",
-    # Historical stats
-    "h_starts_total": "総出走数",
-    "h_win_rate_total": "総合勝率",
-    "h_in3_rate_total": "総合複勝率",
-    "h_avg_finish_total": "平均着順",
-    "h_recent3_avg_finish": "直近3走平均着順",
-    "h_recent3_best_finish": "直近3走最高着順",
-    "h_recent3_avg_last3f": "直近3走平均上がり3F",
-    "h_days_since_last": "前走からの日数",
+    "is_blinker": "ブリンカー着用",
+    # Historical stats - total
+    "h_starts_total": "馬・総出走数",
+    "h_win_rate_total": "馬・総合勝率",
+    "h_in3_rate_total": "馬・総合複勝率",
+    "h_avg_finish_total": "馬・平均着順",
+    "h_std_finish_total": "馬・着順標準偏差",
+    # Recent form
+    "h_recent3_avg_finish": "馬・直近3走平均着順",
+    "h_recent3_best_finish": "馬・直近3走最高着順",
+    "h_recent3_avg_last3f": "馬・直近3走平均上がり3F",
+    "h_recent5_avg_finish": "馬・直近5走平均着順",
+    "h_recent5_best_finish": "馬・直近5走最高着順",
+    "h_days_since_last": "馬・前走からの日数",
     # Distance category stats
-    "h_starts_dist_cat": "距離別出走数",
-    "h_win_rate_dist_cat": "距離別勝率",
-    "h_in3_rate_dist_cat": "距離別複勝率",
+    "h_starts_dist_cat": "馬・距離別出走数",
+    "h_win_rate_dist_cat": "馬・距離別勝率",
+    "h_in3_rate_dist_cat": "馬・距離別複勝率",
+    "h_avg_finish_dist_cat": "馬・距離別平均着順",
+    "h_avg_last3f_dist_cat": "馬・距離別平均上がり3F",
     # Track condition stats
-    "h_starts_track_cond": "馬場別出走数",
-    "h_win_rate_track_cond": "馬場別勝率",
+    "h_starts_track_cond": "馬・馬場状態別出走数",
+    "h_win_rate_track_cond": "馬・馬場状態別勝率",
+    "h_in3_rate_track_cond": "馬・馬場状態別複勝率",
     # Course stats
-    "h_starts_course": "コース別出走数",
-    "h_win_rate_course": "コース別勝率",
+    "h_starts_course": "馬・コース別出走数",
+    "h_win_rate_course": "馬・コース別勝率",
+    "h_in3_rate_course": "馬・コース別複勝率",
+    # Surface stats
+    "h_starts_surface": "馬・芝ダ別出走数",
+    "h_win_rate_surface": "馬・芝ダ別勝率",
+    "h_in3_rate_surface": "馬・芝ダ別複勝率",
+    # Jockey stats
+    "j_win_rate_total": "騎手・総合勝率",
+    "j_in3_rate_total": "騎手・総合複勝率",
+    "j_starts_total": "騎手・総出走数",
+    "j_win_rate_recent30d": "騎手・直近30日勝率",
+    "j_in3_rate_recent30d": "騎手・直近30日複勝率",
+    # Trainer stats
+    "t_win_rate_total": "調教師・総合勝率",
+    "t_in3_rate_total": "調教師・総合複勝率",
+    "t_starts_total": "調教師・総出走数",
+    "t_win_rate_recent30d": "調教師・直近30日勝率",
+    "t_in3_rate_recent30d": "調教師・直近30日複勝率",
+    # Jockey-Horse combo
+    "jh_win_rate": "騎手×馬・勝率",
+    "jh_in3_rate": "騎手×馬・複勝率",
+    "jh_starts": "騎手×馬・騎乗回数",
+    # Trainer-Jockey combo
+    "tj_win_rate": "調教師×騎手・勝率",
+    "tj_in3_rate": "調教師×騎手・複勝率",
+    "tj_starts": "調教師×騎手・コンビ回数",
     # Pedigree
     "sire_win_rate": "父馬勝率",
     "sire_in3_rate": "父馬複勝率",
     "bms_win_rate": "母父勝率",
     "bms_in3_rate": "母父複勝率",
+    "sire_distance_apt": "父馬・距離適性",
+    "bms_distance_apt": "母父・距離適性",
+    # Weight features
+    "avg_horse_weight": "馬・平均馬体重",
+    # First run
+    "is_first_run": "初出走フラグ",
 }
 
 # Bridged feature description mapping (v3 features, keyed by original name without prefix)
 BRIDGED_DESC_MAP: Dict[str, str] = {
-    "ax8_jockey_in3_rate_total_asof": "騎手複勝率(asof)",
-    "ax8_jockey_win_rate_total_asof": "騎手勝率(asof)",
-    "ax8_trainer_in3_rate_total_asof": "調教師複勝率(asof)",
-    "ax8_trainer_win_rate_total_asof": "調教師勝率(asof)",
+    # ax8 jockey/trainer asof features
+    "ax8_jockey_in3_rate_total_asof": "騎手複勝率(時点)",
+    "ax8_jockey_win_rate_total_asof": "騎手勝率(時点)",
+    "ax8_trainer_in3_rate_total_asof": "調教師複勝率(時点)",
+    "ax8_trainer_win_rate_total_asof": "調教師勝率(時点)",
+    "ax8_jockey_starts_total_asof": "騎手出走数(時点)",
+    "ax8_trainer_starts_total_asof": "調教師出走数(時点)",
+    # hr (horse recent) features
     "hr_test": "馬過去成績(テスト)",
+    "hr_avg_finish": "馬・過去平均着順",
+    "hr_win_rate": "馬・過去勝率",
+    "hr_in3_rate": "馬・過去複勝率",
+    # Legacy v3 features
+    "win_rate_total": "総合勝率",
+    "in3_rate_total": "総合複勝率",
+    "n_starts_total": "総出走数",
+    "avg_finish_total": "平均着順",
+    "std_finish_total": "着順標準偏差",
+    "win_rate_dist_cat": "距離別勝率",
+    "in3_rate_dist_cat": "距離別複勝率",
+    "n_starts_dist_cat": "距離別出走数",
+    "avg_finish_dist_cat": "距離別平均着順",
+    "avg_last3f_dist_cat": "距離別平均上がり3F",
+    "win_rate_track_condition": "馬場状態別勝率",
+    "n_starts_track_condition": "馬場状態別出走数",
+    "win_rate_course": "コース別勝率",
+    "n_starts_course": "コース別出走数",
+    "recent_avg_finish_3": "直近3走平均着順",
+    "recent_best_finish_3": "直近3走最高着順",
+    "recent_avg_last3f_3": "直近3走平均上がり3F",
+    "days_since_last_run": "前走からの日数",
+    # Lap features
+    "hlap_overall_vs_race": "ラップ・全体vs平均",
+    "hlap_early_vs_race": "ラップ・前半vs平均",
+    "hlap_mid_vs_race": "ラップ・中盤vs平均",
+    "hlap_late_vs_race": "ラップ・後半vs平均",
+    "hlap_last600_vs_race": "ラップ・上がり3Fvs平均",
 }
 
 
-def get_feature_desc(feature_name: str, display_name: str, origin: str) -> str:
+# =============================================================================
+# Automatic Description Inference
+# =============================================================================
+
+# Prefix → Subject mapping
+_PREFIX_MAP: Dict[str, str] = {
+    "h_": "馬",
+    "j_": "騎手",
+    "t_": "調教師",
+    "jh_": "騎手×馬",
+    "tj_": "調教師×騎手",
+    "race_": "レース",
+    "sire_": "父馬",
+    "bms_": "母父",
+    "hlap_": "ラップ",
+}
+
+# Stat keywords → Japanese
+_STAT_MAP: Dict[str, str] = {
+    "win_rate": "勝率",
+    "in3_rate": "複勝率",
+    "avg_finish": "平均着順",
+    "best_finish": "最高着順",
+    "worst_finish": "最低着順",
+    "std_finish": "着順標準偏差",
+    "avg_last3f": "平均上がり3F",
+    "starts": "出走数",
+    "days_since": "経過日数",
+}
+
+# Condition suffixes → Japanese
+_SUFFIX_MAP: Dict[str, str] = {
+    "_total": "・総合",
+    "_dist_cat": "・距離別",
+    "_dist": "・距離別",
+    "_course": "・コース別",
+    "_surface": "・芝ダ別",
+    "_track_cond": "・馬場状態別",
+    "_track_condition": "・馬場状態別",
+    "_place": "・開催場別",
+    "_recent30d": "・直近30日",
+    "_recent3": "・直近3走",
+    "_recent5": "・直近5走",
+    "_asof": "(時点)",
+}
+
+# Window patterns
+_WINDOW_PATTERNS: Dict[str, str] = {
+    "recent3": "直近3走",
+    "recent5": "直近5走",
+    "recent10": "直近10走",
+    "recent30d": "直近30日",
+    "recent60d": "直近60日",
+    "recent90d": "直近90日",
+}
+
+
+def infer_desc_from_name(
+    feature_name: str,
+    display_name: str,
+    origin: str,
+    safety_label: str = "unknown",
+) -> str:
+    """
+    Infer a human-readable description from feature naming conventions.
+
+    Args:
+        feature_name: The actual column name (may have v4_bridge_ prefix)
+        display_name: The display name (original v3 name for bridged features)
+        origin: "v4_native" or "v3_bridged"
+        safety_label: Feature safety classification
+
+    Returns:
+        Inferred description string, or empty string if inference fails
+    """
+    import re
+
+    # Use display_name for inference (it's the "real" name)
+    name = display_name.lower()
+
+    parts = []
+
+    # 1) Detect subject prefix
+    subject = ""
+    for prefix, subj in _PREFIX_MAP.items():
+        if name.startswith(prefix):
+            subject = subj
+            name = name[len(prefix):]
+            break
+
+    # 2) Detect window patterns (recent3, recent5, etc.)
+    window = ""
+    for pattern, desc in _WINDOW_PATTERNS.items():
+        if pattern in name:
+            window = desc
+            name = name.replace(pattern, "")
+            break
+
+    # 3) Detect condition suffixes
+    condition = ""
+    for suffix, cond in _SUFFIX_MAP.items():
+        if name.endswith(suffix):
+            condition = cond
+            name = name[: -len(suffix)]
+            break
+
+    # 4) Detect stat type
+    stat = ""
+    for key, val in _STAT_MAP.items():
+        if key in name:
+            stat = val
+            name = name.replace(key, "")
+            break
+
+    # 5) Build description
+    if subject:
+        parts.append(subject)
+
+    if window:
+        parts.append(window)
+
+    if stat:
+        parts.append(stat)
+    elif name.strip("_"):
+        # Use remaining name as fallback
+        remaining = name.strip("_").replace("_", " ")
+        if remaining:
+            parts.append(remaining)
+
+    if condition:
+        parts.append(condition)
+
+    # Join parts
+    if parts:
+        # Clean up formatting: subject・stat・condition
+        result = "・".join(parts)
+        # Fix double separators
+        result = re.sub(r"・+", "・", result)
+        result = result.strip("・")
+        return result
+
+    return ""
+
+
+def get_feature_desc(
+    feature_name: str,
+    display_name: str,
+    origin: str,
+    safety_label: str = "unknown",
+) -> str:
     """
     Get human-readable description for a feature.
+
+    Priority:
+    1. Exact match in FEATURE_DESC_MAP (v4 native dict)
+    2. Exact match in BRIDGED_DESC_MAP (v3 bridged dict) - for bridged features
+    3. display_name match in FEATURE_DESC_MAP
+    4. Auto-infer from naming conventions (infer_desc_from_name)
+    5. Empty string as final fallback
 
     Args:
         feature_name: The actual feature column name
         display_name: The display name (original name for bridged features)
         origin: "v4_native" or "v3_bridged"
+        safety_label: Feature safety classification (for inference context)
 
     Returns:
         Description string, or empty string if not found
     """
-    # Try v4 native map first
+    # 1) Try feature_name in v4 native map
     if feature_name in FEATURE_DESC_MAP:
         return FEATURE_DESC_MAP[feature_name]
 
-    # For bridged features, try display_name in bridged map
+    # 2) For bridged features, try display_name in bridged map
     if origin == "v3_bridged" and display_name in BRIDGED_DESC_MAP:
         return BRIDGED_DESC_MAP[display_name]
 
-    # Try display_name in v4 map as fallback
+    # 3) Try display_name in v4 map as fallback
     if display_name in FEATURE_DESC_MAP:
         return FEATURE_DESC_MAP[display_name]
 
+    # 4) Auto-infer from naming conventions
+    inferred = infer_desc_from_name(feature_name, display_name, origin, safety_label)
+    if inferred:
+        return inferred
+
+    # 5) Final fallback: empty string
     return ""
 
 
@@ -270,7 +510,7 @@ def build_feature_explanation(
     display_name, origin, safety_label, safety_notes = resolve_feature_name(
         feature_name, bridge_map_data
     )
-    desc = get_feature_desc(feature_name, display_name, origin)
+    desc = get_feature_desc(feature_name, display_name, origin, safety_label)
 
     return FeatureExplanation(
         feature_name=feature_name,
@@ -341,7 +581,7 @@ def generate_explain_result(
         importance_split = imp.get("split", 0)
 
         # Get description
-        desc = get_feature_desc(feature_name, display_name, origin)
+        desc = get_feature_desc(feature_name, display_name, origin, safety_label)
 
         explanation = FeatureExplanation(
             feature_name=feature_name,
