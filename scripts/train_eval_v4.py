@@ -33,6 +33,9 @@ import os
 import sqlite3
 import sys
 from pathlib import Path
+from typing import List, Set, Tuple
+
+import pandas as pd
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -46,6 +49,7 @@ from src.features_v4.train_eval_v4 import (
     log_feature_selection_summary,
 )
 from src.features_v4.diagnostics import run_diagnostics, save_diagnostics
+from src.feature_audit.safety import classify_feature_safety
 
 try:
     import lightgbm as lgb
@@ -179,6 +183,186 @@ def load_booster(model_path: str) -> "lgb.Booster":
             f"Failed to load model from {model_path}. "
             f"model_file error: {model_file_error}, model_str error: {e2}"
         ) from e2
+
+
+# =============================================================================
+# Feature Table Merging (--feature-sources all)
+# =============================================================================
+
+# Columns to exclude from legacy tables (IDs, targets, leak-prone)
+LEGACY_EXCLUDE_PATTERNS = {
+    "race_id", "horse_id", "horse_name", "jockey_id", "jockey_name",
+    "trainer_id", "trainer_name", "owner_id", "owner_name", "sire_id", "bms_id",
+    "race_date", "race_name", "place", "course",
+    "target_win", "target_in3", "target_quinella", "target_value",
+    "finish_order", "finish_status", "time_sec", "time_str", "margin",
+    "win_odds", "popularity", "payout", "odds", "result",
+    "label", "y_true", "y_pred",
+}
+
+
+def get_table_numeric_columns(
+    conn: sqlite3.Connection,
+    table_name: str,
+    exclude_patterns: Set[str],
+) -> List[str]:
+    """
+    テーブルから数値型カラム名を取得（除外パターン適用済み）
+
+    Args:
+        conn: SQLite接続
+        table_name: テーブル名
+        exclude_patterns: 除外するカラム名のパターン（部分一致）
+
+    Returns:
+        数値型カラム名のリスト
+    """
+    cursor = conn.execute(f"PRAGMA table_info({table_name})")
+    rows = cursor.fetchall()
+
+    numeric_types = {"INTEGER", "REAL", "NUMERIC", "FLOAT", "DOUBLE"}
+    numeric_cols = []
+
+    for row in rows:
+        col_name = row[1]
+        col_type = row[2].upper() if row[2] else ""
+
+        # 除外パターンチェック（完全一致または部分一致）
+        skip = False
+        for pattern in exclude_patterns:
+            if pattern in col_name.lower() or col_name.lower() == pattern:
+                skip = True
+                break
+        if skip:
+            continue
+
+        # 数値型のみ
+        if any(nt in col_type for nt in numeric_types):
+            numeric_cols.append(col_name)
+
+    return numeric_cols
+
+
+def filter_columns_by_safety(
+    columns: List[str],
+    include_warn: bool = False,
+) -> Tuple[List[str], List[str], List[str]]:
+    """
+    カラムを安全性分類でフィルタする
+
+    Args:
+        columns: カラム名リスト
+        include_warn: warnラベルを含めるか
+
+    Returns:
+        (safe_cols, warn_cols, unsafe_cols) のタプル
+    """
+    safe_cols = []
+    warn_cols = []
+    unsafe_cols = []
+
+    for col in columns:
+        label, _ = classify_feature_safety(col)
+        if label == "unsafe":
+            unsafe_cols.append(col)
+        elif label == "warn":
+            warn_cols.append(col)
+        else:
+            safe_cols.append(col)
+
+    return safe_cols, warn_cols, unsafe_cols
+
+
+def merge_all_feature_tables(
+    conn: sqlite3.Connection,
+    base_df: pd.DataFrame,
+    include_warn: bool = False,
+) -> Tuple[pd.DataFrame, List[str]]:
+    """
+    v4をベースに、feature_table/v2/v3をLEFT JOINで合流
+
+    Args:
+        conn: SQLite接続
+        base_df: v4のDataFrame（race_id, horse_id含む）
+        include_warn: warn特徴量を含めるか
+
+    Returns:
+        (merged_df, added_columns) のタプル
+    """
+    added_columns = []
+
+    # テーブル存在チェック用関数
+    def table_exists(name: str) -> bool:
+        cursor = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            (name,)
+        )
+        return cursor.fetchone() is not None
+
+    # 各テーブルからカラムを取得してマージ
+    table_configs = [
+        ("feature_table", "legacy__base__"),
+        ("feature_table_v2", "legacy__v2__"),
+        ("feature_table_v3", "legacy__v3__"),
+    ]
+
+    for table_name, prefix in table_configs:
+        if not table_exists(table_name):
+            logger.debug(f"Table {table_name} not found, skipping")
+            continue
+
+        # 数値カラムを取得
+        numeric_cols = get_table_numeric_columns(conn, table_name, LEGACY_EXCLUDE_PATTERNS)
+        if not numeric_cols:
+            logger.debug(f"No numeric columns found in {table_name}")
+            continue
+
+        # 安全性フィルタ適用
+        safe_cols, warn_cols, unsafe_cols = filter_columns_by_safety(numeric_cols, include_warn)
+
+        if unsafe_cols:
+            logger.debug(f"Excluding {len(unsafe_cols)} unsafe columns from {table_name}")
+
+        # 採用するカラム
+        use_cols = safe_cols
+        if include_warn:
+            use_cols = safe_cols + warn_cols
+
+        if not use_cols:
+            logger.debug(f"No columns to use from {table_name} after safety filter")
+            continue
+
+        # SQLでデータ取得（race_id, horse_idで結合用）
+        cols_sql = ", ".join([f'"{c}"' for c in use_cols])
+        sql = f'SELECT race_id, horse_id, {cols_sql} FROM {table_name}'
+        try:
+            legacy_df = pd.read_sql_query(sql, conn)
+        except Exception as e:
+            logger.warning(f"Failed to load {table_name}: {e}")
+            continue
+
+        # カラム名にプレフィックスを付与
+        rename_map = {c: f"{prefix}{c}" for c in use_cols}
+        legacy_df = legacy_df.rename(columns=rename_map)
+
+        # LEFT JOIN
+        new_cols = [f"{prefix}{c}" for c in use_cols]
+        base_df = base_df.merge(
+            legacy_df,
+            on=["race_id", "horse_id"],
+            how="left",
+            suffixes=("", "_dup"),
+        )
+
+        # 重複カラム削除
+        dup_cols = [c for c in base_df.columns if c.endswith("_dup")]
+        if dup_cols:
+            base_df = base_df.drop(columns=dup_cols)
+
+        added_columns.extend(new_cols)
+        logger.info(f"Merged {len(new_cols)} columns from {table_name} (prefix: {prefix})")
+
+    return base_df, added_columns
 
 
 def main() -> None:
@@ -380,6 +564,23 @@ Examples:
         help="Path to file with feature names to exclude (1 per line, # for comments)",
     )
 
+    # Feature Sources options (all tables merge)
+    parser.add_argument(
+        "--feature-sources",
+        type=str,
+        choices=["v4", "all"],
+        default="v4",
+        help=(
+            "Feature sources: 'v4' uses feature_table_v4 only (default), "
+            "'all' merges feature_table, v2, v3 via LEFT JOIN with v4 as base"
+        ),
+    )
+    parser.add_argument(
+        "--include-warn",
+        action="store_true",
+        help="Include features with 'warn' safety label (default: exclude)",
+    )
+
     args = parser.parse_args()
 
     # Setup logging
@@ -416,6 +617,9 @@ Examples:
         logger.info(f"Model path: {args.model_path}")
     if args.exclude_features_file:
         logger.info(f"Exclude features file: {args.exclude_features_file}")
+    logger.info(f"Feature sources: {args.feature_sources}")
+    if args.feature_sources == "all":
+        logger.info(f"  Include warn: {args.include_warn}")
 
     # Build exclude features set from mode and/or file
     exclude_features_set = set()
@@ -510,6 +714,18 @@ Examples:
                 include_market=args.include_market,
             )
 
+            # Merge legacy feature tables if requested
+            if args.feature_sources == "all":
+                logger.info("Merging legacy feature tables (feature_sources=all)...")
+                df, added_cols = merge_all_feature_tables(
+                    conn, df, include_warn=args.include_warn
+                )
+                if added_cols:
+                    # Add merged columns to feature list (exclude those already excluded)
+                    new_features = [c for c in added_cols if c not in exclude_features_set]
+                    feature_cols = feature_cols + new_features
+                    logger.info(f"Added {len(new_features)} legacy features to diagnostics")
+
             # Split data
             train_df, val_df, test_df = split_time_series(
                 df, args.train_end, args.val_end, args.split_mode
@@ -528,11 +744,25 @@ Examples:
                 perm_top_n=args.perm_top_n,
                 perm_n_repeats=args.perm_n_repeats,
             )
-            save_diagnostics(diag_report, output_dir, args.target)
+
+            # Use suffix for output files when feature_sources=all
+            output_target = args.target
+            if args.feature_sources == "all":
+                output_target = f"{args.target}_all"
+                logger.info(f"Using output suffix for 'all' mode: {output_target}")
+
+            save_diagnostics(diag_report, output_dir, output_target)
             logger.info("Diagnostics complete!")
             return
 
         # Normal training flow
+        # Note: --feature-sources all is only supported in --diagnostics-only mode
+        if args.feature_sources == "all":
+            logger.warning(
+                "--feature-sources all is currently only supported with --diagnostics-only mode. "
+                "Training will use v4 features only."
+            )
+
         results = run_full_pipeline(
             conn=conn,
             config=config,
