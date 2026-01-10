@@ -13,6 +13,7 @@ interface FeatureItem {
   safety_label: "safe" | "warn" | "unsafe" | "unknown";
   importance_gain: number;
   importance_split: number;
+  desc?: string;
 }
 
 /**
@@ -152,7 +153,10 @@ export default function ExplainSummary({ target = "target_win", topN = 10 }: Exp
                 {features.map((f, i) => (
                   <tr key={f.feature_name} className="hover:bg-gray-50">
                     <td className="py-2 text-gray-400">{i + 1}</td>
-                    <td className="py-2 font-medium text-gray-800">{f.display_name}</td>
+                    <td className="py-2">
+                      <div className="font-medium text-gray-800">{f.display_name}</div>
+                      {f.desc && <div className="text-xs text-gray-400">{f.desc}</div>}
+                    </td>
                     <td className="py-2">
                       <OriginBadge origin={f.origin} />
                     </td>

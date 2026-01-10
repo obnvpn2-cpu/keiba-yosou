@@ -71,6 +71,87 @@ def sanitize_for_json(obj: Any) -> Any:
 # =============================================================================
 
 
+# Feature description mapping (v4 native features)
+FEATURE_DESC_MAP: Dict[str, str] = {
+    # Race attributes
+    "surface_id": "芝/ダート",
+    "distance": "距離(m)",
+    "distance_cat": "距離カテゴリ",
+    "track_condition_id": "馬場状態",
+    "field_size": "出走頭数",
+    "race_year": "開催年",
+    "race_month": "開催月",
+    "place_id": "開催場ID",
+    # Horse attributes
+    "waku": "枠番",
+    "umaban": "馬番",
+    "horse_weight": "馬体重",
+    "horse_weight_diff": "馬体重増減",
+    "sex_id": "性別",
+    "age": "馬齢",
+    # Historical stats
+    "h_starts_total": "総出走数",
+    "h_win_rate_total": "総合勝率",
+    "h_in3_rate_total": "総合複勝率",
+    "h_avg_finish_total": "平均着順",
+    "h_recent3_avg_finish": "直近3走平均着順",
+    "h_recent3_best_finish": "直近3走最高着順",
+    "h_recent3_avg_last3f": "直近3走平均上がり3F",
+    "h_days_since_last": "前走からの日数",
+    # Distance category stats
+    "h_starts_dist_cat": "距離別出走数",
+    "h_win_rate_dist_cat": "距離別勝率",
+    "h_in3_rate_dist_cat": "距離別複勝率",
+    # Track condition stats
+    "h_starts_track_cond": "馬場別出走数",
+    "h_win_rate_track_cond": "馬場別勝率",
+    # Course stats
+    "h_starts_course": "コース別出走数",
+    "h_win_rate_course": "コース別勝率",
+    # Pedigree
+    "sire_win_rate": "父馬勝率",
+    "sire_in3_rate": "父馬複勝率",
+    "bms_win_rate": "母父勝率",
+    "bms_in3_rate": "母父複勝率",
+}
+
+# Bridged feature description mapping (v3 features, keyed by original name without prefix)
+BRIDGED_DESC_MAP: Dict[str, str] = {
+    "ax8_jockey_in3_rate_total_asof": "騎手複勝率(asof)",
+    "ax8_jockey_win_rate_total_asof": "騎手勝率(asof)",
+    "ax8_trainer_in3_rate_total_asof": "調教師複勝率(asof)",
+    "ax8_trainer_win_rate_total_asof": "調教師勝率(asof)",
+    "hr_test": "馬過去成績(テスト)",
+}
+
+
+def get_feature_desc(feature_name: str, display_name: str, origin: str) -> str:
+    """
+    Get human-readable description for a feature.
+
+    Args:
+        feature_name: The actual feature column name
+        display_name: The display name (original name for bridged features)
+        origin: "v4_native" or "v3_bridged"
+
+    Returns:
+        Description string, or empty string if not found
+    """
+    # Try v4 native map first
+    if feature_name in FEATURE_DESC_MAP:
+        return FEATURE_DESC_MAP[feature_name]
+
+    # For bridged features, try display_name in bridged map
+    if origin == "v3_bridged" and display_name in BRIDGED_DESC_MAP:
+        return BRIDGED_DESC_MAP[display_name]
+
+    # Try display_name in v4 map as fallback
+    if display_name in FEATURE_DESC_MAP:
+        return FEATURE_DESC_MAP[display_name]
+
+    return ""
+
+
 @dataclass
 class FeatureExplanation:
     """Single feature explanation with bridge name resolution"""
@@ -82,6 +163,7 @@ class FeatureExplanation:
     importance_gain: float = 0.0  # Feature importance (gain)
     importance_split: int = 0  # Feature importance (split)
     contribution: float = 0.0  # SHAP or other contribution (if available)
+    desc: str = ""  # Human-readable description
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
@@ -188,6 +270,7 @@ def build_feature_explanation(
     display_name, origin, safety_label, safety_notes = resolve_feature_name(
         feature_name, bridge_map_data
     )
+    desc = get_feature_desc(feature_name, display_name, origin)
 
     return FeatureExplanation(
         feature_name=feature_name,
@@ -198,6 +281,7 @@ def build_feature_explanation(
         importance_gain=importance_gain,
         importance_split=importance_split,
         contribution=contribution,
+        desc=desc,
     )
 
 
@@ -256,6 +340,9 @@ def generate_explain_result(
         importance_gain = imp.get("gain", 0.0)
         importance_split = imp.get("split", 0)
 
+        # Get description
+        desc = get_feature_desc(feature_name, display_name, origin)
+
         explanation = FeatureExplanation(
             feature_name=feature_name,
             display_name=display_name,
@@ -264,6 +351,7 @@ def generate_explain_result(
             safety_notes=safety_notes,
             importance_gain=importance_gain,
             importance_split=importance_split,
+            desc=desc,
         )
 
         features.append(explanation)
