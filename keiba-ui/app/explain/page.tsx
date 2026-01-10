@@ -16,6 +16,7 @@ interface FeatureExplanation {
   importance_gain: number;
   importance_split: number;
   contribution: number;
+  desc: string;
 }
 
 /**
@@ -242,6 +243,9 @@ export default function ExplainPage() {
                         表示名
                       </th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        説明
+                      </th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                         特徴量名
                       </th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -264,6 +268,9 @@ export default function ExplainPage() {
                         <td className="px-4 py-3 text-sm text-gray-500">{index + 1}</td>
                         <td className="px-4 py-3 text-sm font-medium text-gray-900">
                           {feature.display_name}
+                        </td>
+                        <td className="px-4 py-3 text-sm text-gray-500">
+                          {feature.desc || "-"}
                         </td>
                         <td className="px-4 py-3 text-sm text-gray-500 font-mono text-xs">
                           {feature.feature_name}
